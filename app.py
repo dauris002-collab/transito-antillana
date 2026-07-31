@@ -363,7 +363,12 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#e5e7eb"),
             )
-            st.plotly_chart(fig_dona, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(
+                fig_dona,
+                use_container_width=True,
+                config={"displayModeBar": False},
+                key=f"donut_{tab_key}",
+            )
 
     with g2:
         por_pais = df["Pais_Origen"].replace("", "Sin especificar").value_counts().sort_values()

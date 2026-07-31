@@ -26,12 +26,11 @@ CATEGORIAS = ["Equipos", "Generadores", "Repuestos", "Aéreos", "Pedidos de Emer
 STATUS_COLOR = {
     "En tránsito": "#2E86DE",       # azul (igual al KPI "Total")
     "Próximo a llegar": "#5C6BC0",  # morado (igual al KPI "Promedio en puerto")
-    "Retrasado": "#E53935",         # rojo (igual al KPI "Cargo por demora")
-    "Llegado": "#2E7D32",           # verde (igual al KPI "Total monto")
+    "Recibido": "#2E7D32",          # verde — solo para consulta histórica
     "Sin fecha válida": "#6b7280",
 }
 COLOR_TOTAL = "#17A2B8"  # teal, distintivo para el total general
-STATUS_ORDER = ["Retrasado", "Próximo a llegar", "En tránsito", "Llegado", "Sin fecha válida"]
+STATUS_ORDER = ["Próximo a llegar", "En tránsito", "Recibido", "Sin fecha válida"]
 
 CUSTOM_CSS = """
 <style>
@@ -49,6 +48,7 @@ CUSTOM_CSS = """
     margin-bottom: 6px;
 }
 .kpi-value { font-size: 2.1rem; font-weight: 800; line-height: 1; color: #ffffff; }
+.kpi-sub { font-size: 0.72rem; color: rgba(255,255,255,0.85); margin-top: 6px; }
 
 .ship-card {
     border-radius: 12px;
@@ -147,7 +147,7 @@ def eliminar_embarque(bl: str) -> bool:
     return True
 
 
-def marcar_como_llegado(bl: str) -> bool:
+def marcar_como_recibido(bl: str) -> bool:
     sheet = get_sheet()
     fila = _fila_por_bl(bl)
     if fila is None:
@@ -164,7 +164,7 @@ def marcar_como_llegado(bl: str) -> bool:
 # ---------------------------------------------------------------------------
 def estado_embarque(eta_str: str, recibido: str):
     if str(recibido).strip().lower() in ("si", "sí", "true", "1", "x"):
-        return "Llegado", "🟢"
+        return "Recibido", "🟢"
     eta = None
     for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
         try:
@@ -175,9 +175,9 @@ def estado_embarque(eta_str: str, recibido: str):
     if eta is None:
         return "Sin fecha válida", "⚪"
     hoy = date.today()
-    if eta < hoy:
-        return "Retrasado", "🔴"
-    elif (eta - hoy).days <= 7:
+    # Ya no se distingue "retrasado" como categoría aparte: si la ETA ya pasó
+    # o está a 7 días o menos, se trata como "Próximo a llegar" (es lo urgente).
+    if (eta - hoy).days <= 7:
         return "Próximo a llegar", "🟡"
     else:
         return "En tránsito", "🔵"
@@ -255,21 +255,21 @@ def _render_categoria(df: pd.DataFrame, rol: str):
     df["EstadoIcono"] = [e[1] for e in estados]
 
     conteo = df["EstadoTexto"].value_counts().to_dict()
+    proximos_n = conteo.get("Próximo a llegar", 0)
 
     # -------------------- KPIs --------------------
     kpis = [
-        ("TOTAL EMBARQUES", len(df), COLOR_TOTAL),
-        ("EN TRÁNSITO", conteo.get("En tránsito", 0), STATUS_COLOR["En tránsito"]),
-        ("PRÓXIMOS A LLEGAR (7 DÍAS)", conteo.get("Próximo a llegar", 0), STATUS_COLOR["Próximo a llegar"]),
-        ("RETRASADOS", conteo.get("Retrasado", 0), STATUS_COLOR["Retrasado"]),
-        ("LLEGADOS", conteo.get("Llegado", 0), STATUS_COLOR["Llegado"]),
+        ("TOTAL EMBARQUES", len(df), COLOR_TOTAL, None),
+        ("PRÓXIMOS A LLEGAR (7 DÍAS)", proximos_n, STATUS_COLOR["Próximo a llegar"], None),
     ]
     cols = st.columns(len(kpis))
-    for col, (label, valor, color) in zip(cols, kpis):
+    for col, (label, valor, color, sub) in zip(cols, kpis):
+        sub_html = f'<div class="kpi-sub">{sub}</div>' if sub else ""
         col.markdown(
             f"""<div class="kpi-card" style="background:{color};">
                 <div class="kpi-label">{label}</div>
                 <div class="kpi-value">{valor}</div>
+                {sub_html}
                 </div>""",
             unsafe_allow_html=True,
         )
@@ -334,13 +334,13 @@ def _render_categoria(df: pd.DataFrame, rol: str):
     st.divider()
 
     # -------------------- FILTROS --------------------
-    # 'Llegado' queda fuera de la vista por defecto (histórico), y solo el
+    # 'Recibido' queda fuera de la vista por defecto (histórico), y solo el
     # administrador puede consultarlo explícitamente seleccionándolo en el filtro.
     paises = ["Todos"] + sorted([p for p in df["Pais_Origen"].unique() if p])
     if rol == "admin":
         estados_filtro = ["Todos"] + STATUS_ORDER
     else:
-        estados_filtro = ["Todos"] + [e for e in STATUS_ORDER if e != "Llegado"]
+        estados_filtro = ["Todos"] + [e for e in STATUS_ORDER if e != "Recibido"]
 
     c1, c2 = st.columns(2)
     pais_sel = c1.selectbox("Filtrar por país de origen", paises, key=f"pais_{id(df)}")
@@ -350,18 +350,21 @@ def _render_categoria(df: pd.DataFrame, rol: str):
     if pais_sel != "Todos":
         filtrado = filtrado[filtrado["Pais_Origen"] == pais_sel]
     if estado_sel == "Todos":
-        filtrado = filtrado[filtrado["EstadoTexto"] != "Llegado"]
+        filtrado = filtrado[filtrado["EstadoTexto"] != "Recibido"]
     else:
         filtrado = filtrado[filtrado["EstadoTexto"] == estado_sel]
 
     filtrado = filtrado.sort_values("ETA")
 
-    if rol == "admin" and estado_sel == "Llegado":
-        st.caption("📜 Consultando histórico de embarques ya llegados.")
+    if rol == "admin" and estado_sel == "Recibido":
+        st.caption("📜 Consultando histórico de embarques recibidos.")
 
     # -------------------- LISTA DE EMBARQUES --------------------
     for _, r in filtrado.iterrows():
         color = STATUS_COLOR.get(r["EstadoTexto"], "#6b7280")
+        es_recibido = r["EstadoTexto"] == "Recibido"
+        ultima_etiqueta = "Fecha recibido" if es_recibido else "ETA"
+        ultimo_valor = r["Fecha_Actualizacion"] if es_recibido else r["ETA"]
         st.markdown(
             f"""
             <div class="ship-card" style="border-left-color:{color};">
@@ -376,7 +379,7 @@ def _render_categoria(df: pd.DataFrame, rol: str):
                     <div><div class="ship-field-label">Modelo/Serie</div><div class="ship-field-value">{r['Modelo_Serie'] or '—'}</div></div>
                     <div><div class="ship-field-label">Cantidad</div><div class="ship-field-value">{r['Cantidad'] or '—'}</div></div>
                     <div><div class="ship-field-label">País origen</div><div class="ship-field-value">{r['Pais_Origen'] or '—'}</div></div>
-                    <div><div class="ship-field-label">ETA</div><div class="ship-field-value">{r['ETA'] or '—'}</div></div>
+                    <div><div class="ship-field-label">{ultima_etiqueta}</div><div class="ship-field-value">{ultimo_valor or '—'}</div></div>
                 </div>
             </div>
             """,
@@ -400,9 +403,9 @@ def _render_categoria(df: pd.DataFrame, rol: str):
                     st.rerun()
             else:
                 ac1, ac2, _ = st.columns([1.4, 1, 2.6])
-                if r["EstadoTexto"] != "Llegado":
-                    if ac1.button("✅ Marcar como llegado", key=f"llegado_{bl_actual}"):
-                        marcar_como_llegado(bl_actual)
+                if r["EstadoTexto"] != "Recibido":
+                    if ac1.button("✅ Marcar como Recibido", key=f"recibido_{bl_actual}"):
+                        marcar_como_recibido(bl_actual)
                         st.cache_resource.clear()
                         st.rerun()
                 if ac2.button("🗑 Eliminar", key=f"eliminar_{bl_actual}"):

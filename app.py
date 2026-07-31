@@ -216,7 +216,7 @@ def form_carga_masiva():
     st.caption(
         "El archivo debe tener exactamente estas columnas: "
         + ", ".join(REQUIRED_COLUMNS)
-        + ". La fecha ETA debe estar en formato AAAA-MM-DD."
+        + ". La fecha ETA puede venir en cualquier formato de fecha reconocible (la app la normaliza sola)."
     )
 
     archivo = st.file_uploader("Sube el archivo .xlsx", type=["xlsx"])
@@ -232,22 +232,29 @@ def form_carga_masiva():
             st.error(f"Faltan columnas obligatorias: {', '.join(faltantes)}. Revisa la plantilla.")
             return
 
-        nuevo = nuevo[REQUIRED_COLUMNS].dropna(how="all")
+        nuevo = nuevo[REQUIRED_COLUMNS].dropna(how="all").copy()
 
-        # Validar formato de fecha
+        # Normalizar fechas ETA: Excel suele entregarlas con hora incluida
+        # (ej. "2026-08-25 00:00:00") aunque en la celda se vean como AAAA-MM-DD.
+        # Se acepta cualquier formato de fecha reconocible y se guarda como AAAA-MM-DD.
         fechas_invalidas = []
+        etas_normalizadas = []
         for i, val in enumerate(nuevo["ETA"]):
-            try:
-                datetime.strptime(str(val).strip(), "%Y-%m-%d")
-            except ValueError:
+            parsed = pd.to_datetime(val, errors="coerce")
+            if pd.isna(parsed):
                 fechas_invalidas.append((i + 2, val))  # +2: encabezado + índice base 1
+                etas_normalizadas.append("")
+            else:
+                etas_normalizadas.append(parsed.strftime("%Y-%m-%d"))
 
         if fechas_invalidas:
             st.error(
-                "Hay fechas ETA con formato inválido (deben ser AAAA-MM-DD) en las filas: "
+                "Hay fechas ETA que no se pudieron interpretar en las filas: "
                 + ", ".join(f"{fila} ('{val}')" for fila, val in fechas_invalidas)
             )
             return
+
+        nuevo["ETA"] = etas_normalizadas
 
         st.write("Vista previa de lo que se va a cargar:")
         st.dataframe(nuevo, use_container_width=True)

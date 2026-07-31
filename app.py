@@ -91,7 +91,7 @@ CUSTOM_CSS = """
 }
 .tbl-header {
     display: grid;
-    grid-template-columns: 1.4fr 1.6fr 0.8fr 1fr 0.9fr 1.1fr;
+    grid-template-columns: 1.2fr 1.4fr 1.3fr 0.7fr 0.9fr 0.9fr 1.1fr;
     padding: 10px 18px;
     font-size: 0.68rem;
     text-transform: uppercase;
@@ -102,7 +102,7 @@ CUSTOM_CSS = """
 }
 .tbl-row {
     display: grid;
-    grid-template-columns: 1.4fr 1.6fr 0.8fr 1fr 0.9fr 1.1fr;
+    grid-template-columns: 1.2fr 1.4fr 1.3fr 0.7fr 0.9fr 0.9fr 1.1fr;
     padding: 12px 18px;
     font-size: 0.88rem;
     align-items: center;
@@ -479,7 +479,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
     if not filtrado.empty:
         st.markdown(
             '<div class="tbl-wrap"><div class="tbl-header">'
-            '<div>BL</div><div>Descripción</div><div>Cant.</div><div>País</div><div>Fecha</div><div>Estado</div>'
+            '<div>BL</div><div>Descripción</div><div>Modelo/Serie</div><div>Cant.</div><div>País</div><div>Fecha</div><div>Estado</div>'
             '</div>',
             unsafe_allow_html=True,
         )
@@ -491,6 +491,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 f'<div class="tbl-row" style="border-left-color:{color};">'
                 f'<div class="tbl-bl">{r["BL"]}</div>'
                 f'<div class="tbl-desc">{r["Descripcion"] or "—"}</div>'
+                f'<div class="tbl-desc">{r["Modelo_Serie"] or "—"}</div>'
                 f'<div>{r["Cantidad"] or "—"}</div>'
                 f'<div>{r["Pais_Origen"] or "—"}</div>'
                 f'<div>{ultimo_valor or "—"}</div>'

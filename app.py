@@ -456,32 +456,32 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
         if rol == "admin":
             bl_actual = r["BL"]
             categoria_actual = r["Categoria"]
-            key_confirmar = f"confirmar_del_{bl_actual}"
+            key_confirmar = f"confirmar_del_{tab_key}_{bl_actual}"
 
             if st.session_state.get(key_confirmar):
                 st.warning(f"¿Eliminar definitivamente el embarque BL {bl_actual}? Esta acción no se puede deshacer.")
                 cc1, cc2, _ = st.columns([1, 1, 3])
-                if cc1.button("Sí, eliminar", key=f"si_del_{bl_actual}", type="primary"):
+                if cc1.button("Sí, eliminar", key=f"si_del_{tab_key}_{bl_actual}", type="primary"):
                     eliminar_embarque(bl_actual, categoria_actual)
                     st.session_state.pop(key_confirmar, None)
                     st.cache_resource.clear()
                     st.rerun()
-                if cc2.button("Cancelar", key=f"cancel_del_{bl_actual}"):
+                if cc2.button("Cancelar", key=f"cancel_del_{tab_key}_{bl_actual}"):
                     st.session_state.pop(key_confirmar, None)
                     st.rerun()
             else:
                 ac1, ac2, _ = st.columns([1.4, 1, 2.6])
                 if r["EstadoTexto"] == "Recibido":
-                    if ac1.button("↩ Quitar Recibido", key=f"quitar_recibido_{bl_actual}"):
+                    if ac1.button("↩ Quitar Recibido", key=f"quitar_recibido_{tab_key}_{bl_actual}"):
                         quitar_recibido(bl_actual, categoria_actual)
                         st.cache_resource.clear()
                         st.rerun()
                 else:
-                    if ac1.button("✅ Marcar como Recibido", key=f"recibido_{bl_actual}"):
+                    if ac1.button("✅ Marcar como Recibido", key=f"recibido_{tab_key}_{bl_actual}"):
                         marcar_como_recibido(bl_actual, categoria_actual)
                         st.cache_resource.clear()
                         st.rerun()
-                if ac2.button("🗑 Eliminar", key=f"eliminar_{bl_actual}"):
+                if ac2.button("🗑 Eliminar", key=f"eliminar_{tab_key}_{bl_actual}"):
                     st.session_state[key_confirmar] = True
                     st.rerun()
 

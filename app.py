@@ -36,6 +36,7 @@ STATUS_ORDER = ["Próximo a llegar", "En tránsito", "Recibido", "Sin fecha vál
 PALETA_PAISES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 
 CUSTOM_CSS = """
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/tabler-icons/3.44.0/tabler-icons.min.css">
 <style>
 .kpi-card {
     border-radius: 14px;
@@ -355,13 +356,15 @@ def mostrar_dashboard(df: pd.DataFrame):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     st.markdown(
         '<div style="text-align:center; margin:0.5rem 0 1.5rem 0;">'
-        '<span style="display:inline-block; background:#E6F1FB; color:#0C447C; '
+        '<span style="display:inline-flex; align-items:center; gap:6px; background:#E6F1FB; color:#0C447C; '
         'font-size:0.8rem; font-weight:700; letter-spacing:0.04em; text-transform:uppercase; '
-        'padding:5px 16px; border-radius:999px;">📦 Logística e Importaciones 2026</span>'
-        '<h1 style="font-size:2.3rem; font-weight:800; margin:0.6rem 0 0.4rem 0; color:#111827;">'
-        '🚢 Estatus de Cargas</h1>'
+        'padding:5px 16px; border-radius:999px;">'
+        '<i class="ti ti-building-warehouse" style="font-size:1rem;"></i> Logística e Importaciones 2026</span>'
+        '<h1 style="font-size:2.3rem; font-weight:800; margin:0.6rem 0 0.4rem 0; color:#111827; '
+        'display:flex; align-items:center; justify-content:center; gap:10px;">'
+        '<i class="ti ti-anchor" style="font-size:2rem; color:#2E86DE;"></i> Estatus de Cargas</h1>'
         '<div style="width:52px; height:4px; background:#2E86DE; border-radius:2px; margin:0 auto 0.6rem auto;"></div>'
-        '<div style="font-size:1rem; color:#6B7280; font-weight:600;">Antillana Comercial</div>'
+        '<div style="font-size:1rem; color:#6B7280; font-weight:400;">Antillana Comercial</div>'
         '</div>',
         unsafe_allow_html=True,
     )

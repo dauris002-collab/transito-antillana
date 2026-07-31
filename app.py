@@ -41,28 +41,31 @@ CUSTOM_CSS = """
     border-radius: 14px;
     padding: 18px 20px;
     height: 100%;
+    box-shadow: 0 2px 8px rgba(17, 24, 39, 0.12);
 }
 .kpi-label {
     font-size: 0.72rem;
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: rgba(255,255,255,0.85);
+    color: rgba(255,255,255,0.9);
     margin-bottom: 6px;
 }
 .kpi-value { font-size: 2.1rem; font-weight: 800; line-height: 1; color: #ffffff; }
-.kpi-sub { font-size: 0.72rem; color: rgba(255,255,255,0.85); margin-top: 6px; }
+.kpi-sub { font-size: 0.72rem; color: rgba(255,255,255,0.9); margin-top: 6px; }
 
 .ship-card {
     border-radius: 12px;
     padding: 14px 20px;
-    margin-bottom: 10px;
-    background: rgba(255,255,255,0.025);
+    margin-bottom: 12px;
+    background: #ffffff;
+    border: 1px solid #E5E7EB;
     border-left: 5px solid #6b7280;
+    box-shadow: 0 1px 4px rgba(17, 24, 39, 0.06);
 }
 .ship-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
-.ship-bl { font-size: 1.02rem; font-weight: 700; }
-.ship-desc { font-size: 0.85rem; color: rgba(255,255,255,0.65); }
+.ship-bl { font-size: 1.02rem; font-weight: 700; color: #111827; }
+.ship-desc { font-size: 0.85rem; color: #6B7280; }
 .status-badge {
     display: inline-block;
     padding: 3px 12px;
@@ -77,8 +80,8 @@ CUSTOM_CSS = """
     gap: 10px;
     margin-top: 10px;
 }
-.ship-field-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: rgba(255,255,255,0.45); }
-.ship-field-value { font-size: 0.92rem; font-weight: 600; }
+.ship-field-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: #9CA3AF; }
+.ship-field-value { font-size: 0.92rem; font-weight: 600; color: #1F2937; }
 </style>
 """
 
@@ -362,7 +365,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 height=280,
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e5e7eb"),
+                font=dict(color="#374151"),
             )
             st.plotly_chart(
                 fig_dona,
@@ -392,7 +395,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 height=280,
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#e5e7eb"),
+                font=dict(color="#374151"),
                 xaxis=dict(showgrid=False, title="Embarques por país de origen (clic para filtrar)"),
                 yaxis=dict(showgrid=False),
             )

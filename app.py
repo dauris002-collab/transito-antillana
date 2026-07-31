@@ -17,22 +17,30 @@ st.set_page_config(
     layout="wide",
 )
 
-REQUIRED_COLUMNS = ["BL", "Descripcion", "Modelo_Serie", "Cantidad", "Pais_Origen", "ETA"]
-ALL_COLUMNS = REQUIRED_COLUMNS + ["Recibido", "Fecha_Actualizacion"]
+COL_ETA = "Llegada a Puerto (ETA)"
+COL_DIAS_PUERTO = "Dias en puerto"
+
+REQUIRED_COLUMNS = ["BL", "Descripcion", "Modelo_Serie", "Cantidad", "Pais_Origen", COL_ETA]
+ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, "Fecha_Actualizacion"]
 
 # Cada categoría es una PESTAÑA distinta dentro del mismo Google Sheet.
 # El nombre de la pestaña debe coincidir exactamente (tal cual, con tilde donde aplique).
-CATEGORIAS = ["Equipos", "Generadores", "Repuestos", "Aéreos", "Pedidos de Emergencia"]
+# "En Puerto" y "Recibido (por mes)" NO son categorías de producto — son estados/histórico
+# que la app calcula y archiva automáticamente, no pestañas donde se cargan embarques nuevos.
+CATEGORIAS = ["Equipos", "Generadores", "Aéreos", "Carga Suelta", "Consolidados"]
+RECIBIDO_SHEET = "Recibido (por mes)"
 
 # Paleta alineada al reporte de Power BI: bloques de color sólido, planos, alto contraste.
 STATUS_COLOR = {
     "En tránsito": "#2E86DE",       # azul (igual al KPI "Total")
-    "Próximo a llegar": "#5C6BC0",  # morado (igual al KPI "Promedio en puerto")
+    "Próximo a llegar": "#5C6BC0",  # morado
+    "En Puerto": "#E8890C",         # naranja — llegó pero falta confirmar recibido
     "Recibido": "#2E7D32",          # verde — solo para consulta histórica
     "Sin fecha válida": "#6b7280",
 }
 COLOR_TOTAL = "#17A2B8"  # teal, distintivo para el total general
-STATUS_ORDER = ["Próximo a llegar", "En tránsito", "Recibido", "Sin fecha válida"]
+COLOR_RECIBIDAS_MES = "#2E7D32"
+STATUS_ORDER = ["Próximo a llegar", "En Puerto", "En tránsito", "Sin fecha válida"]
 PALETA_PAISES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 
 CUSTOM_CSS = """
@@ -192,7 +200,6 @@ def append_row(row: dict, categoria: str) -> bool:
     if ws is None:
         return False
     row["Fecha_Actualizacion"] = date.today().isoformat()
-    row.setdefault("Recibido", "")
     ordered = _fila_desde_dict(ws, row)
     ws.append_row(ordered, value_input_option="RAW")
     return True
@@ -206,7 +213,6 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str) -> bool:
     rows = []
     for _, r in df.iterrows():
         row = {c: r.get(c, "") for c in REQUIRED_COLUMNS}
-        row["Recibido"] = ""
         row["Fecha_Actualizacion"] = hoy
         rows.append(_fila_desde_dict(ws, row))
     ws.append_rows(rows, value_input_option="RAW")
@@ -240,58 +246,84 @@ def eliminar_embarque(bl: str, categoria: str) -> bool:
 
 
 def marcar_como_recibido(bl: str, categoria: str) -> bool:
-    ws = get_worksheet(categoria)
+    """Archiva el embarque en la pestaña 'Recibido (por mes)' con la fecha de hoy
+    y lo elimina de su pestaña de categoría de origen. Es un movimiento, no una
+    bandera: una vez recibido, el embarque sale del pipeline activo."""
+    ws_origen = get_worksheet(categoria)
     fila = _fila_por_bl(bl, categoria)
-    if ws is None or fila is None:
+    if ws_origen is None or fila is None:
         return False
-    headers = _headers(ws)
-    if "Recibido" not in headers or "Fecha_Actualizacion" not in headers:
+
+    headers_origen = _headers(ws_origen)
+    valores_fila = ws_origen.row_values(fila)
+    datos = dict(zip(headers_origen, valores_fila))
+
+    ws_destino = get_worksheet(RECIBIDO_SHEET)
+    if ws_destino is None:
         return False
-    col_recibido = headers.index("Recibido") + 1
-    col_fecha = headers.index("Fecha_Actualizacion") + 1
-    ws.update_cell(fila, col_recibido, "Si")
-    ws.update_cell(fila, col_fecha, date.today().isoformat())
+
+    registro = {
+        "BL": datos.get("BL", bl),
+        "Descripcion": datos.get("Descripcion", ""),
+        "Cantidad": datos.get("Cantidad", ""),
+        "Fecha_Recibido": date.today().isoformat(),
+    }
+    fila_destino = _fila_desde_dict(ws_destino, registro)
+    ws_destino.append_row(fila_destino, value_input_option="RAW")
+
+    ws_origen.delete_rows(fila)
     return True
 
 
-def quitar_recibido(bl: str, categoria: str) -> bool:
-    ws = get_worksheet(categoria)
-    fila = _fila_por_bl(bl, categoria)
-    if ws is None or fila is None:
-        return False
-    headers = _headers(ws)
-    if "Recibido" not in headers:
-        return False
-    col_recibido = headers.index("Recibido") + 1
-    ws.update_cell(fila, col_recibido, "")
-    if "Fecha_Actualizacion" in headers:
-        col_fecha = headers.index("Fecha_Actualizacion") + 1
-        ws.update_cell(fila, col_fecha, date.today().isoformat())
-    return True
+@st.cache_data(ttl=20, show_spinner=False)
+def contar_recibidas_mes_actual() -> int:
+    """Cuenta cuántos embarques se archivaron como recibidos en el mes calendario actual,
+    leyendo la fecha de la columna 'Fecha_Recibido' de la pestaña 'Recibido (por mes)'."""
+    ws = get_worksheet(RECIBIDO_SHEET)
+    if ws is None:
+        return 0
+    hoy = date.today()
+    total = 0
+    for registro in ws.get_all_records():
+        fecha_str = str(registro.get("Fecha_Recibido", "")).strip()
+        fecha = None
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+            try:
+                fecha = datetime.strptime(fecha_str.split(" ")[0], fmt).date()
+                break
+            except ValueError:
+                continue
+        if fecha and fecha.year == hoy.year and fecha.month == hoy.month:
+            total += 1
+    return total
 
 
 # ---------------------------------------------------------------------------
 # LÓGICA DE ESTADO DEL EMBARQUE
 # ---------------------------------------------------------------------------
-def estado_embarque(eta_str: str, recibido: str):
-    if str(recibido).strip().lower() in ("si", "sí", "true", "1", "x"):
-        return "Recibido", "🟢"
+def estado_embarque(eta_str: str):
+    """Devuelve (texto_estado, icono, dias_en_puerto). dias_en_puerto es None
+    salvo cuando el estado es 'En Puerto' (ETA ya pasó y nadie lo ha confirmado
+    como recibido)."""
     eta = None
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
         try:
             eta = datetime.strptime(str(eta_str).strip().split(" ")[0], fmt).date()
             break
         except ValueError:
             continue
     if eta is None:
-        return "Sin fecha válida", "⚪"
+        return "Sin fecha válida", "⚪", None
+
     hoy = date.today()
-    # Ya no se distingue "retrasado" como categoría aparte: si la ETA ya pasó
-    # o está a 7 días o menos, se trata como "Próximo a llegar" (es lo urgente).
-    if (eta - hoy).days <= 7:
-        return "Próximo a llegar", "🟡"
+    dias_restantes = (eta - hoy).days
+
+    if dias_restantes < 0:
+        return "En Puerto", "🟠", abs(dias_restantes)
+    elif dias_restantes <= 7:
+        return "Próximo a llegar", "🟡", None
     else:
-        return "En tránsito", "🔵"
+        return "En tránsito", "🔵", None
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +409,16 @@ def mostrar_dashboard(df: pd.DataFrame):
         st.info("Todavía no hay embarques cargados.")
         return
 
+    recibidas_mes = contar_recibidas_mes_actual()
+    mes_actual_txt = date.today().strftime("%B %Y").capitalize()
+    st.markdown(
+        f'<div class="kpi-card" style="background:{COLOR_RECIBIDAS_MES}; max-width:340px; margin:0 auto 1.2rem auto;">'
+        f'<div class="kpi-label">Recibidas este mes ({mes_actual_txt})</div>'
+        f'<div class="kpi-value">{recibidas_mes}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
     tabs_categorias = ["Todos"] + CATEGORIAS
     tabs = st.tabs(tabs_categorias)
     for nombre_tab, tab in zip(tabs_categorias, tabs):
@@ -393,18 +435,21 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
         st.info("No hay embarques en esta categoría.")
         return
 
-    estados = df.apply(lambda r: estado_embarque(r["ETA"], r.get("Recibido", "")), axis=1)
+    estados = df.apply(lambda r: estado_embarque(r[COL_ETA]), axis=1)
     df = df.copy()
     df["EstadoTexto"] = [e[0] for e in estados]
     df["EstadoIcono"] = [e[1] for e in estados]
+    df["DiasEnPuerto"] = [e[2] for e in estados]
 
     conteo = df["EstadoTexto"].value_counts().to_dict()
     proximos_n = conteo.get("Próximo a llegar", 0)
+    en_puerto_n = conteo.get("En Puerto", 0)
 
     # -------------------- KPIs --------------------
     kpis = [
         ("TOTAL EN TRÁNSITO", len(df), COLOR_TOTAL, None),
         ("PRÓXIMOS 7 DÍAS", proximos_n, STATUS_COLOR["Próximo a llegar"], None),
+        ("EN PUERTO (SIN CONFIRMAR)", en_puerto_n, STATUS_COLOR["En Puerto"], None),
     ]
     cols = st.columns(len(kpis))
     for col, (label, valor, color, sub) in zip(cols, kpis):
@@ -497,13 +542,8 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
     st.divider()
 
     # -------------------- FILTROS --------------------
-    # 'Recibido' queda fuera de la vista por defecto (histórico), y solo el
-    # administrador puede consultarlo explícitamente seleccionándolo en el filtro.
     paises = ["Todos"] + sorted([p for p in df["Pais_Origen"].unique() if p])
-    if rol == "admin":
-        estados_filtro = ["Todos"] + STATUS_ORDER
-    else:
-        estados_filtro = ["Todos"] + [e for e in STATUS_ORDER if e != "Recibido"]
+    estados_filtro = ["Todos"] + STATUS_ORDER
 
     c1, c2 = st.columns(2)
     pais_sel = c1.selectbox("Filtrar por país de origen", paises, key=f"pais_{tab_key}")
@@ -512,15 +552,10 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
     filtrado = df.copy()
     if pais_sel != "Todos":
         filtrado = filtrado[filtrado["Pais_Origen"] == pais_sel]
-    if estado_sel == "Todos":
-        filtrado = filtrado[filtrado["EstadoTexto"] != "Recibido"]
-    else:
+    if estado_sel != "Todos":
         filtrado = filtrado[filtrado["EstadoTexto"] == estado_sel]
 
-    filtrado = filtrado.sort_values("ETA")
-
-    if rol == "admin" and estado_sel == "Recibido":
-        st.caption("📜 Consultando histórico de embarques recibidos.")
+    filtrado = filtrado.sort_values(COL_ETA)
 
     # -------------------- LISTA DE EMBARQUES --------------------
     # Se renderizan las DOS vistas (tabla y tarjetas) en el mismo HTML; el CSS
@@ -536,8 +571,10 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
         )
         for _, r in filtrado.iterrows():
             color = STATUS_COLOR.get(r["EstadoTexto"], "#6b7280")
-            es_recibido = r["EstadoTexto"] == "Recibido"
-            ultimo_valor = r["Fecha_Actualizacion"] if es_recibido else r["ETA"]
+            if r["EstadoTexto"] == "En Puerto" and pd.notna(r["DiasEnPuerto"]):
+                texto_badge = f'{r["EstadoIcono"]} En Puerto · {int(r["DiasEnPuerto"])} días'
+            else:
+                texto_badge = f'{r["EstadoIcono"]} {r["EstadoTexto"]}'
             tabla_html += (
                 f'<div class="tbl-row" style="border-left-color:{color};">'
                 f'<div class="tbl-bl">{r["BL"]}</div>'
@@ -545,8 +582,8 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 f'<div class="tbl-desc">{r["Modelo_Serie"] or "—"}</div>'
                 f'<div>{r["Cantidad"] or "—"}</div>'
                 f'<div>{r["Pais_Origen"] or "—"}</div>'
-                f'<div>{ultimo_valor or "—"}</div>'
-                f'<div><span class="status-badge" style="background:{color};">{r["EstadoIcono"]} {r["EstadoTexto"]}</span></div>'
+                f'<div>{r[COL_ETA] or "—"}</div>'
+                f'<div><span class="status-badge" style="background:{color};">{texto_badge}</span></div>'
                 f'</div>'
             )
         tabla_html += '</div>'
@@ -556,21 +593,22 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
         cards_html = '<div class="ship-cards">'
         for _, r in filtrado.iterrows():
             color = STATUS_COLOR.get(r["EstadoTexto"], "#6b7280")
-            es_recibido = r["EstadoTexto"] == "Recibido"
-            ultimo_valor = r["Fecha_Actualizacion"] if es_recibido else r["ETA"]
-            label_fecha = "Recibido" if es_recibido else "ETA"
+            if r["EstadoTexto"] == "En Puerto" and pd.notna(r["DiasEnPuerto"]):
+                texto_badge = f'{r["EstadoIcono"]} En Puerto · {int(r["DiasEnPuerto"])} días'
+            else:
+                texto_badge = f'{r["EstadoIcono"]} {r["EstadoTexto"]}'
             cards_html += (
                 f'<div class="ship-card" style="border-left-color:{color};">'
                 f'<div class="ship-top">'
                 f'<div class="ship-bl">{r["BL"]}</div>'
-                f'<span class="status-badge" style="background:{color};">{r["EstadoIcono"]} {r["EstadoTexto"]}</span>'
+                f'<span class="status-badge" style="background:{color};">{texto_badge}</span>'
                 f'</div>'
                 f'<div class="ship-desc">{r["Descripcion"] or "—"}</div>'
                 f'<div class="ship-grid">'
                 f'<div><div class="ship-field-label">Modelo/Serie</div><div class="ship-field-value">{r["Modelo_Serie"] or "—"}</div></div>'
                 f'<div><div class="ship-field-label">Cant.</div><div class="ship-field-value">{r["Cantidad"] or "—"}</div></div>'
                 f'<div><div class="ship-field-label">País</div><div class="ship-field-value">{r["Pais_Origen"] or "—"}</div></div>'
-                f'<div><div class="ship-field-label">{label_fecha}</div><div class="ship-field-value">{ultimo_valor or "—"}</div></div>'
+                f'<div><div class="ship-field-label">ETA</div><div class="ship-field-value">{r[COL_ETA] or "—"}</div></div>'
                 f'</div>'
                 f'</div>'
             )
@@ -601,16 +639,11 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
             else:
                 ac0, ac1, ac2, _ = st.columns([1.3, 1.4, 1, 2.3])
                 ac0.markdown(f"**{bl_actual}**")
-                if r["EstadoTexto"] == "Recibido":
-                    if ac1.button("↩ Quitar Recibido", key=f"quitar_recibido_{tab_key}_{bl_actual}"):
-                        quitar_recibido(bl_actual, categoria_actual)
-                        load_data.clear()
-                        st.rerun()
-                else:
-                    if ac1.button("✅ Marcar como Recibido", key=f"recibido_{tab_key}_{bl_actual}"):
-                        marcar_como_recibido(bl_actual, categoria_actual)
-                        load_data.clear()
-                        st.rerun()
+                if ac1.button("✅ Marcar como Recibido", key=f"recibido_{tab_key}_{bl_actual}"):
+                    marcar_como_recibido(bl_actual, categoria_actual)
+                    load_data.clear()
+                    contar_recibidas_mes_actual.clear()
+                    st.rerun()
                 if ac2.button("🗑 Eliminar", key=f"eliminar_{tab_key}_{bl_actual}"):
                     st.session_state[key_confirmar] = True
                     st.rerun()
@@ -649,7 +682,7 @@ def form_alta_manual():
                         "Modelo_Serie": modelo,
                         "Cantidad": cantidad,
                         "Pais_Origen": pais,
-                        "ETA": eta.isoformat(),
+                        COL_ETA: eta.isoformat(),
                     }, categoria)
                     if ok:
                         st.success("Embarque guardado correctamente.")
@@ -694,7 +727,7 @@ def form_carga_masiva():
         # Se acepta cualquier formato de fecha reconocible y se guarda como AAAA-MM-DD.
         fechas_invalidas = []
         etas_normalizadas = []
-        for i, val in enumerate(nuevo["ETA"]):
+        for i, val in enumerate(nuevo[COL_ETA]):
             parsed = pd.to_datetime(val, errors="coerce")
             if pd.isna(parsed):
                 fechas_invalidas.append((i + 2, val))  # +2: encabezado + índice base 1
@@ -709,7 +742,7 @@ def form_carga_masiva():
             )
             return
 
-        nuevo["ETA"] = etas_normalizadas
+        nuevo[COL_ETA] = etas_normalizadas
 
         existentes = load_data()
         bls_existentes = set(existentes["BL"].astype(str).str.strip())

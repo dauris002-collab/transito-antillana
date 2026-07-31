@@ -5,6 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import gspread
+import gspread.exceptions
 from google.oauth2.service_account import Credentials
 
 # ---------------------------------------------------------------------------
@@ -21,13 +22,15 @@ ALL_COLUMNS = REQUIRED_COLUMNS + ["Recibido", "Fecha_Actualizacion"]
 
 CATEGORIAS = ["Equipos", "Generadores", "Repuestos", "Aéreos", "Pedidos de Emergencia"]
 
+# Paleta alineada al reporte de Power BI: bloques de color sólido, planos, alto contraste.
 STATUS_COLOR = {
-    "En tránsito": "#3b82f6",
-    "Próximo a llegar": "#f59e0b",
-    "Retrasado": "#ef4444",
-    "Llegado": "#22c55e",
+    "En tránsito": "#2E86DE",       # azul (igual al KPI "Total")
+    "Próximo a llegar": "#5C6BC0",  # morado (igual al KPI "Promedio en puerto")
+    "Retrasado": "#E53935",         # rojo (igual al KPI "Cargo por demora")
+    "Llegado": "#2E7D32",           # verde (igual al KPI "Total monto")
     "Sin fecha válida": "#6b7280",
 }
+COLOR_TOTAL = "#17A2B8"  # teal, distintivo para el total general
 STATUS_ORDER = ["Retrasado", "Próximo a llegar", "En tránsito", "Llegado", "Sin fecha válida"]
 
 CUSTOM_CSS = """
@@ -35,8 +38,6 @@ CUSTOM_CSS = """
 .kpi-card {
     border-radius: 14px;
     padding: 18px 20px;
-    background: linear-gradient(155deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01));
-    border: 1px solid rgba(255,255,255,0.08);
     height: 100%;
 }
 .kpi-label {
@@ -44,10 +45,10 @@ CUSTOM_CSS = """
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: rgba(255,255,255,0.55);
+    color: rgba(255,255,255,0.85);
     margin-bottom: 6px;
 }
-.kpi-value { font-size: 2.1rem; font-weight: 800; line-height: 1; }
+.kpi-value { font-size: 2.1rem; font-weight: 800; line-height: 1; color: #ffffff; }
 
 .ship-card {
     border-radius: 12px;
@@ -65,7 +66,7 @@ CUSTOM_CSS = """
     border-radius: 999px;
     font-size: 0.75rem;
     font-weight: 700;
-    color: #0b0f19;
+    color: #ffffff;
 }
 .ship-grid {
     display: grid;
@@ -125,6 +126,37 @@ def append_rows_bulk(df: pd.DataFrame):
         row["Fecha_Actualizacion"] = hoy
         rows.append([row.get(c, "") for c in ALL_COLUMNS])
     sheet.append_rows(rows, value_input_option="RAW")
+
+
+def _fila_por_bl(bl: str):
+    """Devuelve el número de fila (1-indexado, con encabezado) del BL dado, o None si no existe."""
+    sheet = get_sheet()
+    try:
+        cell = sheet.find(str(bl).strip(), in_column=1)
+    except gspread.exceptions.CellNotFound:
+        return None
+    return cell.row
+
+
+def eliminar_embarque(bl: str) -> bool:
+    sheet = get_sheet()
+    fila = _fila_por_bl(bl)
+    if fila is None:
+        return False
+    sheet.delete_rows(fila)
+    return True
+
+
+def marcar_como_llegado(bl: str) -> bool:
+    sheet = get_sheet()
+    fila = _fila_por_bl(bl)
+    if fila is None:
+        return False
+    col_recibido = ALL_COLUMNS.index("Recibido") + 1
+    col_fecha = ALL_COLUMNS.index("Fecha_Actualizacion") + 1
+    sheet.update_cell(fila, col_recibido, "Si")
+    sheet.update_cell(fila, col_fecha, date.today().isoformat())
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -209,10 +241,10 @@ def mostrar_dashboard(df: pd.DataFrame):
                 df_categoria = df
             else:
                 df_categoria = df[df.get("Categoria", "") == nombre_tab]
-            _render_categoria(df_categoria)
+            _render_categoria(df_categoria, st.session_state.get("rol", "viewer"))
 
 
-def _render_categoria(df: pd.DataFrame):
+def _render_categoria(df: pd.DataFrame, rol: str):
     if df.empty:
         st.info("No hay embarques en esta categoría.")
         return
@@ -226,7 +258,7 @@ def _render_categoria(df: pd.DataFrame):
 
     # -------------------- KPIs --------------------
     kpis = [
-        ("TOTAL EMBARQUES", len(df), "#e5e7eb"),
+        ("TOTAL EMBARQUES", len(df), COLOR_TOTAL),
         ("EN TRÁNSITO", conteo.get("En tránsito", 0), STATUS_COLOR["En tránsito"]),
         ("PRÓXIMOS A LLEGAR (7 DÍAS)", conteo.get("Próximo a llegar", 0), STATUS_COLOR["Próximo a llegar"]),
         ("RETRASADOS", conteo.get("Retrasado", 0), STATUS_COLOR["Retrasado"]),
@@ -235,9 +267,9 @@ def _render_categoria(df: pd.DataFrame):
     cols = st.columns(len(kpis))
     for col, (label, valor, color) in zip(cols, kpis):
         col.markdown(
-            f"""<div class="kpi-card" style="border-top:3px solid {color};">
+            f"""<div class="kpi-card" style="background:{color};">
                 <div class="kpi-label">{label}</div>
-                <div class="kpi-value" style="color:{color};">{valor}</div>
+                <div class="kpi-value">{valor}</div>
                 </div>""",
             unsafe_allow_html=True,
         )
@@ -282,7 +314,7 @@ def _render_categoria(df: pd.DataFrame):
                         x=por_pais.values,
                         y=por_pais.index,
                         orientation="h",
-                        marker=dict(color="#3b82f6"),
+                        marker=dict(color=STATUS_COLOR["En tránsito"]),
                         text=por_pais.values,
                         textposition="outside",
                     )
@@ -302,8 +334,14 @@ def _render_categoria(df: pd.DataFrame):
     st.divider()
 
     # -------------------- FILTROS --------------------
+    # 'Llegado' queda fuera de la vista por defecto (histórico), y solo el
+    # administrador puede consultarlo explícitamente seleccionándolo en el filtro.
     paises = ["Todos"] + sorted([p for p in df["Pais_Origen"].unique() if p])
-    estados_filtro = ["Todos"] + STATUS_ORDER
+    if rol == "admin":
+        estados_filtro = ["Todos"] + STATUS_ORDER
+    else:
+        estados_filtro = ["Todos"] + [e for e in STATUS_ORDER if e != "Llegado"]
+
     c1, c2 = st.columns(2)
     pais_sel = c1.selectbox("Filtrar por país de origen", paises, key=f"pais_{id(df)}")
     estado_sel = c2.selectbox("Filtrar por estado", estados_filtro, key=f"estado_{id(df)}")
@@ -311,10 +349,15 @@ def _render_categoria(df: pd.DataFrame):
     filtrado = df.copy()
     if pais_sel != "Todos":
         filtrado = filtrado[filtrado["Pais_Origen"] == pais_sel]
-    if estado_sel != "Todos":
+    if estado_sel == "Todos":
+        filtrado = filtrado[filtrado["EstadoTexto"] != "Llegado"]
+    else:
         filtrado = filtrado[filtrado["EstadoTexto"] == estado_sel]
 
     filtrado = filtrado.sort_values("ETA")
+
+    if rol == "admin" and estado_sel == "Llegado":
+        st.caption("📜 Consultando histórico de embarques ya llegados.")
 
     # -------------------- LISTA DE EMBARQUES --------------------
     for _, r in filtrado.iterrows():
@@ -339,6 +382,34 @@ def _render_categoria(df: pd.DataFrame):
             """,
             unsafe_allow_html=True,
         )
+
+        if rol == "admin":
+            bl_actual = r["BL"]
+            key_confirmar = f"confirmar_del_{bl_actual}"
+
+            if st.session_state.get(key_confirmar):
+                st.warning(f"¿Eliminar definitivamente el embarque BL {bl_actual}? Esta acción no se puede deshacer.")
+                cc1, cc2, _ = st.columns([1, 1, 3])
+                if cc1.button("Sí, eliminar", key=f"si_del_{bl_actual}", type="primary"):
+                    eliminar_embarque(bl_actual)
+                    st.session_state.pop(key_confirmar, None)
+                    st.cache_resource.clear()
+                    st.rerun()
+                if cc2.button("Cancelar", key=f"cancel_del_{bl_actual}"):
+                    st.session_state.pop(key_confirmar, None)
+                    st.rerun()
+            else:
+                ac1, ac2, _ = st.columns([1.4, 1, 2.6])
+                if r["EstadoTexto"] != "Llegado":
+                    if ac1.button("✅ Marcar como llegado", key=f"llegado_{bl_actual}"):
+                        marcar_como_llegado(bl_actual)
+                        st.cache_resource.clear()
+                        st.rerun()
+                if ac2.button("🗑 Eliminar", key=f"eliminar_{bl_actual}"):
+                    st.session_state[key_confirmar] = True
+                    st.rerun()
+
+        st.write("")
 
 
 # ---------------------------------------------------------------------------

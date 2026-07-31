@@ -112,6 +112,17 @@ CUSTOM_CSS = """
 }
 .tbl-bl { font-weight: 700; color: #111827; }
 .tbl-desc { color: #6B7280; }
+
+/* Por defecto (desktop/tablet ancho): tabla visible, tarjetas ocultas */
+.ship-cards { display: none; }
+
+/* Celular / viewport angosto: tabla oculta, tarjetas visibles */
+@media (max-width: 640px) {
+    .tbl-wrap { display: none; }
+    .ship-cards { display: block; }
+    h1 { font-size: 1.7rem !important; }
+    .kpi-value { font-size: 1.6rem; }
+}
 </style>
 """
 
@@ -460,7 +471,14 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
             if puntos:
                 pais_clic = puntos[0].get("y")
                 if pais_clic and pais_clic != "Sin especificar":
-                    st.session_state[f"pais_{tab_key}"] = pais_clic
+                    # Plotly mantiene la selección activa entre reruns, así que sin este
+                    # control el clic se reaplicaría en cada rerun y anularía cualquier
+                    # cambio manual que el usuario haga luego en el selectbox.
+                    firma_clic = f"{tab_key}:{pais_clic}"
+                    key_firma = f"ultima_firma_pais_{tab_key}"
+                    if firma_clic != st.session_state.get(key_firma):
+                        st.session_state[f"pais_{tab_key}"] = pais_clic
+                        st.session_state[key_firma] = firma_clic
 
     st.divider()
 
@@ -490,19 +508,23 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
     if rol == "admin" and estado_sel == "Recibido":
         st.caption("📜 Consultando histórico de embarques recibidos.")
 
-    # -------------------- LISTA DE EMBARQUES (TABLA COMPACTA) --------------------
+    # -------------------- LISTA DE EMBARQUES --------------------
+    # Se renderizan las DOS vistas (tabla y tarjetas) en el mismo HTML; el CSS
+    # (@media max-width:640px) decide cuál se muestra según el ancho real de
+    # pantalla del dispositivo que abre la app. Streamlit no puede detectar el
+    # ancho del navegador del lado del servidor, así que el toggle se hace en CSS.
     if not filtrado.empty:
-        st.markdown(
+        # --- Vista tabla (desktop / tablet) ---
+        tabla_html = (
             '<div class="tbl-wrap"><div class="tbl-header">'
             '<div>BL</div><div>Descripción</div><div>Modelo/Serie</div><div>Cant.</div><div>País</div><div>Fecha</div><div>Estado</div>'
-            '</div>',
-            unsafe_allow_html=True,
+            '</div>'
         )
         for _, r in filtrado.iterrows():
             color = STATUS_COLOR.get(r["EstadoTexto"], "#6b7280")
             es_recibido = r["EstadoTexto"] == "Recibido"
             ultimo_valor = r["Fecha_Actualizacion"] if es_recibido else r["ETA"]
-            fila_html = (
+            tabla_html += (
                 f'<div class="tbl-row" style="border-left-color:{color};">'
                 f'<div class="tbl-bl">{r["BL"]}</div>'
                 f'<div class="tbl-desc">{r["Descripcion"] or "—"}</div>'
@@ -513,8 +535,33 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 f'<div><span class="status-badge" style="background:{color};">{r["EstadoIcono"]} {r["EstadoTexto"]}</span></div>'
                 f'</div>'
             )
-            st.markdown(fila_html, unsafe_allow_html=True)
-        st.markdown('</div>', unsafe_allow_html=True)
+        tabla_html += '</div>'
+        st.markdown(tabla_html, unsafe_allow_html=True)
+
+        # --- Vista tarjetas (celular) ---
+        cards_html = '<div class="ship-cards">'
+        for _, r in filtrado.iterrows():
+            color = STATUS_COLOR.get(r["EstadoTexto"], "#6b7280")
+            es_recibido = r["EstadoTexto"] == "Recibido"
+            ultimo_valor = r["Fecha_Actualizacion"] if es_recibido else r["ETA"]
+            label_fecha = "Recibido" if es_recibido else "ETA"
+            cards_html += (
+                f'<div class="ship-card" style="border-left-color:{color};">'
+                f'<div class="ship-top">'
+                f'<div class="ship-bl">{r["BL"]}</div>'
+                f'<span class="status-badge" style="background:{color};">{r["EstadoIcono"]} {r["EstadoTexto"]}</span>'
+                f'</div>'
+                f'<div class="ship-desc">{r["Descripcion"] or "—"}</div>'
+                f'<div class="ship-grid">'
+                f'<div><div class="ship-field-label">Modelo/Serie</div><div class="ship-field-value">{r["Modelo_Serie"] or "—"}</div></div>'
+                f'<div><div class="ship-field-label">Cant.</div><div class="ship-field-value">{r["Cantidad"] or "—"}</div></div>'
+                f'<div><div class="ship-field-label">País</div><div class="ship-field-value">{r["Pais_Origen"] or "—"}</div></div>'
+                f'<div><div class="ship-field-label">{label_fecha}</div><div class="ship-field-value">{ultimo_valor or "—"}</div></div>'
+                f'</div>'
+                f'</div>'
+            )
+        cards_html += '</div>'
+        st.markdown(cards_html, unsafe_allow_html=True)
 
     st.write("")
 

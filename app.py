@@ -297,7 +297,11 @@ def login_screen():
 # ---------------------------------------------------------------------------
 def mostrar_dashboard(df: pd.DataFrame):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-    st.subheader("📦 Estado de embarques")
+    st.markdown(
+        '<h1 style="text-align:center; font-size:2.6rem; font-weight:800; '
+        'margin:0.5rem 0 1.5rem 0; color:#111827;">🚢 Estatus de Cargas</h1>',
+        unsafe_allow_html=True,
+    )
 
     if df.empty:
         st.info("Todavía no hay embarques cargados.")

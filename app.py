@@ -2,6 +2,7 @@ import time
 from datetime import date, datetime
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 import gspread
 from google.oauth2.service_account import Credentials
@@ -17,6 +18,63 @@ st.set_page_config(
 
 REQUIRED_COLUMNS = ["BL", "Descripcion", "Modelo_Serie", "Cantidad", "Pais_Origen", "ETA"]
 ALL_COLUMNS = REQUIRED_COLUMNS + ["Recibido", "Fecha_Actualizacion"]
+
+STATUS_COLOR = {
+    "En tránsito": "#3b82f6",
+    "Próximo a llegar": "#f59e0b",
+    "Retrasado": "#ef4444",
+    "Llegado": "#22c55e",
+    "Sin fecha válida": "#6b7280",
+}
+STATUS_ORDER = ["Retrasado", "Próximo a llegar", "En tránsito", "Llegado", "Sin fecha válida"]
+
+CUSTOM_CSS = """
+<style>
+.kpi-card {
+    border-radius: 14px;
+    padding: 18px 20px;
+    background: linear-gradient(155deg, rgba(255,255,255,0.05), rgba(255,255,255,0.01));
+    border: 1px solid rgba(255,255,255,0.08);
+    height: 100%;
+}
+.kpi-label {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: rgba(255,255,255,0.55);
+    margin-bottom: 6px;
+}
+.kpi-value { font-size: 2.1rem; font-weight: 800; line-height: 1; }
+
+.ship-card {
+    border-radius: 12px;
+    padding: 14px 20px;
+    margin-bottom: 10px;
+    background: rgba(255,255,255,0.025);
+    border-left: 5px solid #6b7280;
+}
+.ship-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.ship-bl { font-size: 1.02rem; font-weight: 700; }
+.ship-desc { font-size: 0.85rem; color: rgba(255,255,255,0.65); }
+.status-badge {
+    display: inline-block;
+    padding: 3px 12px;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #0b0f19;
+}
+.ship-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 10px;
+    margin-top: 10px;
+}
+.ship-field-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: rgba(255,255,255,0.45); }
+.ship-field-value { font-size: 0.92rem; font-weight: 600; }
+</style>
+"""
 
 MAX_INTENTOS = 5
 BLOQUEO_SEGUNDOS = 15 * 60  # 15 minutos
@@ -52,7 +110,7 @@ def append_row(row: dict):
     row["Fecha_Actualizacion"] = date.today().isoformat()
     row.setdefault("Recibido", "")
     ordered = [row.get(c, "") for c in ALL_COLUMNS]
-    sheet.append_row(ordered, value_input_option="USER_ENTERED")
+    sheet.append_row(ordered, value_input_option="RAW")
 
 
 def append_rows_bulk(df: pd.DataFrame):
@@ -64,7 +122,7 @@ def append_rows_bulk(df: pd.DataFrame):
         row["Recibido"] = ""
         row["Fecha_Actualizacion"] = hoy
         rows.append([row.get(c, "") for c in ALL_COLUMNS])
-    sheet.append_rows(rows, value_input_option="USER_ENTERED")
+    sheet.append_rows(rows, value_input_option="RAW")
 
 
 # ---------------------------------------------------------------------------
@@ -73,9 +131,14 @@ def append_rows_bulk(df: pd.DataFrame):
 def estado_embarque(eta_str: str, recibido: str):
     if str(recibido).strip().lower() in ("si", "sí", "true", "1", "x"):
         return "Llegado", "🟢"
-    try:
-        eta = datetime.strptime(str(eta_str).strip(), "%Y-%m-%d").date()
-    except ValueError:
+    eta = None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            eta = datetime.strptime(str(eta_str).strip().split(" ")[0], fmt).date()
+            break
+        except ValueError:
+            continue
+    if eta is None:
         return "Sin fecha válida", "⚪"
     hoy = date.today()
     if eta < hoy:
@@ -129,6 +192,7 @@ def login_screen():
 # DASHBOARD (VISTA PRINCIPAL)
 # ---------------------------------------------------------------------------
 def mostrar_dashboard(df: pd.DataFrame):
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     st.subheader("📦 Estado de embarques")
 
     if df.empty:
@@ -140,16 +204,88 @@ def mostrar_dashboard(df: pd.DataFrame):
     df["EstadoTexto"] = [e[0] for e in estados]
     df["EstadoIcono"] = [e[1] for e in estados]
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total embarques", len(df))
-    col2.metric("En tránsito", int((df["EstadoTexto"] == "En tránsito").sum()))
-    col3.metric("Próximos a llegar (7 días)", int((df["EstadoTexto"] == "Próximo a llegar").sum()))
-    col4.metric("Retrasados", int((df["EstadoTexto"] == "Retrasado").sum()))
+    conteo = df["EstadoTexto"].value_counts().to_dict()
+
+    # -------------------- KPIs --------------------
+    kpis = [
+        ("TOTAL EMBARQUES", len(df), "#e5e7eb"),
+        ("EN TRÁNSITO", conteo.get("En tránsito", 0), STATUS_COLOR["En tránsito"]),
+        ("PRÓXIMOS A LLEGAR (7 DÍAS)", conteo.get("Próximo a llegar", 0), STATUS_COLOR["Próximo a llegar"]),
+        ("RETRASADOS", conteo.get("Retrasado", 0), STATUS_COLOR["Retrasado"]),
+        ("LLEGADOS", conteo.get("Llegado", 0), STATUS_COLOR["Llegado"]),
+    ]
+    cols = st.columns(len(kpis))
+    for col, (label, valor, color) in zip(cols, kpis):
+        col.markdown(
+            f"""<div class="kpi-card" style="border-top:3px solid {color};">
+                <div class="kpi-label">{label}</div>
+                <div class="kpi-value" style="color:{color};">{valor}</div>
+                </div>""",
+            unsafe_allow_html=True,
+        )
+
+    st.write("")
+
+    # -------------------- GRÁFICOS --------------------
+    g1, g2 = st.columns([1, 1.4])
+
+    with g1:
+        estados_presentes = [e for e in STATUS_ORDER if conteo.get(e, 0) > 0]
+        if estados_presentes:
+            fig_dona = go.Figure(
+                data=[
+                    go.Pie(
+                        labels=estados_presentes,
+                        values=[conteo[e] for e in estados_presentes],
+                        hole=0.6,
+                        marker=dict(colors=[STATUS_COLOR[e] for e in estados_presentes]),
+                        textinfo="value",
+                        hovertemplate="%{label}: %{value}<extra></extra>",
+                    )
+                ]
+            )
+            fig_dona.update_layout(
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=-0.25, font=dict(size=11)),
+                margin=dict(t=10, b=10, l=10, r=10),
+                height=280,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#e5e7eb"),
+            )
+            st.plotly_chart(fig_dona, use_container_width=True, config={"displayModeBar": False})
+
+    with g2:
+        por_pais = df["Pais_Origen"].replace("", "Sin especificar").value_counts().sort_values()
+        if not por_pais.empty:
+            fig_barras = go.Figure(
+                data=[
+                    go.Bar(
+                        x=por_pais.values,
+                        y=por_pais.index,
+                        orientation="h",
+                        marker=dict(color="#3b82f6"),
+                        text=por_pais.values,
+                        textposition="outside",
+                    )
+                ]
+            )
+            fig_barras.update_layout(
+                margin=dict(t=10, b=10, l=10, r=20),
+                height=280,
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#e5e7eb"),
+                xaxis=dict(showgrid=False, title="Embarques por país de origen"),
+                yaxis=dict(showgrid=False),
+            )
+            st.plotly_chart(fig_barras, use_container_width=True, config={"displayModeBar": False})
 
     st.divider()
 
+    # -------------------- FILTROS --------------------
     paises = ["Todos"] + sorted([p for p in df["Pais_Origen"].unique() if p])
-    estados_filtro = ["Todos", "En tránsito", "Próximo a llegar", "Retrasado", "Llegado", "Sin fecha válida"]
+    estados_filtro = ["Todos"] + STATUS_ORDER
     c1, c2 = st.columns(2)
     pais_sel = c1.selectbox("Filtrar por país de origen", paises)
     estado_sel = c2.selectbox("Filtrar por estado", estados_filtro)
@@ -162,16 +298,29 @@ def mostrar_dashboard(df: pd.DataFrame):
 
     filtrado = filtrado.sort_values("ETA")
 
+    # -------------------- LISTA DE EMBARQUES --------------------
     for _, r in filtrado.iterrows():
-        with st.container(border=True):
-            top = st.columns([3, 2])
-            top[0].markdown(f"**BL: {r['BL']}**  \n{r['Descripcion']}")
-            top[1].markdown(f"{r['EstadoIcono']} **{r['EstadoTexto']}**")
-            bot = st.columns(4)
-            bot[0].markdown(f"**Modelo/Serie**  \n{r['Modelo_Serie']}")
-            bot[1].markdown(f"**Cantidad**  \n{r['Cantidad']}")
-            bot[2].markdown(f"**País origen**  \n{r['Pais_Origen']}")
-            bot[3].markdown(f"**ETA**  \n{r['ETA']}")
+        color = STATUS_COLOR.get(r["EstadoTexto"], "#6b7280")
+        st.markdown(
+            f"""
+            <div class="ship-card" style="border-left-color:{color};">
+                <div class="ship-top">
+                    <div>
+                        <div class="ship-bl">BL: {r['BL']}</div>
+                        <div class="ship-desc">{r['Descripcion']}</div>
+                    </div>
+                    <span class="status-badge" style="background:{color};">{r['EstadoIcono']} {r['EstadoTexto']}</span>
+                </div>
+                <div class="ship-grid">
+                    <div><div class="ship-field-label">Modelo/Serie</div><div class="ship-field-value">{r['Modelo_Serie'] or '—'}</div></div>
+                    <div><div class="ship-field-label">Cantidad</div><div class="ship-field-value">{r['Cantidad'] or '—'}</div></div>
+                    <div><div class="ship-field-label">País origen</div><div class="ship-field-value">{r['Pais_Origen'] or '—'}</div></div>
+                    <div><div class="ship-field-label">ETA</div><div class="ship-field-value">{r['ETA'] or '—'}</div></div>
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 # ---------------------------------------------------------------------------

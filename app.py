@@ -108,11 +108,23 @@ def load_data() -> pd.DataFrame:
     return df
 
 
+def _headers(sheet):
+    return sheet.row_values(1)
+
+
+def _fila_desde_dict(sheet, row: dict):
+    """Arma la fila a escribir respetando el orden REAL de columnas del Sheet,
+    no el orden asumido en el código (evita escribir en la columna equivocada
+    si el usuario agregó columnas en otro orden)."""
+    headers = _headers(sheet)
+    return [row.get(h, "") for h in headers]
+
+
 def append_row(row: dict):
     sheet = get_sheet()
     row["Fecha_Actualizacion"] = date.today().isoformat()
     row.setdefault("Recibido", "")
-    ordered = [row.get(c, "") for c in ALL_COLUMNS]
+    ordered = _fila_desde_dict(sheet, row)
     sheet.append_row(ordered, value_input_option="RAW")
 
 
@@ -124,15 +136,19 @@ def append_rows_bulk(df: pd.DataFrame):
         row = {c: r.get(c, "") for c in REQUIRED_COLUMNS}
         row["Recibido"] = ""
         row["Fecha_Actualizacion"] = hoy
-        rows.append([row.get(c, "") for c in ALL_COLUMNS])
+        rows.append(_fila_desde_dict(sheet, row))
     sheet.append_rows(rows, value_input_option="RAW")
 
 
 def _fila_por_bl(bl: str):
     """Devuelve el número de fila (1-indexado, con encabezado) del BL dado, o None si no existe."""
     sheet = get_sheet()
+    headers = _headers(sheet)
+    if "BL" not in headers:
+        return None
+    col_bl = headers.index("BL") + 1
     try:
-        cell = sheet.find(str(bl).strip(), in_column=1)
+        cell = sheet.find(str(bl).strip(), in_column=col_bl)
     except gspread.exceptions.CellNotFound:
         return None
     return cell.row
@@ -152,8 +168,11 @@ def marcar_como_recibido(bl: str) -> bool:
     fila = _fila_por_bl(bl)
     if fila is None:
         return False
-    col_recibido = ALL_COLUMNS.index("Recibido") + 1
-    col_fecha = ALL_COLUMNS.index("Fecha_Actualizacion") + 1
+    headers = _headers(sheet)
+    if "Recibido" not in headers or "Fecha_Actualizacion" not in headers:
+        return False
+    col_recibido = headers.index("Recibido") + 1
+    col_fecha = headers.index("Fecha_Actualizacion") + 1
     sheet.update_cell(fila, col_recibido, "Si")
     sheet.update_cell(fila, col_fecha, date.today().isoformat())
     return True
@@ -241,10 +260,10 @@ def mostrar_dashboard(df: pd.DataFrame):
                 df_categoria = df
             else:
                 df_categoria = df[df.get("Categoria", "") == nombre_tab]
-            _render_categoria(df_categoria, st.session_state.get("rol", "viewer"))
+            _render_categoria(df_categoria, st.session_state.get("rol", "viewer"), nombre_tab)
 
 
-def _render_categoria(df: pd.DataFrame, rol: str):
+def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
     if df.empty:
         st.info("No hay embarques en esta categoría.")
         return
@@ -265,14 +284,8 @@ def _render_categoria(df: pd.DataFrame, rol: str):
     cols = st.columns(len(kpis))
     for col, (label, valor, color, sub) in zip(cols, kpis):
         sub_html = f'<div class="kpi-sub">{sub}</div>' if sub else ""
-        col.markdown(
-            f"""<div class="kpi-card" style="background:{color};">
-                <div class="kpi-label">{label}</div>
-                <div class="kpi-value">{valor}</div>
-                {sub_html}
-                </div>""",
-            unsafe_allow_html=True,
-        )
+        html = f'<div class="kpi-card" style="background:{color};"><div class="kpi-label">{label}</div><div class="kpi-value">{valor}</div>{sub_html}</div>'
+        col.markdown(html, unsafe_allow_html=True)
 
     st.write("")
 
@@ -343,8 +356,8 @@ def _render_categoria(df: pd.DataFrame, rol: str):
         estados_filtro = ["Todos"] + [e for e in STATUS_ORDER if e != "Recibido"]
 
     c1, c2 = st.columns(2)
-    pais_sel = c1.selectbox("Filtrar por país de origen", paises, key=f"pais_{id(df)}")
-    estado_sel = c2.selectbox("Filtrar por estado", estados_filtro, key=f"estado_{id(df)}")
+    pais_sel = c1.selectbox("Filtrar por país de origen", paises, key=f"pais_{tab_key}")
+    estado_sel = c2.selectbox("Filtrar por estado", estados_filtro, key=f"estado_{tab_key}")
 
     filtrado = df.copy()
     if pais_sel != "Todos":
@@ -365,26 +378,20 @@ def _render_categoria(df: pd.DataFrame, rol: str):
         es_recibido = r["EstadoTexto"] == "Recibido"
         ultima_etiqueta = "Fecha recibido" if es_recibido else "ETA"
         ultimo_valor = r["Fecha_Actualizacion"] if es_recibido else r["ETA"]
-        st.markdown(
-            f"""
-            <div class="ship-card" style="border-left-color:{color};">
-                <div class="ship-top">
-                    <div>
-                        <div class="ship-bl">BL: {r['BL']}</div>
-                        <div class="ship-desc">{r['Descripcion']}</div>
-                    </div>
-                    <span class="status-badge" style="background:{color};">{r['EstadoIcono']} {r['EstadoTexto']}</span>
-                </div>
-                <div class="ship-grid">
-                    <div><div class="ship-field-label">Modelo/Serie</div><div class="ship-field-value">{r['Modelo_Serie'] or '—'}</div></div>
-                    <div><div class="ship-field-label">Cantidad</div><div class="ship-field-value">{r['Cantidad'] or '—'}</div></div>
-                    <div><div class="ship-field-label">País origen</div><div class="ship-field-value">{r['Pais_Origen'] or '—'}</div></div>
-                    <div><div class="ship-field-label">{ultima_etiqueta}</div><div class="ship-field-value">{ultimo_valor or '—'}</div></div>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+        html = (
+            f'<div class="ship-card" style="border-left-color:{color};">'
+            f'<div class="ship-top"><div>'
+            f'<div class="ship-bl">BL: {r["BL"]}</div>'
+            f'<div class="ship-desc">{r["Descripcion"]}</div>'
+            f'</div><span class="status-badge" style="background:{color};">{r["EstadoIcono"]} {r["EstadoTexto"]}</span>'
+            f'</div><div class="ship-grid">'
+            f'<div><div class="ship-field-label">Modelo/Serie</div><div class="ship-field-value">{r["Modelo_Serie"] or "—"}</div></div>'
+            f'<div><div class="ship-field-label">Cantidad</div><div class="ship-field-value">{r["Cantidad"] or "—"}</div></div>'
+            f'<div><div class="ship-field-label">País origen</div><div class="ship-field-value">{r["Pais_Origen"] or "—"}</div></div>'
+            f'<div><div class="ship-field-label">{ultima_etiqueta}</div><div class="ship-field-value">{ultimo_valor or "—"}</div></div>'
+            f'</div></div>'
         )
+        st.markdown(html, unsafe_allow_html=True)
 
         if rol == "admin":
             bl_actual = r["BL"]

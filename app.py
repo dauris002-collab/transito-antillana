@@ -469,7 +469,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 if cc1.button("Sí, eliminar", key=f"si_del_{tab_key}_{bl_actual}", type="primary"):
                     eliminar_embarque(bl_actual, categoria_actual)
                     st.session_state.pop(key_confirmar, None)
-                    st.cache_resource.clear()
                     st.rerun()
                 if cc2.button("Cancelar", key=f"cancel_del_{tab_key}_{bl_actual}"):
                     st.session_state.pop(key_confirmar, None)
@@ -479,12 +478,10 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 if r["EstadoTexto"] == "Recibido":
                     if ac1.button("↩ Quitar Recibido", key=f"quitar_recibido_{tab_key}_{bl_actual}"):
                         quitar_recibido(bl_actual, categoria_actual)
-                        st.cache_resource.clear()
                         st.rerun()
                 else:
                     if ac1.button("✅ Marcar como Recibido", key=f"recibido_{tab_key}_{bl_actual}"):
                         marcar_como_recibido(bl_actual, categoria_actual)
-                        st.cache_resource.clear()
                         st.rerun()
                 if ac2.button("🗑 Eliminar", key=f"eliminar_{tab_key}_{bl_actual}"):
                     st.session_state[key_confirmar] = True
@@ -530,7 +527,6 @@ def form_alta_manual():
                     }, categoria)
                     if ok:
                         st.success("Embarque guardado correctamente.")
-                        st.cache_resource.clear()
                         st.rerun()
                     else:
                         st.error(
@@ -611,7 +607,6 @@ def form_carga_masiva():
             ok = append_rows_bulk(nuevos_ok, categoria_destino)
             if ok:
                 st.success(f"{len(nuevos_ok)} embarque(s) cargado(s) correctamente en '{categoria_destino}'.")
-                st.cache_resource.clear()
                 st.rerun()
             else:
                 st.error(f"No existe la pestaña '{categoria_destino}' en el Google Sheet. Créala primero.")

@@ -16,8 +16,10 @@ st.set_page_config(
     layout="wide",
 )
 
-REQUIRED_COLUMNS = ["BL", "Descripcion", "Modelo_Serie", "Cantidad", "Pais_Origen", "ETA"]
+REQUIRED_COLUMNS = ["BL", "Descripcion", "Modelo_Serie", "Cantidad", "Pais_Origen", "ETA", "Categoria"]
 ALL_COLUMNS = REQUIRED_COLUMNS + ["Recibido", "Fecha_Actualizacion"]
+
+CATEGORIAS = ["Equipos", "Generadores", "Repuestos", "Aéreos", "Pedidos de Emergencia"]
 
 STATUS_COLOR = {
     "En tránsito": "#3b82f6",
@@ -199,6 +201,22 @@ def mostrar_dashboard(df: pd.DataFrame):
         st.info("Todavía no hay embarques cargados.")
         return
 
+    tabs_categorias = ["Todos"] + CATEGORIAS
+    tabs = st.tabs(tabs_categorias)
+    for nombre_tab, tab in zip(tabs_categorias, tabs):
+        with tab:
+            if nombre_tab == "Todos":
+                df_categoria = df
+            else:
+                df_categoria = df[df.get("Categoria", "") == nombre_tab]
+            _render_categoria(df_categoria)
+
+
+def _render_categoria(df: pd.DataFrame):
+    if df.empty:
+        st.info("No hay embarques en esta categoría.")
+        return
+
     estados = df.apply(lambda r: estado_embarque(r["ETA"], r.get("Recibido", "")), axis=1)
     df = df.copy()
     df["EstadoTexto"] = [e[0] for e in estados]
@@ -287,8 +305,8 @@ def mostrar_dashboard(df: pd.DataFrame):
     paises = ["Todos"] + sorted([p for p in df["Pais_Origen"].unique() if p])
     estados_filtro = ["Todos"] + STATUS_ORDER
     c1, c2 = st.columns(2)
-    pais_sel = c1.selectbox("Filtrar por país de origen", paises)
-    estado_sel = c2.selectbox("Filtrar por estado", estados_filtro)
+    pais_sel = c1.selectbox("Filtrar por país de origen", paises, key=f"pais_{id(df)}")
+    estado_sel = c2.selectbox("Filtrar por estado", estados_filtro, key=f"estado_{id(df)}")
 
     filtrado = df.copy()
     if pais_sel != "Todos":
@@ -338,23 +356,30 @@ def form_alta_manual():
         c5, c6 = st.columns(2)
         pais = c5.text_input("País de origen")
         eta = c6.date_input("Fecha estimada de llegada")
+        categoria = st.selectbox("Categoría", CATEGORIAS)
 
         enviado = st.form_submit_button("Guardar embarque", type="primary")
         if enviado:
             if not bl or not descripcion:
                 st.error("BL y Descripción son obligatorios.")
             else:
-                append_row({
-                    "BL": bl,
-                    "Descripcion": descripcion,
-                    "Modelo_Serie": modelo,
-                    "Cantidad": cantidad,
-                    "Pais_Origen": pais,
-                    "ETA": eta.isoformat(),
-                })
-                st.success("Embarque guardado correctamente.")
-                st.cache_resource.clear()
-                st.rerun()
+                existentes = load_data()
+                bls_existentes = set(existentes["BL"].astype(str).str.strip())
+                if bl.strip() in bls_existentes:
+                    st.error(f"Ya existe un embarque con el BL '{bl}'. Revisa el dashboard antes de guardarlo de nuevo.")
+                else:
+                    append_row({
+                        "BL": bl,
+                        "Descripcion": descripcion,
+                        "Modelo_Serie": modelo,
+                        "Cantidad": cantidad,
+                        "Pais_Origen": pais,
+                        "ETA": eta.isoformat(),
+                        "Categoria": categoria,
+                    })
+                    st.success("Embarque guardado correctamente.")
+                    st.cache_resource.clear()
+                    st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +390,9 @@ def form_carga_masiva():
     st.caption(
         "El archivo debe tener exactamente estas columnas: "
         + ", ".join(REQUIRED_COLUMNS)
-        + ". La fecha ETA puede venir en cualquier formato de fecha reconocible (la app la normaliza sola)."
+        + ". La fecha ETA puede venir en cualquier formato reconocible. "
+        + "La columna Categoria debe usar exactamente uno de estos valores: "
+        + ", ".join(CATEGORIAS) + "."
     )
 
     archivo = st.file_uploader("Sube el archivo .xlsx", type=["xlsx"])
@@ -405,12 +432,42 @@ def form_carga_masiva():
 
         nuevo["ETA"] = etas_normalizadas
 
-        st.write("Vista previa de lo que se va a cargar:")
-        st.dataframe(nuevo, use_container_width=True)
+        # Validar categoría
+        categorias_invalidas = [
+            (i + 2, val) for i, val in enumerate(nuevo["Categoria"])
+            if str(val).strip() not in CATEGORIAS
+        ]
+        if categorias_invalidas:
+            st.error(
+                "La columna Categoria debe usar exactamente uno de estos valores: "
+                + ", ".join(CATEGORIAS)
+                + ". Filas con valor inválido: "
+                + ", ".join(f"{fila} ('{val}')" for fila, val in categorias_invalidas)
+            )
+            return
 
-        if st.button(f"Confirmar carga de {len(nuevo)} embarque(s)", type="primary"):
-            append_rows_bulk(nuevo)
-            st.success(f"{len(nuevo)} embarque(s) cargado(s) correctamente.")
+        existentes = load_data()
+        bls_existentes = set(existentes["BL"].astype(str).str.strip())
+        es_duplicado = nuevo["BL"].astype(str).str.strip().isin(bls_existentes)
+        duplicados = nuevo[es_duplicado]
+        nuevos_ok = nuevo[~es_duplicado]
+
+        if not duplicados.empty:
+            st.warning(
+                "Estos BL ya existen en el sistema y NO se van a cargar de nuevo (para evitar duplicados): "
+                + ", ".join(duplicados["BL"].astype(str))
+            )
+
+        if nuevos_ok.empty:
+            st.info("No hay embarques nuevos que cargar — todos los BL de este archivo ya están en el sistema.")
+            return
+
+        st.write(f"Vista previa de los {len(nuevos_ok)} embarque(s) nuevo(s) que se van a cargar:")
+        st.dataframe(nuevos_ok, use_container_width=True)
+
+        if st.button(f"Confirmar carga de {len(nuevos_ok)} embarque(s)", type="primary"):
+            append_rows_bulk(nuevos_ok)
+            st.success(f"{len(nuevos_ok)} embarque(s) cargado(s) correctamente.")
             st.cache_resource.clear()
             st.rerun()
 

@@ -82,6 +82,36 @@ CUSTOM_CSS = """
 }
 .ship-field-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: #9CA3AF; }
 .ship-field-value { font-size: 0.92rem; font-weight: 600; color: #1F2937; }
+
+.tbl-wrap {
+    border: 1px solid #E5E7EB;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 1px 4px rgba(17, 24, 39, 0.06);
+}
+.tbl-header {
+    display: grid;
+    grid-template-columns: 1.4fr 1.6fr 0.8fr 1fr 0.9fr 1.1fr;
+    padding: 10px 18px;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: #9CA3AF;
+    background: #F9FAFB;
+    border-bottom: 1px solid #E5E7EB;
+}
+.tbl-row {
+    display: grid;
+    grid-template-columns: 1.4fr 1.6fr 0.8fr 1fr 0.9fr 1.1fr;
+    padding: 12px 18px;
+    font-size: 0.88rem;
+    align-items: center;
+    background: #ffffff;
+    border-bottom: 1px solid #F3F4F6;
+    border-left: 4px solid #6b7280;
+}
+.tbl-bl { font-weight: 700; color: #111827; }
+.tbl-desc { color: #6B7280; }
 </style>
 """
 
@@ -333,8 +363,8 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
 
     # -------------------- KPIs --------------------
     kpis = [
-        ("TOTAL EMBARQUES", len(df), COLOR_TOTAL, None),
-        ("PRÓXIMOS A LLEGAR (7 DÍAS)", proximos_n, STATUS_COLOR["Próximo a llegar"], None),
+        ("TOTAL EN TRÁNSITO", len(df), COLOR_TOTAL, None),
+        ("PRÓXIMOS 7 DÍAS", proximos_n, STATUS_COLOR["Próximo a llegar"], None),
     ]
     cols = st.columns(len(kpis))
     for col, (label, valor, color, sub) in zip(cols, kpis):
@@ -445,28 +475,37 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
     if rol == "admin" and estado_sel == "Recibido":
         st.caption("📜 Consultando histórico de embarques recibidos.")
 
-    # -------------------- LISTA DE EMBARQUES --------------------
-    for _, r in filtrado.iterrows():
-        color = STATUS_COLOR.get(r["EstadoTexto"], "#6b7280")
-        es_recibido = r["EstadoTexto"] == "Recibido"
-        ultima_etiqueta = "Fecha recibido" if es_recibido else "ETA"
-        ultimo_valor = r["Fecha_Actualizacion"] if es_recibido else r["ETA"]
-        html = (
-            f'<div class="ship-card" style="border-left-color:{color};">'
-            f'<div class="ship-top"><div>'
-            f'<div class="ship-bl">BL: {r["BL"]}</div>'
-            f'<div class="ship-desc">{r["Descripcion"]}</div>'
-            f'</div><span class="status-badge" style="background:{color};">{r["EstadoIcono"]} {r["EstadoTexto"]}</span>'
-            f'</div><div class="ship-grid">'
-            f'<div><div class="ship-field-label">Modelo/Serie</div><div class="ship-field-value">{r["Modelo_Serie"] or "—"}</div></div>'
-            f'<div><div class="ship-field-label">Cantidad</div><div class="ship-field-value">{r["Cantidad"] or "—"}</div></div>'
-            f'<div><div class="ship-field-label">País origen</div><div class="ship-field-value">{r["Pais_Origen"] or "—"}</div></div>'
-            f'<div><div class="ship-field-label">{ultima_etiqueta}</div><div class="ship-field-value">{ultimo_valor or "—"}</div></div>'
-            f'</div></div>'
+    # -------------------- LISTA DE EMBARQUES (TABLA COMPACTA) --------------------
+    if not filtrado.empty:
+        st.markdown(
+            '<div class="tbl-wrap"><div class="tbl-header">'
+            '<div>BL</div><div>Descripción</div><div>Cant.</div><div>País</div><div>Fecha</div><div>Estado</div>'
+            '</div>',
+            unsafe_allow_html=True,
         )
-        st.markdown(html, unsafe_allow_html=True)
+        for _, r in filtrado.iterrows():
+            color = STATUS_COLOR.get(r["EstadoTexto"], "#6b7280")
+            es_recibido = r["EstadoTexto"] == "Recibido"
+            ultimo_valor = r["Fecha_Actualizacion"] if es_recibido else r["ETA"]
+            fila_html = (
+                f'<div class="tbl-row" style="border-left-color:{color};">'
+                f'<div class="tbl-bl">{r["BL"]}</div>'
+                f'<div class="tbl-desc">{r["Descripcion"] or "—"}</div>'
+                f'<div>{r["Cantidad"] or "—"}</div>'
+                f'<div>{r["Pais_Origen"] or "—"}</div>'
+                f'<div>{ultimo_valor or "—"}</div>'
+                f'<div><span class="status-badge" style="background:{color};">{r["EstadoIcono"]} {r["EstadoTexto"]}</span></div>'
+                f'</div>'
+            )
+            st.markdown(fila_html, unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-        if rol == "admin":
+    st.write("")
+
+    # -------------------- ACCIONES DE ADMINISTRADOR --------------------
+    if rol == "admin" and not filtrado.empty:
+        st.caption("Acciones (selecciona el BL a modificar)")
+        for _, r in filtrado.iterrows():
             bl_actual = r["BL"]
             categoria_actual = r["Categoria"]
             key_confirmar = f"confirmar_del_{tab_key}_{bl_actual}"
@@ -483,7 +522,8 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                     st.session_state.pop(key_confirmar, None)
                     st.rerun()
             else:
-                ac1, ac2, _ = st.columns([1.4, 1, 2.6])
+                ac0, ac1, ac2, _ = st.columns([1.3, 1.4, 1, 2.3])
+                ac0.markdown(f"**{bl_actual}**")
                 if r["EstadoTexto"] == "Recibido":
                     if ac1.button("↩ Quitar Recibido", key=f"quitar_recibido_{tab_key}_{bl_actual}"):
                         quitar_recibido(bl_actual, categoria_actual)
@@ -497,8 +537,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 if ac2.button("🗑 Eliminar", key=f"eliminar_{tab_key}_{bl_actual}"):
                     st.session_state[key_confirmar] = True
                     st.rerun()
-
-        st.write("")
 
 
 # ---------------------------------------------------------------------------

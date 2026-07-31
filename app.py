@@ -17,9 +17,11 @@ st.set_page_config(
     layout="wide",
 )
 
-REQUIRED_COLUMNS = ["BL", "Descripcion", "Modelo_Serie", "Cantidad", "Pais_Origen", "ETA", "Categoria"]
+REQUIRED_COLUMNS = ["BL", "Descripcion", "Modelo_Serie", "Cantidad", "Pais_Origen", "ETA"]
 ALL_COLUMNS = REQUIRED_COLUMNS + ["Recibido", "Fecha_Actualizacion"]
 
+# Cada categoría es una PESTAÑA distinta dentro del mismo Google Sheet.
+# El nombre de la pestaña debe coincidir exactamente (tal cual, con tilde donde aplique).
 CATEGORIAS = ["Equipos", "Generadores", "Repuestos", "Aéreos", "Pedidos de Emergencia"]
 
 # Paleta alineada al reporte de Power BI: bloques de color sólido, planos, alto contraste.
@@ -85,28 +87,47 @@ BLOQUEO_SEGUNDOS = 15 * 60  # 15 minutos
 
 
 # ---------------------------------------------------------------------------
-# CONEXIÓN A GOOGLE SHEETS
+# CONEXIÓN A GOOGLE SHEETS (una pestaña por categoría)
 # ---------------------------------------------------------------------------
 @st.cache_resource
-def get_sheet():
+def get_spreadsheet():
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"], scopes=scopes
     )
     client = gspread.authorize(creds)
-    return client.open_by_key(st.secrets["SHEET_ID"]).sheet1
+    return client.open_by_key(st.secrets["SHEET_ID"])
+
+
+def get_worksheet(categoria: str):
+    """Devuelve la pestaña (hoja) correspondiente a esa categoría, o None si no existe todavía."""
+    ss = get_spreadsheet()
+    try:
+        return ss.worksheet(categoria)
+    except gspread.exceptions.WorksheetNotFound:
+        return None
 
 
 def load_data() -> pd.DataFrame:
-    sheet = get_sheet()
-    records = sheet.get_all_records()
-    df = pd.DataFrame(records)
-    if df.empty:
-        df = pd.DataFrame(columns=ALL_COLUMNS)
-    for col in ALL_COLUMNS:
-        if col not in df.columns:
-            df[col] = ""
-    return df
+    """Lee las 5 pestañas de categoría y las combina en una sola tabla,
+    agregando la columna Categoria según de qué pestaña vino cada fila."""
+    frames = []
+    for categoria in CATEGORIAS:
+        ws = get_worksheet(categoria)
+        if ws is None:
+            continue
+        records = ws.get_all_records()
+        df_cat = pd.DataFrame(records)
+        if df_cat.empty:
+            df_cat = pd.DataFrame(columns=ALL_COLUMNS)
+        for col in ALL_COLUMNS:
+            if col not in df_cat.columns:
+                df_cat[col] = ""
+        df_cat["Categoria"] = categoria
+        frames.append(df_cat)
+    if not frames:
+        return pd.DataFrame(columns=ALL_COLUMNS + ["Categoria"])
+    return pd.concat(frames, ignore_index=True)
 
 
 def _headers(sheet):
@@ -114,84 +135,93 @@ def _headers(sheet):
 
 
 def _fila_desde_dict(sheet, row: dict):
-    """Arma la fila a escribir respetando el orden REAL de columnas del Sheet,
+    """Arma la fila a escribir respetando el orden REAL de columnas de esa pestaña,
     no el orden asumido en el código (evita escribir en la columna equivocada
     si el usuario agregó columnas en otro orden)."""
     headers = _headers(sheet)
     return [row.get(h, "") for h in headers]
 
 
-def append_row(row: dict):
-    sheet = get_sheet()
+def append_row(row: dict, categoria: str) -> bool:
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return False
     row["Fecha_Actualizacion"] = date.today().isoformat()
     row.setdefault("Recibido", "")
-    ordered = _fila_desde_dict(sheet, row)
-    sheet.append_row(ordered, value_input_option="RAW")
+    ordered = _fila_desde_dict(ws, row)
+    ws.append_row(ordered, value_input_option="RAW")
+    return True
 
 
-def append_rows_bulk(df: pd.DataFrame):
-    sheet = get_sheet()
+def append_rows_bulk(df: pd.DataFrame, categoria: str) -> bool:
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return False
     hoy = date.today().isoformat()
     rows = []
     for _, r in df.iterrows():
         row = {c: r.get(c, "") for c in REQUIRED_COLUMNS}
         row["Recibido"] = ""
         row["Fecha_Actualizacion"] = hoy
-        rows.append(_fila_desde_dict(sheet, row))
-    sheet.append_rows(rows, value_input_option="RAW")
+        rows.append(_fila_desde_dict(ws, row))
+    ws.append_rows(rows, value_input_option="RAW")
+    return True
 
 
-def _fila_por_bl(bl: str):
-    """Devuelve el número de fila (1-indexado, con encabezado) del BL dado, o None si no existe."""
-    sheet = get_sheet()
-    headers = _headers(sheet)
+def _fila_por_bl(bl: str, categoria: str):
+    """Devuelve el número de fila (1-indexado, con encabezado) del BL dado
+    dentro de la pestaña de esa categoría, o None si no existe."""
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return None
+    headers = _headers(ws)
     if "BL" not in headers:
         return None
     col_bl = headers.index("BL") + 1
     try:
-        cell = sheet.find(str(bl).strip(), in_column=col_bl)
+        cell = ws.find(str(bl).strip(), in_column=col_bl)
     except gspread.exceptions.CellNotFound:
         return None
     return cell.row
 
 
-def eliminar_embarque(bl: str) -> bool:
-    sheet = get_sheet()
-    fila = _fila_por_bl(bl)
-    if fila is None:
+def eliminar_embarque(bl: str, categoria: str) -> bool:
+    ws = get_worksheet(categoria)
+    fila = _fila_por_bl(bl, categoria)
+    if ws is None or fila is None:
         return False
-    sheet.delete_rows(fila)
+    ws.delete_rows(fila)
     return True
 
 
-def marcar_como_recibido(bl: str) -> bool:
-    sheet = get_sheet()
-    fila = _fila_por_bl(bl)
-    if fila is None:
+def marcar_como_recibido(bl: str, categoria: str) -> bool:
+    ws = get_worksheet(categoria)
+    fila = _fila_por_bl(bl, categoria)
+    if ws is None or fila is None:
         return False
-    headers = _headers(sheet)
+    headers = _headers(ws)
     if "Recibido" not in headers or "Fecha_Actualizacion" not in headers:
         return False
     col_recibido = headers.index("Recibido") + 1
     col_fecha = headers.index("Fecha_Actualizacion") + 1
-    sheet.update_cell(fila, col_recibido, "Si")
-    sheet.update_cell(fila, col_fecha, date.today().isoformat())
+    ws.update_cell(fila, col_recibido, "Si")
+    ws.update_cell(fila, col_fecha, date.today().isoformat())
     return True
 
 
-def quitar_recibido(bl: str) -> bool:
-    sheet = get_sheet()
-    fila = _fila_por_bl(bl)
-    if fila is None:
+def quitar_recibido(bl: str, categoria: str) -> bool:
+    ws = get_worksheet(categoria)
+    fila = _fila_por_bl(bl, categoria)
+    if ws is None or fila is None:
         return False
-    headers = _headers(sheet)
+    headers = _headers(ws)
     if "Recibido" not in headers:
         return False
     col_recibido = headers.index("Recibido") + 1
-    sheet.update_cell(fila, col_recibido, "")
+    ws.update_cell(fila, col_recibido, "")
     if "Fecha_Actualizacion" in headers:
         col_fecha = headers.index("Fecha_Actualizacion") + 1
-        sheet.update_cell(fila, col_fecha, date.today().isoformat())
+        ws.update_cell(fila, col_fecha, date.today().isoformat())
     return True
 
 
@@ -271,22 +301,12 @@ def mostrar_dashboard(df: pd.DataFrame):
 
     tabs_categorias = ["Todos"] + CATEGORIAS
     tabs = st.tabs(tabs_categorias)
-    categoria_normalizada = df["Categoria"].astype(str).str.strip()
     for nombre_tab, tab in zip(tabs_categorias, tabs):
         with tab:
             if nombre_tab == "Todos":
                 df_categoria = df
-                if st.session_state.get("rol") == "admin":
-                    sin_categoria = df[categoria_normalizada.isin(["", "nan", "None"])]
-                    if not sin_categoria.empty:
-                        st.warning(
-                            "Estos BL no tienen categoría asignada en el Sheet (o el valor no coincide "
-                            "exactamente con Equipos / Generadores / Repuestos / Aéreos / Pedidos de Emergencia), "
-                            "por eso no aparecen en esas pestañas: "
-                            + ", ".join(sin_categoria["BL"].astype(str))
-                        )
             else:
-                df_categoria = df[categoria_normalizada == nombre_tab]
+                df_categoria = df[df["Categoria"] == nombre_tab]
             _render_categoria(df_categoria, st.session_state.get("rol", "viewer"), nombre_tab)
 
 
@@ -435,13 +455,14 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
 
         if rol == "admin":
             bl_actual = r["BL"]
+            categoria_actual = r["Categoria"]
             key_confirmar = f"confirmar_del_{bl_actual}"
 
             if st.session_state.get(key_confirmar):
                 st.warning(f"¿Eliminar definitivamente el embarque BL {bl_actual}? Esta acción no se puede deshacer.")
                 cc1, cc2, _ = st.columns([1, 1, 3])
                 if cc1.button("Sí, eliminar", key=f"si_del_{bl_actual}", type="primary"):
-                    eliminar_embarque(bl_actual)
+                    eliminar_embarque(bl_actual, categoria_actual)
                     st.session_state.pop(key_confirmar, None)
                     st.cache_resource.clear()
                     st.rerun()
@@ -452,12 +473,12 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 ac1, ac2, _ = st.columns([1.4, 1, 2.6])
                 if r["EstadoTexto"] == "Recibido":
                     if ac1.button("↩ Quitar Recibido", key=f"quitar_recibido_{bl_actual}"):
-                        quitar_recibido(bl_actual)
+                        quitar_recibido(bl_actual, categoria_actual)
                         st.cache_resource.clear()
                         st.rerun()
                 else:
                     if ac1.button("✅ Marcar como Recibido", key=f"recibido_{bl_actual}"):
-                        marcar_como_recibido(bl_actual)
+                        marcar_como_recibido(bl_actual, categoria_actual)
                         st.cache_resource.clear()
                         st.rerun()
                 if ac2.button("🗑 Eliminar", key=f"eliminar_{bl_actual}"):
@@ -494,18 +515,23 @@ def form_alta_manual():
                 if bl.strip() in bls_existentes:
                     st.error(f"Ya existe un embarque con el BL '{bl}'. Revisa el dashboard antes de guardarlo de nuevo.")
                 else:
-                    append_row({
+                    ok = append_row({
                         "BL": bl,
                         "Descripcion": descripcion,
                         "Modelo_Serie": modelo,
                         "Cantidad": cantidad,
                         "Pais_Origen": pais,
                         "ETA": eta.isoformat(),
-                        "Categoria": categoria,
-                    })
-                    st.success("Embarque guardado correctamente.")
-                    st.cache_resource.clear()
-                    st.rerun()
+                    }, categoria)
+                    if ok:
+                        st.success("Embarque guardado correctamente.")
+                        st.cache_resource.clear()
+                        st.rerun()
+                    else:
+                        st.error(
+                            f"No existe la pestaña '{categoria}' en el Google Sheet. "
+                            "Créala primero (ver instrucciones) y vuelve a intentar."
+                        )
 
 
 # ---------------------------------------------------------------------------
@@ -513,12 +539,11 @@ def form_alta_manual():
 # ---------------------------------------------------------------------------
 def form_carga_masiva():
     st.subheader("📤 Carga masiva desde Excel")
+    categoria_destino = st.selectbox("Categoría de destino (todo el archivo se carga en esta pestaña)", CATEGORIAS)
     st.caption(
         "El archivo debe tener exactamente estas columnas: "
         + ", ".join(REQUIRED_COLUMNS)
-        + ". La fecha ETA puede venir en cualquier formato reconocible. "
-        + "La columna Categoria debe usar exactamente uno de estos valores: "
-        + ", ".join(CATEGORIAS) + "."
+        + ". La fecha ETA puede venir en cualquier formato reconocible."
     )
 
     archivo = st.file_uploader("Sube el archivo .xlsx", type=["xlsx"])
@@ -558,20 +583,6 @@ def form_carga_masiva():
 
         nuevo["ETA"] = etas_normalizadas
 
-        # Validar categoría
-        categorias_invalidas = [
-            (i + 2, val) for i, val in enumerate(nuevo["Categoria"])
-            if str(val).strip() not in CATEGORIAS
-        ]
-        if categorias_invalidas:
-            st.error(
-                "La columna Categoria debe usar exactamente uno de estos valores: "
-                + ", ".join(CATEGORIAS)
-                + ". Filas con valor inválido: "
-                + ", ".join(f"{fila} ('{val}')" for fila, val in categorias_invalidas)
-            )
-            return
-
         existentes = load_data()
         bls_existentes = set(existentes["BL"].astype(str).str.strip())
         es_duplicado = nuevo["BL"].astype(str).str.strip().isin(bls_existentes)
@@ -588,14 +599,17 @@ def form_carga_masiva():
             st.info("No hay embarques nuevos que cargar — todos los BL de este archivo ya están en el sistema.")
             return
 
-        st.write(f"Vista previa de los {len(nuevos_ok)} embarque(s) nuevo(s) que se van a cargar:")
+        st.write(f"Vista previa de los {len(nuevos_ok)} embarque(s) nuevo(s) que se van a cargar en **{categoria_destino}**:")
         st.dataframe(nuevos_ok, use_container_width=True)
 
         if st.button(f"Confirmar carga de {len(nuevos_ok)} embarque(s)", type="primary"):
-            append_rows_bulk(nuevos_ok)
-            st.success(f"{len(nuevos_ok)} embarque(s) cargado(s) correctamente.")
-            st.cache_resource.clear()
-            st.rerun()
+            ok = append_rows_bulk(nuevos_ok, categoria_destino)
+            if ok:
+                st.success(f"{len(nuevos_ok)} embarque(s) cargado(s) correctamente en '{categoria_destino}'.")
+                st.cache_resource.clear()
+                st.rerun()
+            else:
+                st.error(f"No existe la pestaña '{categoria_destino}' en el Google Sheet. Créala primero.")
 
 
 # ---------------------------------------------------------------------------

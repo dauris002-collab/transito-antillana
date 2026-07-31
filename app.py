@@ -287,8 +287,15 @@ def estado_embarque(eta_str: str, recibido: str):
 # LOGIN CON PIN
 # ---------------------------------------------------------------------------
 def login_screen():
-    st.title("🚢 Antillana Comercial · Embarques en Tránsito")
-    st.caption("Acceso restringido. Ingresa tu PIN de 4 dígitos.")
+    st.markdown(
+        '<div style="text-align:center; margin-top:3rem;">'
+        '<div style="font-size:3rem;">🚢</div>'
+        '<div style="font-size:1.8rem; font-weight:800; margin-top:0.3rem;">Antillana Comercial · Cargas en Tránsito</div>'
+        '<div style="font-size:0.95rem; color:#6B7280; margin-top:0.4rem;">Acceso restringido. Ingresa tu PIN de 4 dígitos.</div>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    st.write("")
 
     if "intentos" not in st.session_state:
         st.session_state.intentos = 0
@@ -296,13 +303,19 @@ def login_screen():
         st.session_state.bloqueado_hasta = 0
 
     ahora = time.time()
+    _, col_centro, _ = st.columns([1, 1.2, 1])
+
     if ahora < st.session_state.bloqueado_hasta:
         restante = int(st.session_state.bloqueado_hasta - ahora)
-        st.error(f"Demasiados intentos fallidos. Intenta de nuevo en {restante // 60} min {restante % 60} seg.")
+        with col_centro:
+            st.error(f"Demasiados intentos fallidos. Intenta de nuevo en {restante // 60} min {restante % 60} seg.")
         return
 
-    pin = st.text_input("PIN", type="password", max_chars=4)
-    if st.button("Entrar", type="primary"):
+    with col_centro:
+        pin = st.text_input("PIN", type="password", max_chars=4, label_visibility="collapsed", placeholder="PIN")
+        entrar = st.button("Entrar", type="primary", use_container_width=True)
+
+    if entrar:
         if pin == st.secrets.get("ADMIN_PIN", ""):
             st.session_state.rol = "admin"
             st.session_state.intentos = 0
@@ -317,9 +330,11 @@ def login_screen():
             if restantes <= 0:
                 st.session_state.bloqueado_hasta = time.time() + BLOQUEO_SEGUNDOS
                 st.session_state.intentos = 0
-                st.error("PIN incorrecto. Acceso bloqueado por 15 minutos.")
+                with col_centro:
+                    st.error("PIN incorrecto. Acceso bloqueado por 15 minutos.")
             else:
-                st.error(f"PIN incorrecto. Te quedan {restantes} intento(s).")
+                with col_centro:
+                    st.error(f"PIN incorrecto. Te quedan {restantes} intento(s).")
 
 
 # ---------------------------------------------------------------------------

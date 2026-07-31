@@ -31,6 +31,7 @@ STATUS_COLOR = {
 }
 COLOR_TOTAL = "#17A2B8"  # teal, distintivo para el total general
 STATUS_ORDER = ["Próximo a llegar", "En tránsito", "Recibido", "Sin fecha válida"]
+PALETA_PAISES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 
 CUSTOM_CSS = """
 <style>
@@ -178,6 +179,22 @@ def marcar_como_recibido(bl: str) -> bool:
     return True
 
 
+def quitar_recibido(bl: str) -> bool:
+    sheet = get_sheet()
+    fila = _fila_por_bl(bl)
+    if fila is None:
+        return False
+    headers = _headers(sheet)
+    if "Recibido" not in headers:
+        return False
+    col_recibido = headers.index("Recibido") + 1
+    sheet.update_cell(fila, col_recibido, "")
+    if "Fecha_Actualizacion" in headers:
+        col_fecha = headers.index("Fecha_Actualizacion") + 1
+        sheet.update_cell(fila, col_fecha, date.today().isoformat())
+    return True
+
+
 # ---------------------------------------------------------------------------
 # LÓGICA DE ESTADO DEL EMBARQUE
 # ---------------------------------------------------------------------------
@@ -254,12 +271,22 @@ def mostrar_dashboard(df: pd.DataFrame):
 
     tabs_categorias = ["Todos"] + CATEGORIAS
     tabs = st.tabs(tabs_categorias)
+    categoria_normalizada = df["Categoria"].astype(str).str.strip()
     for nombre_tab, tab in zip(tabs_categorias, tabs):
         with tab:
             if nombre_tab == "Todos":
                 df_categoria = df
+                if st.session_state.get("rol") == "admin":
+                    sin_categoria = df[categoria_normalizada.isin(["", "nan", "None"])]
+                    if not sin_categoria.empty:
+                        st.warning(
+                            "Estos BL no tienen categoría asignada en el Sheet (o el valor no coincide "
+                            "exactamente con Equipos / Generadores / Repuestos / Aéreos / Pedidos de Emergencia), "
+                            "por eso no aparecen en esas pestañas: "
+                            + ", ".join(sin_categoria["BL"].astype(str))
+                        )
             else:
-                df_categoria = df[df.get("Categoria", "") == nombre_tab]
+                df_categoria = df[categoria_normalizada == nombre_tab]
             _render_categoria(df_categoria, st.session_state.get("rol", "viewer"), nombre_tab)
 
 
@@ -321,13 +348,14 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
     with g2:
         por_pais = df["Pais_Origen"].replace("", "Sin especificar").value_counts().sort_values()
         if not por_pais.empty:
+            colores_barras = [PALETA_PAISES[i % len(PALETA_PAISES)] for i in range(len(por_pais))]
             fig_barras = go.Figure(
                 data=[
                     go.Bar(
                         x=por_pais.values,
                         y=por_pais.index,
                         orientation="h",
-                        marker=dict(color=STATUS_COLOR["En tránsito"]),
+                        marker=dict(color=colores_barras),
                         text=por_pais.values,
                         textposition="outside",
                     )
@@ -339,10 +367,22 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#e5e7eb"),
-                xaxis=dict(showgrid=False, title="Embarques por país de origen"),
+                xaxis=dict(showgrid=False, title="Embarques por país de origen (clic para filtrar)"),
                 yaxis=dict(showgrid=False),
             )
-            st.plotly_chart(fig_barras, use_container_width=True, config={"displayModeBar": False})
+            seleccion = st.plotly_chart(
+                fig_barras,
+                use_container_width=True,
+                config={"displayModeBar": False},
+                on_select="rerun",
+                selection_mode="points",
+                key=f"bar_paises_{tab_key}",
+            )
+            puntos = (seleccion or {}).get("selection", {}).get("points", [])
+            if puntos:
+                pais_clic = puntos[0].get("y")
+                if pais_clic and pais_clic != "Sin especificar":
+                    st.session_state[f"pais_{tab_key}"] = pais_clic
 
     st.divider()
 
@@ -410,7 +450,12 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                     st.rerun()
             else:
                 ac1, ac2, _ = st.columns([1.4, 1, 2.6])
-                if r["EstadoTexto"] != "Recibido":
+                if r["EstadoTexto"] == "Recibido":
+                    if ac1.button("↩ Quitar Recibido", key=f"quitar_recibido_{bl_actual}"):
+                        quitar_recibido(bl_actual)
+                        st.cache_resource.clear()
+                        st.rerun()
+                else:
                     if ac1.button("✅ Marcar como Recibido", key=f"recibido_{bl_actual}"):
                         marcar_como_recibido(bl_actual)
                         st.cache_resource.clear()

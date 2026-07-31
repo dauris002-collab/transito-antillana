@@ -355,8 +355,8 @@ def mostrar_dashboard(df: pd.DataFrame):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     st.markdown(
         '<div style="text-align:center; margin:0.5rem 0 1.5rem 0;">'
-        '<div style="font-size:0.95rem; font-weight:700; letter-spacing:0.08em; '
-        'text-transform:uppercase; color:#6B7280; margin-bottom:0.2rem;">Logística e Importaciones 2026</div>'
+        '<div style="font-size:1.35rem; font-weight:800; letter-spacing:0.06em; '
+        'text-transform:uppercase; color:#2E86DE; margin-bottom:0.3rem;">Logística e Importaciones 2026</div>'
         '<h1 style="font-size:2.6rem; font-weight:800; margin:0; color:#111827;">'
         '🚢 Estatus de Cargas - Antillana Comercial</h1>'
         '</div>',

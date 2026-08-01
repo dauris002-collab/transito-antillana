@@ -1,4 +1,5 @@
 import time
+import functools
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -255,6 +256,20 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str) -> bool:
     return True
 
 
+def _con_manejo_apierror(func):
+    """Decorador para funciones que devuelven (exito: bool, mensaje: str): si en
+    cualquier punto de la función gspread lanza un APIError (cuota excedida,
+    permisos, etc.), lo convierte en un mensaje legible en vez de tumbar la
+    página con un traceback."""
+    @functools.wraps(func)
+    def envoltura(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            return False, f"Error de la API de Google Sheets ({e}). Espera unos segundos e intenta de nuevo."
+    return envoltura
+
+
 def _fila_por_bl_en(ws, bl: str):
     """Igual que _fila_por_bl pero recibiendo el worksheet directamente
     (reutilizable para pestañas que no son de categoría, como Recibido)."""
@@ -277,13 +292,16 @@ def _fila_por_bl(bl: str, categoria: str):
     return _fila_por_bl_en(get_worksheet(categoria), bl)
 
 
-def eliminar_embarque(bl: str, categoria: str) -> bool:
+@_con_manejo_apierror
+def eliminar_embarque(bl: str, categoria: str):
     ws = get_worksheet(categoria)
+    if ws is None:
+        return False, f"No se encontró la pestaña '{categoria}' en el Google Sheet."
     fila = _fila_por_bl(bl, categoria)
-    if ws is None or fila is None:
-        return False
+    if fila is None:
+        return False, f"No se encontró el BL '{bl}' en la pestaña '{categoria}'."
     ws.delete_rows(fila)
-    return True
+    return True, ""
 
 
 def _get_all_records_seguro(ws, nombre_pestaña: str) -> list:
@@ -438,6 +456,7 @@ def _asegurar_columna(ws, nombre: str):
     return headers + [nombre]
 
 
+@_con_manejo_apierror
 def marcar_como_recibido(bl: str, categoria: str):
     """Devuelve (exito: bool, mensaje_error: str). El mensaje solo importa
     cuando exito es False — se muestra en pantalla en vez de fallar en silencio."""
@@ -503,6 +522,7 @@ def marcar_como_recibido(bl: str, categoria: str):
     return True, ""
 
 
+@_con_manejo_apierror
 def quitar_de_recibido(bl: str, categoria_manual: str = None):
     """Reversa 'Marcar como Recibido': devuelve el embarque a su pestaña de
     categoría original y lo borra de 'Recibido (Mes)'. Devuelve (exito, mensaje).
@@ -919,10 +939,13 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 st.warning(f"¿Eliminar definitivamente el embarque BL {bl_actual}? Esta acción no se puede deshacer.")
                 cc1, cc2, _ = st.columns([1, 1, 3])
                 if cc1.button("Sí, eliminar", key=f"si_del_{tab_key}_{bl_actual}", type="primary"):
-                    eliminar_embarque(bl_actual, categoria_actual)
+                    ok, mensaje = eliminar_embarque(bl_actual, categoria_actual)
                     st.session_state.pop(key_confirmar, None)
-                    load_data.clear()
-                    st.rerun()
+                    if ok:
+                        load_data.clear()
+                        st.rerun()
+                    else:
+                        st.error(mensaje)
                 if cc2.button("Cancelar", key=f"cancel_del_{tab_key}_{bl_actual}"):
                     st.session_state.pop(key_confirmar, None)
                     st.rerun()

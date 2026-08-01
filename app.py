@@ -1,5 +1,6 @@
 import time
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -7,6 +8,16 @@ import streamlit as st
 import gspread
 import gspread.exceptions
 from google.oauth2.service_account import Credentials
+
+ZONA_RD = ZoneInfo("America/Santo_Domingo")
+
+
+def hoy_rd() -> date:
+    """Fecha de HOY en hora de Santo Domingo (UTC-4), no la del servidor.
+    Streamlit Cloud corre en UTC — usar date.today() directo hace que, en las
+    últimas horas de cada día (y sobre todo el último día del mes), el
+    servidor ya 'crea' que es el día/mes siguiente aunque en RD no lo sea."""
+    return datetime.now(ZONA_RD).date()
 
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL
@@ -224,7 +235,7 @@ def append_row(row: dict, categoria: str) -> bool:
     ws = get_worksheet(categoria)
     if ws is None:
         return False
-    row["Fecha_Actualizacion"] = date.today().isoformat()
+    row["Fecha_Actualizacion"] = hoy_rd().isoformat()
     ordered = _fila_desde_dict(ws, row)
     ws.append_row(ordered, value_input_option="RAW")
     return True
@@ -234,7 +245,7 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str) -> bool:
     ws = get_worksheet(categoria)
     if ws is None:
         return False
-    hoy = date.today().isoformat()
+    hoy = hoy_rd().isoformat()
     rows = []
     for _, r in df.iterrows():
         row = {c: r.get(c, "") for c in REQUIRED_COLUMNS}
@@ -409,7 +420,7 @@ def contar_recibidas_mes_actual() -> int:
     ws = get_worksheet(RECIBIDO_SHEET)
     if ws is None:
         return 0
-    hoy = date.today()
+    hoy = hoy_rd()
     total = 0
     for registro in ws.get_all_records():
         fecha_str = str(registro.get("Fecha_Recibido", "")).strip()
@@ -442,7 +453,7 @@ def estado_embarque(eta_str: str):
     if eta is None:
         return "Sin fecha válida", "⚪", None
 
-    hoy = date.today()
+    hoy = hoy_rd()
     dias_restantes = (eta - hoy).days
 
     if dias_restantes < 0:
@@ -552,7 +563,7 @@ def mostrar_dashboard(df: pd.DataFrame):
         return
 
     recibidas_mes = contar_recibidas_mes_actual()
-    mes_actual_txt = date.today().strftime("%B %Y").capitalize()
+    mes_actual_txt = hoy_rd().strftime("%B %Y").capitalize()
     st.markdown(
         f'<div class="kpi-card" style="background:{COLOR_RECIBIDAS_MES}; max-width:340px; margin:0 auto 1.2rem auto;">'
         f'<div class="kpi-label">Recibidas este mes ({mes_actual_txt})</div>'
@@ -819,7 +830,7 @@ def form_alta_manual():
         cantidad = c4.number_input("Cantidad de equipos", min_value=1, step=1)
         c5, c6 = st.columns(2)
         pais = c5.text_input("País de origen")
-        eta = c6.date_input("Fecha estimada de llegada")
+        eta = c6.date_input("Fecha estimada de llegada", value=hoy_rd())
         categoria = st.selectbox("Categoría", CATEGORIAS)
 
         enviado = st.form_submit_button("Guardar embarque", type="primary")

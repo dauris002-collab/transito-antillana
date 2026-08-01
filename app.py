@@ -179,7 +179,7 @@ def get_worksheet(categoria: str):
     return None
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=45, show_spinner=False)
 def load_data() -> pd.DataFrame:
     """Lee las 5 pestañas de categoría y las combina en una sola tabla,
     agregando la columna Categoria según de qué pestaña vino cada fila.
@@ -281,7 +281,18 @@ def eliminar_embarque(bl: str, categoria: str) -> bool:
     return True
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+def _get_all_records_seguro(ws, nombre_pestaña: str) -> list:
+    """Envoltorio de ws.get_all_records() que absorbe errores de cuota/API de
+    Google (429, etc.) en vez de dejar que tumben toda la página. Devuelve una
+    lista vacía y muestra una advertencia si falla."""
+    try:
+        return ws.get_all_records()
+    except gspread.exceptions.APIError as e:
+        st.warning(f"⚠️ No se pudo leer '{nombre_pestaña}' en este momento ({e}). Intenta recargar en unos segundos.")
+        return []
+
+
+@st.cache_data(ttl=45, show_spinner=False)
 def cargar_historico_recibidos() -> pd.DataFrame:
     """Trae todo el histórico de la pestaña 'Recibido (por mes)', con la fecha
     ya interpretada como objeto date para poder agrupar por mes calendario."""
@@ -289,7 +300,7 @@ def cargar_historico_recibidos() -> pd.DataFrame:
     columnas = ["BL", "Descripcion", "Cantidad", "Fecha_Recibido"]
     if ws is None:
         return pd.DataFrame(columns=columnas)
-    registros = ws.get_all_records()
+    registros = _get_all_records_seguro(ws, RECIBIDO_SHEET)
     df = pd.DataFrame(registros)
     if df.empty:
         return pd.DataFrame(columns=columnas)
@@ -439,7 +450,7 @@ def marcar_como_recibido(bl: str, categoria: str):
     return True, ""
 
 
-@st.cache_data(ttl=20, show_spinner=False)
+@st.cache_data(ttl=45, show_spinner=False)
 def contar_recibidas_mes_actual() -> int:
     """Cuenta cuántos embarques se archivaron como recibidos en el mes calendario actual,
     leyendo la fecha de la columna 'Fecha_Recibido' de la pestaña 'Recibido (por mes)'."""
@@ -448,7 +459,7 @@ def contar_recibidas_mes_actual() -> int:
         return 0
     hoy = hoy_rd()
     total = 0
-    for registro in ws.get_all_records():
+    for registro in _get_all_records_seguro(ws, RECIBIDO_SHEET):
         fecha_str = str(registro.get("Fecha_Recibido", "")).strip()
         fecha = None
         for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):

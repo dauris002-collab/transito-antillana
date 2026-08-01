@@ -256,6 +256,70 @@ def eliminar_embarque(bl: str, categoria: str) -> bool:
     return True
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def cargar_historico_recibidos() -> pd.DataFrame:
+    """Trae todo el histórico de la pestaña 'Recibido (por mes)', con la fecha
+    ya interpretada como objeto date para poder agrupar por mes calendario."""
+    ws = get_worksheet(RECIBIDO_SHEET)
+    columnas = ["BL", "Descripcion", "Cantidad", "Fecha_Recibido"]
+    if ws is None:
+        return pd.DataFrame(columns=columnas)
+    registros = ws.get_all_records()
+    df = pd.DataFrame(registros)
+    if df.empty:
+        return pd.DataFrame(columns=columnas)
+    for c in columnas:
+        if c not in df.columns:
+            df[c] = ""
+
+    def _parsear(fecha_str):
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(str(fecha_str).strip().split(" ")[0], fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    df["FechaParsed"] = df["Fecha_Recibido"].apply(_parsear)
+    return df[df["FechaParsed"].notna()].reset_index(drop=True)
+
+
+MESES_ES = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
+}
+
+
+def mostrar_historico():
+    st.subheader("📜 Histórico de embarques recibidos")
+    df = cargar_historico_recibidos()
+    if df.empty:
+        st.info("Todavía no hay embarques archivados como recibidos.")
+        return
+
+    df["MesKey"] = df["FechaParsed"].apply(lambda d: (d.year, d.month))
+    meses_disponibles = sorted(df["MesKey"].unique(), reverse=True)
+    opciones = [f"{MESES_ES[m]} {y}" for (y, m) in meses_disponibles]
+    seleccion = st.selectbox("Mes", opciones, key="historico_mes")
+    y_sel, m_sel = meses_disponibles[opciones.index(seleccion)]
+
+    filtrado = df[df["MesKey"] == (y_sel, m_sel)].sort_values("FechaParsed")
+
+    st.markdown(
+        f'<div class="kpi-card" style="background:{COLOR_RECIBIDAS_MES}; max-width:280px;">'
+        f'<div class="kpi-label">Recibidas en {seleccion}</div>'
+        f'<div class="kpi-value">{len(filtrado)}</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+    st.write("")
+
+    tabla = filtrado[["BL", "Descripcion", "Cantidad", "Fecha_Recibido"]].rename(
+        columns={"Fecha_Recibido": "Fecha recibido"}
+    )
+    st.dataframe(tabla, use_container_width=True, hide_index=True)
+
+
 def marcar_como_recibido(bl: str, categoria: str) -> bool:
     """Archiva el embarque en la pestaña 'Recibido (por mes)' con la fecha de hoy
     y lo elimina de su pestaña de categoría de origen. Es un movimiento, no una
@@ -269,6 +333,18 @@ def marcar_como_recibido(bl: str, categoria: str) -> bool:
     valores_fila = ws_origen.row_values(fila)
     datos = dict(zip(headers_origen, valores_fila))
 
+    # "El mes que llegó" es la fecha de Llegada a Puerto (ETA) de ese embarque
+    # específico, no el día en que un admin presiona el botón (que puede ser
+    # días o semanas después de la llegada real).
+    fecha_llegada = None
+    eta_raw = str(datos.get(COL_ETA, "")).strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+        try:
+            fecha_llegada = datetime.strptime(eta_raw.split(" ")[0], fmt).date()
+            break
+        except ValueError:
+            continue
+
     ws_destino = get_worksheet(RECIBIDO_SHEET)
     if ws_destino is None:
         return False
@@ -277,7 +353,7 @@ def marcar_como_recibido(bl: str, categoria: str) -> bool:
         "BL": datos.get("BL", bl),
         "Descripcion": datos.get("Descripcion", ""),
         "Cantidad": datos.get("Cantidad", ""),
-        "Fecha_Recibido": date.today().isoformat(),
+        "Fecha_Recibido": (fecha_llegada or date.today()).isoformat(),
     }
     fila_destino = _fila_desde_dict(ws_destino, registro)
     ws_destino.append_row(fila_destino, value_input_option="RAW")
@@ -677,6 +753,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                     marcar_como_recibido(bl_actual, categoria_actual)
                     load_data.clear()
                     contar_recibidas_mes_actual.clear()
+                    cargar_historico_recibidos.clear()
                     st.rerun()
                 if ac2.button("🗑 Eliminar", key=f"eliminar_{tab_key}_{bl_actual}"):
                     st.session_state[key_confirmar] = True
@@ -824,15 +901,21 @@ def main():
     df = load_data()
 
     if st.session_state.rol == "admin":
-        tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "➕ Agregar embarque", "📤 Carga masiva"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "➕ Agregar embarque", "📤 Carga masiva", "📜 Histórico"])
         with tab1:
             mostrar_dashboard(df)
         with tab2:
             form_alta_manual()
         with tab3:
             form_carga_masiva()
+        with tab4:
+            mostrar_historico()
     else:
-        mostrar_dashboard(df)
+        tab1, tab2 = st.tabs(["📊 Dashboard", "📜 Histórico"])
+        with tab1:
+            mostrar_dashboard(df)
+        with tab2:
+            mostrar_historico()
 
 
 if __name__ == "__main__":

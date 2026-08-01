@@ -320,14 +320,27 @@ def mostrar_historico():
     st.dataframe(tabla, use_container_width=True, hide_index=True)
 
 
-def marcar_como_recibido(bl: str, categoria: str) -> bool:
-    """Archiva el embarque en la pestaña 'Recibido (por mes)' con la fecha de hoy
-    y lo elimina de su pestaña de categoría de origen. Es un movimiento, no una
-    bandera: una vez recibido, el embarque sale del pipeline activo."""
+def _asegurar_columna(ws, nombre: str):
+    """Si la pestaña no tiene una columna con ese encabezado exacto, la agrega
+    al final de la fila 1. Evita depender de que alguien la haya creado a mano
+    en el Sheet — la app se autorepara."""
+    headers = _headers(ws)
+    if nombre in headers:
+        return headers
+    ws.update_cell(1, len(headers) + 1, nombre)
+    return headers + [nombre]
+
+
+def marcar_como_recibido(bl: str, categoria: str):
+    """Devuelve (exito: bool, mensaje_error: str). El mensaje solo importa
+    cuando exito es False — se muestra en pantalla en vez de fallar en silencio."""
     ws_origen = get_worksheet(categoria)
+    if ws_origen is None:
+        return False, f"No se encontró la pestaña '{categoria}' en el Google Sheet."
+
     fila = _fila_por_bl(bl, categoria)
-    if ws_origen is None or fila is None:
-        return False
+    if fila is None:
+        return False, f"No se encontró el BL '{bl}' en la pestaña '{categoria}' — puede que ya se haya movido o editado."
 
     headers_origen = _headers(ws_origen)
     valores_fila = ws_origen.row_values(fila)
@@ -347,7 +360,11 @@ def marcar_como_recibido(bl: str, categoria: str) -> bool:
 
     ws_destino = get_worksheet(RECIBIDO_SHEET)
     if ws_destino is None:
-        return False
+        return False, (
+            f"No se encontró la pestaña '{RECIBIDO_SHEET}' en el Google Sheet. "
+            "Verifica que el nombre sea exactamente ese (sin espacios extra ni mayúsculas distintas)."
+        )
+    _asegurar_columna(ws_destino, "Fecha_Recibido")
 
     registro = {
         "BL": datos.get("BL", bl),
@@ -359,7 +376,7 @@ def marcar_como_recibido(bl: str, categoria: str) -> bool:
     ws_destino.append_row(fila_destino, value_input_option="RAW")
 
     ws_origen.delete_rows(fila)
-    return True
+    return True, ""
 
 
 @st.cache_data(ttl=20, show_spinner=False)
@@ -746,15 +763,20 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 if cc2.button("Cancelar", key=f"cancel_del_{tab_key}_{bl_actual}"):
                     st.session_state.pop(key_confirmar, None)
                     st.rerun()
+            elif not str(bl_actual).strip():
+                st.caption(f"⚠️ \"{r['Descripcion'] or 'Sin descripción'}\" no tiene BL asignado todavía — asígnale un BL en el Sheet para poder gestionarlo desde aquí.")
             else:
                 ac0, ac1, ac2, _ = st.columns([1.3, 1.4, 1, 2.3])
                 ac0.markdown(f"**{bl_actual}**")
                 if ac1.button("✅ Marcar como Recibido", key=f"recibido_{tab_key}_{bl_actual}"):
-                    marcar_como_recibido(bl_actual, categoria_actual)
-                    load_data.clear()
-                    contar_recibidas_mes_actual.clear()
-                    cargar_historico_recibidos.clear()
-                    st.rerun()
+                    ok, mensaje = marcar_como_recibido(bl_actual, categoria_actual)
+                    if ok:
+                        load_data.clear()
+                        contar_recibidas_mes_actual.clear()
+                        cargar_historico_recibidos.clear()
+                        st.rerun()
+                    else:
+                        st.error(mensaje)
                 if ac2.button("🗑 Eliminar", key=f"eliminar_{tab_key}_{bl_actual}"):
                     st.session_state[key_confirmar] = True
                     st.rerun()

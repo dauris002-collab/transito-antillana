@@ -171,13 +171,19 @@ def get_worksheet(categoria: str):
 @st.cache_data(ttl=20, show_spinner=False)
 def load_data() -> pd.DataFrame:
     """Lee las 5 pestañas de categoría y las combina en una sola tabla,
-    agregando la columna Categoria según de qué pestaña vino cada fila."""
+    agregando la columna Categoria según de qué pestaña vino cada fila.
+    Si una pestaña falla al leer (error de la API de Google), se salta esa
+    pestaña con una advertencia en vez de tumbar todo el dashboard."""
     frames = []
     for categoria in CATEGORIAS:
         ws = get_worksheet(categoria)
         if ws is None:
             continue
-        records = ws.get_all_records()
+        try:
+            records = ws.get_all_records()
+        except gspread.exceptions.APIError as e:
+            st.warning(f"⚠️ No se pudo leer la pestaña '{categoria}' en este momento ({e}). Se omitió temporalmente.")
+            continue
         df_cat = pd.DataFrame(records)
         if df_cat.empty:
             df_cat = pd.DataFrame(columns=ALL_COLUMNS)

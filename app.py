@@ -366,6 +366,13 @@ def marcar_como_recibido(bl: str, categoria: str):
         except ValueError:
             continue
 
+    if fecha_llegada is None:
+        return False, (
+            f"El BL '{bl}' no tiene una fecha de Llegada a Puerto (ETA) válida "
+            f"('{eta_raw or 'vacía'}'), así que no se puede archivar en el histórico mensual "
+            "sin saber a qué mes pertenece. Corrige la fecha en el Sheet y vuelve a intentar."
+        )
+
     ws_destino = get_worksheet(RECIBIDO_SHEET)
     if ws_destino is None:
         ss = get_spreadsheet()
@@ -380,7 +387,7 @@ def marcar_como_recibido(bl: str, categoria: str):
         "BL": datos.get("BL", bl),
         "Descripcion": datos.get("Descripcion", ""),
         "Cantidad": datos.get("Cantidad", ""),
-        "Fecha_Recibido": (fecha_llegada or date.today()).isoformat(),
+        "Fecha_Recibido": fecha_llegada.isoformat(),
     }
     fila_destino = _fila_desde_dict(ws_destino, registro)
     ws_destino.append_row(fila_destino, value_input_option="RAW")

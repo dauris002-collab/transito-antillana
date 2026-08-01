@@ -34,7 +34,7 @@ RECIBIDO_SHEET = "Recibido (por mes)"
 STATUS_COLOR = {
     "En tránsito": "#2E86DE",       # azul (igual al KPI "Total")
     "Próximo a llegar": "#5C6BC0",  # morado
-    "En Puerto": "#E8890C",         # naranja — llegó pero falta confirmar recibido
+    "En Puerto": "#F0B90B",         # amarillo — llegó pero falta confirmar recibido
     "Recibido": "#2E7D32",          # verde — solo para consulta histórica
     "Sin fecha válida": "#6b7280",
 }
@@ -177,16 +177,18 @@ def load_data() -> pd.DataFrame:
             if col not in df_cat.columns:
                 df_cat[col] = ""
         df_cat["Categoria"] = categoria
-        # Descarta filas sin BL: notas sueltas escritas en alguna celda de la
-        # pestaña, o filas en blanco que Google Sheets sigue devolviendo dentro
-        # del rango usado. Sin BL no es un embarque real, no debe contar.
+        # Descarta solo filas realmente vacías (ni BL ni Descripción): notas
+        # sueltas escritas en alguna celda, o filas en blanco que Google Sheets
+        # sigue devolviendo dentro del rango usado. Una fila con Descripción
+        # pero sin BL todavía cuenta como carga real (BL pendiente de asignar).
         df_cat["BL"] = df_cat["BL"].astype(str).str.strip()
-        df_cat = df_cat[df_cat["BL"] != ""]
+        df_cat["Descripcion"] = df_cat["Descripcion"].astype(str).str.strip()
+        df_cat = df_cat[(df_cat["BL"] != "") | (df_cat["Descripcion"] != "")]
         frames.append(df_cat)
     if not frames:
         return pd.DataFrame(columns=ALL_COLUMNS + ["Categoria"])
     resultado = pd.concat(frames, ignore_index=True)
-    # Filas con BL primero que cualquier otra cosa rara que se haya colado.
+    # Filas con BL primero que las que todavía no tienen BL asignado.
     return resultado.sort_values(
         by="BL", key=lambda s: s.eq(""), kind="stable"
     ).reset_index(drop=True)
@@ -329,7 +331,7 @@ def estado_embarque(eta_str: str):
 
     if dias_restantes < 0:
         return "En Puerto", "🟠", abs(dias_restantes)
-    elif dias_restantes <= 7:
+    elif dias_restantes <= 3:
         return "Próximo a llegar", "🟡", dias_restantes
     else:
         return "En tránsito", "🔵", None
@@ -470,17 +472,30 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
     proximos_n = conteo.get("Próximo a llegar", 0)
     en_puerto_n = conteo.get("En Puerto", 0)
 
-    # -------------------- KPIs --------------------
+    # -------------------- KPIs (clicables: filtran la tabla por ese estado) --------------------
     kpis = [
-        ("TOTAL EN TRÁNSITO", len(df), COLOR_TOTAL, None),
-        ("PRÓXIMOS 7 DÍAS", proximos_n, STATUS_COLOR["Próximo a llegar"], None),
-        ("EN PUERTO (SIN CONFIRMAR)", en_puerto_n, STATUS_COLOR["En Puerto"], None),
+        ("TOTAL EN TRÁNSITO", len(df), COLOR_TOTAL, "Todos", "total"),
+        ("PRÓXIMOS 3 DÍAS", proximos_n, STATUS_COLOR["Próximo a llegar"], "Próximo a llegar", "proximos"),
+        ("EN PUERTO (SIN CONFIRMAR)", en_puerto_n, STATUS_COLOR["En Puerto"], "En Puerto", "enpuerto"),
     ]
+    estilos_kpi = "".join(
+        f'.st-key-kpi_{tab_key}_{slug} button {{'
+        f'background:{color} !important; color:#fff !important; border:none !important; '
+        f'border-radius:10px !important; width:100% !important; height:74px !important; '
+        f'font-weight:800 !important; font-size:1rem !important; text-align:left !important; '
+        f'padding:0 16px !important; box-shadow:none !important;}} '
+        f'.st-key-kpi_{tab_key}_{slug} button:hover {{filter:brightness(0.92); color:#fff !important;}}'
+        for _, _, color, _, slug in kpis
+    )
+    st.markdown(f"<style>{estilos_kpi}</style>", unsafe_allow_html=True)
+
     cols = st.columns(len(kpis))
-    for col, (label, valor, color, sub) in zip(cols, kpis):
-        sub_html = f'<div class="kpi-sub">{sub}</div>' if sub else ""
-        html = f'<div class="kpi-card" style="background:{color};"><div class="kpi-label">{label}</div><div class="kpi-value">{valor}</div>{sub_html}</div>'
-        col.markdown(html, unsafe_allow_html=True)
+    for col, (label, valor, color, valor_filtro, slug) in zip(cols, kpis):
+        with col:
+            with st.container(key=f"kpi_{tab_key}_{slug}"):
+                if st.button(f"{label} — {valor}", key=f"btn_kpi_{tab_key}_{slug}", use_container_width=True):
+                    st.session_state[f"estado_{tab_key}"] = valor_filtro
+                    st.rerun(scope="fragment")
 
     st.write("")
 

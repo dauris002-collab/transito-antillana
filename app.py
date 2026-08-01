@@ -28,7 +28,7 @@ ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, "Fecha_Actualizacion"]
 # "En Puerto" y "Recibido (por mes)" NO son categorías de producto — son estados/histórico
 # que la app calcula y archiva automáticamente, no pestañas donde se cargan embarques nuevos.
 CATEGORIAS = ["Equipos", "Generadores", "Aéreos", "Carga Suelta", "Consolidados"]
-RECIBIDO_SHEET = "Recibido (por mes)"
+RECIBIDO_SHEET = "Recibido (Mes)"
 
 # Paleta alineada al reporte de Power BI: bloques de color sólido, planos, alto contraste.
 STATUS_COLOR = {

@@ -255,10 +255,9 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str) -> bool:
     return True
 
 
-def _fila_por_bl(bl: str, categoria: str):
-    """Devuelve el número de fila (1-indexado, con encabezado) del BL dado
-    dentro de la pestaña de esa categoría, o None si no existe."""
-    ws = get_worksheet(categoria)
+def _fila_por_bl_en(ws, bl: str):
+    """Igual que _fila_por_bl pero recibiendo el worksheet directamente
+    (reutilizable para pestañas que no son de categoría, como Recibido)."""
     if ws is None:
         return None
     headers = _headers(ws)
@@ -270,6 +269,12 @@ def _fila_por_bl(bl: str, categoria: str):
     except gspread.exceptions.CellNotFound:
         return None
     return cell.row
+
+
+def _fila_por_bl(bl: str, categoria: str):
+    """Devuelve el número de fila (1-indexado, con encabezado) del BL dado
+    dentro de la pestaña de esa categoría, o None si no existe."""
+    return _fila_por_bl_en(get_worksheet(categoria), bl)
 
 
 def eliminar_embarque(bl: str, categoria: str) -> bool:
@@ -326,7 +331,7 @@ MESES_ES = {
 }
 
 
-def mostrar_historico():
+def mostrar_historico(rol: str):
     st.subheader("📜 Histórico de embarques recibidos")
     df = cargar_historico_recibidos()
     if df.empty:
@@ -380,6 +385,35 @@ def mostrar_historico():
         columns={"Fecha_Recibido": "Fecha recibido"}
     )
     st.dataframe(tabla, use_container_width=True, hide_index=True)
+
+    if rol == "admin" and not filtrado.empty:
+        st.write("")
+        st.caption("Acciones — quitar un embarque de este archivo (lo devuelve a su pestaña de categoría)")
+        for _, r in filtrado.iterrows():
+            bl_actual = r["BL"]
+            key_confirmar = f"confirmar_quitar_{bl_actual}"
+            if st.session_state.get(key_confirmar):
+                st.warning(f"¿Quitar el BL {bl_actual} de Recibido y devolverlo a su categoría original?")
+                cc1, cc2, _ = st.columns([1, 1, 3])
+                if cc1.button("Sí, quitar", key=f"si_quitar_{bl_actual}", type="primary"):
+                    ok, mensaje = quitar_de_recibido(bl_actual)
+                    st.session_state.pop(key_confirmar, None)
+                    if ok:
+                        load_data.clear()
+                        contar_recibidas_mes_actual.clear()
+                        cargar_historico_recibidos.clear()
+                        st.rerun()
+                    else:
+                        st.error(mensaje)
+                if cc2.button("Cancelar", key=f"cancel_quitar_{bl_actual}"):
+                    st.session_state.pop(key_confirmar, None)
+                    st.rerun()
+            else:
+                ac0, ac1, _ = st.columns([1.3, 1.6, 3.1])
+                ac0.markdown(f"**{bl_actual}**")
+                if ac1.button("↩ Quitar de Recibido", key=f"quitar_{bl_actual}"):
+                    st.session_state[key_confirmar] = True
+                    st.rerun()
 
 
 def _asegurar_columna(ws, nombre: str):
@@ -436,17 +470,64 @@ def marcar_como_recibido(bl: str, categoria: str):
             f"Las pestañas que la app sí ve son: {nombres_reales}."
         )
     _asegurar_columna(ws_destino, "Fecha_Recibido")
+    _asegurar_columna(ws_destino, "Modelo_Serie")
+    _asegurar_columna(ws_destino, "Pais_Origen")
+    _asegurar_columna(ws_destino, COL_ETA)
+    _asegurar_columna(ws_destino, "Categoria_Origen")
 
     registro = {
         "BL": datos.get("BL", bl),
         "Descripcion": datos.get("Descripcion", ""),
         "Cantidad": datos.get("Cantidad", ""),
         "Fecha_Recibido": fecha_llegada.isoformat(),
+        "Modelo_Serie": datos.get("Modelo_Serie", ""),
+        "Pais_Origen": datos.get("Pais_Origen", ""),
+        COL_ETA: datos.get(COL_ETA, ""),
+        "Categoria_Origen": categoria,
     }
     fila_destino = _fila_desde_dict(ws_destino, registro)
     ws_destino.append_row(fila_destino, value_input_option="RAW")
 
     ws_origen.delete_rows(fila)
+    return True, ""
+
+
+def quitar_de_recibido(bl: str):
+    """Reversa 'Marcar como Recibido': devuelve el embarque a su pestaña de
+    categoría original y lo borra de 'Recibido (Mes)'. Devuelve (exito, mensaje)."""
+    ws_recibido = get_worksheet(RECIBIDO_SHEET)
+    if ws_recibido is None:
+        return False, f"No se encontró la pestaña '{RECIBIDO_SHEET}' en el Google Sheet."
+
+    fila = _fila_por_bl_en(ws_recibido, bl)
+    if fila is None:
+        return False, f"No se encontró el BL '{bl}' en '{RECIBIDO_SHEET}' — puede que ya se haya movido."
+
+    headers = _headers(ws_recibido)
+    valores = ws_recibido.row_values(fila)
+    datos = dict(zip(headers, valores))
+
+    categoria = datos.get("Categoria_Origen", "").strip()
+    if categoria not in CATEGORIAS:
+        return False, (
+            f"El BL '{bl}' no tiene guardada una categoría de origen válida "
+            f"('{categoria or 'vacía'}'), así que no sé a qué pestaña devolverlo. "
+            "Este embarque se archivó antes de que existiera esta función — tendrás que "
+            "cargarlo manualmente en la categoría correcta."
+        )
+
+    ok = append_row({
+        "BL": datos.get("BL", bl),
+        "Descripcion": datos.get("Descripcion", ""),
+        "Modelo_Serie": datos.get("Modelo_Serie", ""),
+        "Cantidad": datos.get("Cantidad", ""),
+        "Pais_Origen": datos.get("Pais_Origen", ""),
+        COL_ETA: datos.get(COL_ETA, ""),
+    }, categoria)
+    if not ok:
+        return False, f"No se pudo escribir de vuelta en la pestaña '{categoria}'."
+
+    ws_recibido.delete_rows(fila)
     return True, ""
 
 
@@ -1002,13 +1083,13 @@ def main():
         with tab3:
             form_carga_masiva()
         with tab4:
-            mostrar_historico()
+            mostrar_historico("admin")
     else:
         tab1, tab2 = st.tabs(["📊 Dashboard", "📜 Histórico"])
         with tab1:
             mostrar_dashboard(df)
         with tab2:
-            mostrar_historico()
+            mostrar_historico("viewer")
 
 
 if __name__ == "__main__":

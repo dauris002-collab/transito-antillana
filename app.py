@@ -177,10 +177,19 @@ def load_data() -> pd.DataFrame:
             if col not in df_cat.columns:
                 df_cat[col] = ""
         df_cat["Categoria"] = categoria
+        # Descarta filas sin BL: notas sueltas escritas en alguna celda de la
+        # pestaña, o filas en blanco que Google Sheets sigue devolviendo dentro
+        # del rango usado. Sin BL no es un embarque real, no debe contar.
+        df_cat["BL"] = df_cat["BL"].astype(str).str.strip()
+        df_cat = df_cat[df_cat["BL"] != ""]
         frames.append(df_cat)
     if not frames:
         return pd.DataFrame(columns=ALL_COLUMNS + ["Categoria"])
-    return pd.concat(frames, ignore_index=True)
+    resultado = pd.concat(frames, ignore_index=True)
+    # Filas con BL primero que cualquier otra cosa rara que se haya colado.
+    return resultado.sort_values(
+        by="BL", key=lambda s: s.eq(""), kind="stable"
+    ).reset_index(drop=True)
 
 
 def _headers(sheet):
@@ -321,9 +330,24 @@ def estado_embarque(eta_str: str):
     if dias_restantes < 0:
         return "En Puerto", "🟠", abs(dias_restantes)
     elif dias_restantes <= 7:
-        return "Próximo a llegar", "🟡", None
+        return "Próximo a llegar", "🟡", dias_restantes
     else:
         return "En tránsito", "🔵", None
+
+
+def texto_badge_estado(fila) -> str:
+    """Arma el texto del badge de estado, incluyendo el contador de días
+    para 'Próximo a llegar' y 'En Puerto' (los dos estados con urgencia)."""
+    icono, estado, dias = fila["EstadoIcono"], fila["EstadoTexto"], fila["DiasEnPuerto"]
+    if estado == "En Puerto" and pd.notna(dias):
+        d = int(dias)
+        return f'{icono} En Puerto hace {d} día{"s" if d != 1 else ""}'
+    if estado == "Próximo a llegar" and pd.notna(dias):
+        d = int(dias)
+        if d == 0:
+            return f'{icono} Próximo a llegar (hoy)'
+        return f'{icono} Próximo a llegar en {d} día{"s" if d != 1 else ""}'
+    return f'{icono} {estado}'
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +454,7 @@ def mostrar_dashboard(df: pd.DataFrame):
             _render_categoria(df_categoria, st.session_state.get("rol", "viewer"), nombre_tab)
 
 
+@st.fragment
 def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
     if df.empty:
         st.info("No hay embarques en esta categoría.")
@@ -515,7 +540,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
                 font=dict(color="#374151"),
-                xaxis=dict(showgrid=False, title="Embarques por país de origen (clic para filtrar)"),
+                xaxis=dict(showgrid=False, showticklabels=False, title="Embarques por país de origen (clic para filtrar)"),
                 yaxis=dict(showgrid=False),
             )
             seleccion = st.plotly_chart(
@@ -571,10 +596,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
         )
         for _, r in filtrado.iterrows():
             color = STATUS_COLOR.get(r["EstadoTexto"], "#6b7280")
-            if r["EstadoTexto"] == "En Puerto" and pd.notna(r["DiasEnPuerto"]):
-                texto_badge = f'{r["EstadoIcono"]} En Puerto · {int(r["DiasEnPuerto"])} días'
-            else:
-                texto_badge = f'{r["EstadoIcono"]} {r["EstadoTexto"]}'
+            texto_badge = texto_badge_estado(r)
             tabla_html += (
                 f'<div class="tbl-row" style="border-left-color:{color};">'
                 f'<div class="tbl-bl">{r["BL"]}</div>'
@@ -593,10 +615,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
         cards_html = '<div class="ship-cards">'
         for _, r in filtrado.iterrows():
             color = STATUS_COLOR.get(r["EstadoTexto"], "#6b7280")
-            if r["EstadoTexto"] == "En Puerto" and pd.notna(r["DiasEnPuerto"]):
-                texto_badge = f'{r["EstadoIcono"]} En Puerto · {int(r["DiasEnPuerto"])} días'
-            else:
-                texto_badge = f'{r["EstadoIcono"]} {r["EstadoTexto"]}'
+            texto_badge = texto_badge_estado(r)
             cards_html += (
                 f'<div class="ship-card" style="border-left-color:{color};">'
                 f'<div class="ship-top">'

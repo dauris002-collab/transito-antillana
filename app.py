@@ -393,10 +393,21 @@ def mostrar_historico(rol: str):
             bl_actual = r["BL"]
             key_confirmar = f"confirmar_quitar_{bl_actual}"
             if st.session_state.get(key_confirmar):
-                st.warning(f"¿Quitar el BL {bl_actual} de Recibido y devolverlo a su categoría original?")
+                categoria_guardada = str(r.get("Categoria_Origen", "")).strip()
+                if categoria_guardada in CATEGORIAS:
+                    st.warning(f"¿Quitar el BL {bl_actual} de Recibido y devolverlo a '{categoria_guardada}'?")
+                    categoria_elegida = categoria_guardada
+                else:
+                    st.warning(
+                        f"El BL {bl_actual} se archivó antes de guardar su categoría de origen. "
+                        "Elige a qué pestaña devolverlo:"
+                    )
+                    categoria_elegida = st.selectbox(
+                        "Categoría de destino", CATEGORIAS, key=f"cat_manual_{bl_actual}"
+                    )
                 cc1, cc2, _ = st.columns([1, 1, 3])
                 if cc1.button("Sí, quitar", key=f"si_quitar_{bl_actual}", type="primary"):
-                    ok, mensaje = quitar_de_recibido(bl_actual)
+                    ok, mensaje = quitar_de_recibido(bl_actual, categoria_manual=categoria_elegida)
                     st.session_state.pop(key_confirmar, None)
                     if ok:
                         load_data.clear()
@@ -492,9 +503,11 @@ def marcar_como_recibido(bl: str, categoria: str):
     return True, ""
 
 
-def quitar_de_recibido(bl: str):
+def quitar_de_recibido(bl: str, categoria_manual: str = None):
     """Reversa 'Marcar como Recibido': devuelve el embarque a su pestaña de
-    categoría original y lo borra de 'Recibido (Mes)'. Devuelve (exito, mensaje)."""
+    categoría original y lo borra de 'Recibido (Mes)'. Devuelve (exito, mensaje).
+    Si el registro no tiene categoría de origen guardada (archivado antes de que
+    existiera ese dato), se puede pasar categoria_manual explícitamente."""
     ws_recibido = get_worksheet(RECIBIDO_SHEET)
     if ws_recibido is None:
         return False, f"No se encontró la pestaña '{RECIBIDO_SHEET}' en el Google Sheet."
@@ -507,13 +520,11 @@ def quitar_de_recibido(bl: str):
     valores = ws_recibido.row_values(fila)
     datos = dict(zip(headers, valores))
 
-    categoria = datos.get("Categoria_Origen", "").strip()
+    categoria = (categoria_manual or datos.get("Categoria_Origen", "")).strip()
     if categoria not in CATEGORIAS:
         return False, (
-            f"El BL '{bl}' no tiene guardada una categoría de origen válida "
-            f"('{categoria or 'vacía'}'), así que no sé a qué pestaña devolverlo. "
-            "Este embarque se archivó antes de que existiera esta función — tendrás que "
-            "cargarlo manualmente en la categoría correcta."
+            f"'{categoria or 'vacía'}' no es una categoría válida. Elige una categoría del "
+            "menú antes de confirmar."
         )
 
     ok = append_row({

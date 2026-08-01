@@ -152,12 +152,20 @@ def get_spreadsheet():
 
 
 def get_worksheet(categoria: str):
-    """Devuelve la pestaña (hoja) correspondiente a esa categoría, o None si no existe todavía."""
+    """Devuelve la pestaña (hoja) correspondiente a esa categoría, o None si no existe todavía.
+    Primero intenta el nombre exacto; si falla, busca tolerando espacios extra y
+    mayúsculas/minúsculas distintas, para no depender de que el nombre de la
+    pestaña en Google Sheets coincida carácter por carácter con el código."""
     ss = get_spreadsheet()
     try:
         return ss.worksheet(categoria)
     except gspread.exceptions.WorksheetNotFound:
-        return None
+        pass
+    objetivo = " ".join(categoria.split()).strip().casefold()
+    for hoja in ss.worksheets():
+        if " ".join(hoja.title.split()).strip().casefold() == objetivo:
+            return hoja
+    return None
 
 
 @st.cache_data(ttl=20, show_spinner=False)
@@ -360,9 +368,11 @@ def marcar_como_recibido(bl: str, categoria: str):
 
     ws_destino = get_worksheet(RECIBIDO_SHEET)
     if ws_destino is None:
+        ss = get_spreadsheet()
+        nombres_reales = ", ".join(f"'{h.title}'" for h in ss.worksheets())
         return False, (
             f"No se encontró la pestaña '{RECIBIDO_SHEET}' en el Google Sheet. "
-            "Verifica que el nombre sea exactamente ese (sin espacios extra ni mayúsculas distintas)."
+            f"Las pestañas que la app sí ve son: {nombres_reales}."
         )
     _asegurar_columna(ws_destino, "Fecha_Recibido")
 

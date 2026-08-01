@@ -323,9 +323,35 @@ def mostrar_historico():
         return
 
     df["MesKey"] = df["FechaParsed"].apply(lambda d: (d.year, d.month))
+
+    # -------------------- Comparación: mes que termina vs. mes en curso --------------------
+    hoy = hoy_rd()
+    mes_actual_key = (hoy.year, hoy.month)
+    mes_anterior_key = (hoy.year - 1, 12) if hoy.month == 1 else (hoy.year, hoy.month - 1)
+
+    n_actual = int((df["MesKey"] == mes_actual_key).sum())
+    n_anterior = int((df["MesKey"] == mes_anterior_key).sum())
+
+    c1, c2 = st.columns(2)
+    c1.markdown(
+        f'<div class="kpi-card" style="background:#6B7280;">'
+        f'<div class="kpi-label">{MESES_ES[mes_anterior_key[1]]} {mes_anterior_key[0]} (mes anterior)</div>'
+        f'<div class="kpi-value">{n_anterior}</div></div>',
+        unsafe_allow_html=True,
+    )
+    c2.markdown(
+        f'<div class="kpi-card" style="background:{COLOR_RECIBIDAS_MES};">'
+        f'<div class="kpi-label">{MESES_ES[mes_actual_key[1]]} {mes_actual_key[0]} (mes en curso)</div>'
+        f'<div class="kpi-value">{n_actual}</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.write("")
+    st.divider()
+
+    # -------------------- Consulta libre por cualquier mes --------------------
     meses_disponibles = sorted(df["MesKey"].unique(), reverse=True)
     opciones = [f"{MESES_ES[m]} {y}" for (y, m) in meses_disponibles]
-    seleccion = st.selectbox("Mes", opciones, key="historico_mes")
+    seleccion = st.selectbox("Consultar otro mes", opciones, key="historico_mes")
     y_sel, m_sel = meses_disponibles[opciones.index(seleccion)]
 
     filtrado = df[df["MesKey"] == (y_sel, m_sel)].sort_values("FechaParsed")

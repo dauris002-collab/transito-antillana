@@ -211,7 +211,45 @@ CUSTOM_CSS = """
 .ficha-v { color:#1F2937; font-weight:600; word-break:break-word; }
 @media (max-width: 640px) { .ficha-fila { grid-template-columns:1fr; gap:2px; } }
 
-.ant-logo { max-height:54px; margin-bottom:0.4rem; }
+.ant-logo { max-height:58px; margin-bottom:0.5rem; }
+
+/* ---------- Selector de sección / categoría ----------
+   Streamlit pinta el segmento activo con su color primario, que por defecto es
+   rojo y con texto rojo sobre blanco casi no se lee. Se fuerza aquí en el CSS y
+   no solo en config.toml para que el aspecto no dependa de que ese archivo esté
+   bien puesto en el repo. */
+div[data-testid="stButtonGroup"] button {
+    border-radius:8px !important;
+    border:1px solid var(--ant-borde) !important;
+    color:#4B5563 !important;
+    font-weight:600 !important;
+}
+div[data-testid="stButtonGroup"] button:hover { background:#F3F7FC !important; color:#0C447C !important; }
+div[data-testid="stButtonGroup"] button[aria-checked="true"],
+div[data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"],
+div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"],
+div[data-testid="stButtonGroup"] button[aria-selected="true"] {
+    background:#DCEBFA !important;
+    color:#0C447C !important;
+    border:1px solid #2E86DE !important;
+    box-shadow:none !important;
+}
+div[data-testid="stButtonGroup"] button[aria-checked="true"] p,
+div[data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"] p,
+div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"] p { color:#0C447C !important; }
+
+/* Botones primarios (Entrar, Guardar, Confirmar): azul del tablero, no el rojo
+   por defecto. Los KPI tienen su propia regla y no se ven afectados. */
+button[kind="primary"], button[data-testid="stBaseButton-primary"],
+button[data-testid="stBaseButton-primaryFormSubmit"] {
+    background:#2E86DE !important;
+    border-color:#2E86DE !important;
+    color:#ffffff !important;
+}
+button[kind="primary"]:hover, button[data-testid="stBaseButton-primary"]:hover,
+button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
+    background:#256FB8 !important; border-color:#256FB8 !important; color:#fff !important;
+}
 
 /* Impresión: una hoja limpia para llevar a reunión. Se van los gráficos, los
    botones, la barra lateral y los filtros; queda el encabezado y la lista. */
@@ -622,6 +660,38 @@ def _df_desde_valores(valores: list, columnas_canonicas: list) -> pd.DataFrame:
 
 
 NO_ESPECIFICADO = "Sin especificar"
+# Equivalencias de país. Solo las que son inequívocamente el mismo lugar escrito
+# de otra forma o en otro idioma; nada de agrupaciones regionales, que ya serían
+# criterio de negocio. El nombre a la derecha es el que se muestra.
+_ALIAS_PAISES_CRUDO = {
+    "Estados Unidos": ["usa", "us", "u.s.a", "u.s.a.", "u.s.", "eeuu", "ee.uu", "ee.uu.", "eu",
+                       "united states", "united states of america", "estados unidos de america",
+                       "usa.", "america"],
+    "China": ["china", "prc", "p.r. china", "republica popular china", "cn", "china."],
+    "Corea del Sur": ["corea", "korea", "south korea", "corea del sur", "republica de corea", "kr"],
+    "India": ["india", "in"],
+    "Japón": ["japon", "japan", "jp"],
+    "Alemania": ["alemania", "germany", "de"],
+    "Brasil": ["brasil", "brazil", "br"],
+    "España": ["espana", "spain", "es"],
+    "Italia": ["italia", "italy", "it"],
+    "Turquía": ["turquia", "turkey", "turkiye", "tr"],
+    "México": ["mexico", "mx"],
+    "Colombia": ["colombia", "co"],
+    "Países Bajos": ["paises bajos", "holanda", "netherlands", "holland", "nl"],
+    "Reino Unido": ["reino unido", "united kingdom", "uk", "inglaterra", "england", "gb"],
+    "Canadá": ["canada", "ca"],
+    "Taiwán": ["taiwan", "taiwan roc", "tw"],
+    "Vietnam": ["vietnam", "viet nam", "vn"],
+    "Tailandia": ["tailandia", "thailand", "th"],
+    "Panamá": ["panama", "pa"],
+    "Francia": ["francia", "france", "fr"],
+}
+ALIAS_PAISES = {}
+for _canon, _formas in _ALIAS_PAISES_CRUDO.items():
+    ALIAS_PAISES[_norm(_canon)] = _canon
+    for _f in _formas:
+        ALIAS_PAISES[_norm(_f)] = _canon
 _VACIOS_PAIS = {"", "n/a", "na", "n.a.", "-", "--", "s/d", "nd", "no aplica", "pendiente", "?"}
 
 
@@ -635,15 +705,21 @@ def unificar_paises(serie: pd.Series) -> pd.Series:
     grupos = {}
     for v in valores:
         clave = _norm(v)
-        if clave in _VACIOS_PAIS:
+        if clave in _VACIOS_PAIS or clave in ALIAS_PAISES:
             continue
         grupos.setdefault(clave, {})
         grupos[clave][v] = grupos[clave].get(v, 0) + 1
+    # Para lo que no está en la tabla de equivalencias, se usa la grafía más
+    # frecuente del propio Sheet en lugar de imponer un formato.
     canonico = {c: max(op.items(), key=lambda kv: (kv[1], -len(kv[0])))[0] for c, op in grupos.items()}
-    return pd.Series(
-        [canonico.get(_norm(v), NO_ESPECIFICADO) for v in valores],
-        index=serie.index,
-    )
+
+    def resolver(v):
+        clave = _norm(v)
+        if clave in _VACIOS_PAIS:
+            return NO_ESPECIFICADO
+        return ALIAS_PAISES.get(clave) or canonico.get(clave, NO_ESPECIFICADO)
+
+    return pd.Series([resolver(v) for v in valores], index=serie.index)
 
 
 def columnas_extra(df: pd.DataFrame) -> list:

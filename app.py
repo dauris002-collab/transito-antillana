@@ -33,6 +33,7 @@ import io
 import re
 import time
 import unicodedata
+from secrets import token_urlsafe
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -79,6 +80,9 @@ COLUMNAS_LOG = ["Fecha_Hora", "Usuario", "Accion", "BL", "Categoria", "Detalle"]
 
 UMBRAL_PROXIMO = 3          # días para considerar un embarque "Próximo a llegar"
 CACHE_TTL = 45              # segundos de caché de lectura
+LARGO_PIN = 4               # dígitos del PIN; si algún día usas PIN más largos, cámbialo aquí
+REFRESCOS_PERMITIDOS = 2    # veces que se puede recargar la página sin volver a teclear el PIN
+VIDA_SESION_MINUTOS = 30    # tope de tiempo de la sesión recordada, pase lo que pase
 MAX_INTENTOS_SESION = 5
 MAX_FALLOS_GLOBAL = 25      # freno global: el bloqueo por sesión se evade en incógnito
 VENTANA_FALLOS = 10 * 60
@@ -902,6 +906,72 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
 # ACCESO
 # ---------------------------------------------------------------------------
 @st.cache_resource
+def _sesiones_activas() -> dict:
+    """Sesiones vivas, compartidas entre todas las conexiones del servidor.
+    Streamlit pierde session_state en cada recarga del navegador (cada F5 abre
+    una sesión nueva), así que para no pedir el PIN otra vez hay que guardar una
+    referencia fuera de la sesión: un token que viaja en la URL y cuyo contenido
+    real vive aquí, del lado del servidor. En la URL solo va el identificador,
+    nunca el rol ni el PIN.
+    Se vacía cuando la app se reinicia o se redespliega: eso obliga a teclear el
+    PIN otra vez, que es el comportamiento correcto."""
+    return {}
+
+
+def _purgar_sesiones(ahora: float):
+    for token in [t for t, d in _sesiones_activas().items() if d["expira"] < ahora]:
+        _sesiones_activas().pop(token, None)
+
+
+def _abrir_sesion(rol: str, nombre: str):
+    """Crea el token de sesión y lo deja en la URL para sobrevivir a las recargas."""
+    ahora = time.time()
+    _purgar_sesiones(ahora)
+    token = token_urlsafe(18)
+    _sesiones_activas()[token] = {
+        "rol": rol,
+        "nombre": nombre,
+        "expira": ahora + VIDA_SESION_MINUTOS * 60,
+        "restantes": REFRESCOS_PERMITIDOS,
+    }
+    st.session_state.rol = rol
+    st.session_state.usuario = nombre
+    st.session_state.token = token
+    st.query_params["s"] = token
+
+
+def restaurar_sesion():
+    """Al abrir la página, intenta reanudar la sesión desde el token de la URL.
+    Cada recarga consume uno de los refrescos permitidos; agotados esos, o
+    vencido el tiempo, se vuelve a pedir el PIN."""
+    if "rol" in st.session_state:
+        return
+    token = st.query_params.get("s")
+    if not token:
+        return
+
+    ahora = time.time()
+    _purgar_sesiones(ahora)
+    datos = _sesiones_activas().get(token)
+    if not datos or datos["expira"] < ahora or datos["restantes"] <= 0:
+        _sesiones_activas().pop(token, None)
+        st.query_params.clear()
+        return
+
+    datos["restantes"] -= 1
+    st.session_state.rol = datos["rol"]
+    st.session_state.usuario = datos["nombre"]
+    st.session_state.token = token
+    st.session_state.refrescos_restantes = datos["restantes"]
+
+
+def cerrar_sesion():
+    _sesiones_activas().pop(st.session_state.get("token", ""), None)
+    st.session_state.clear()
+    st.query_params.clear()
+
+
+@st.cache_resource
 def _registro_fallos() -> dict:
     """Contador de fallos COMPARTIDO entre sesiones. El bloqueo por session_state
     se evade abriendo una pestaña de incógnito; este no."""
@@ -937,7 +1007,7 @@ def login_screen():
         '<div class="ant-head" style="margin-top:3rem;">'
         '<div style="font-size:2.6rem;">🚢</div>'
         '<div class="ant-title" style="font-size:1.7rem;">Antillana Comercial · Cargas en Tránsito</div>'
-        '<div class="ant-sub">Acceso restringido. Ingresa tu PIN.</div>'
+        '<div class="ant-sub">Acceso restringido.</div>'
         "</div>",
         unsafe_allow_html=True,
     )
@@ -963,9 +1033,9 @@ def login_screen():
         # "pulsado", así que había que hacer clic obligatoriamente. Dentro de un
         # formulario, Enter equivale a pulsar el submit.
         with st.form("form_login", clear_on_submit=True, border=False):
-            pin = st.text_input("PIN", type="password", max_chars=8,
+            pin = st.text_input("PIN", type="password", max_chars=LARGO_PIN,
                                 label_visibility="collapsed",
-                                placeholder="PIN — escribe y presiona Enter")
+                                placeholder=f"PIN {LARGO_PIN} dígitos")
             entrar = st.form_submit_button("Entrar", type="primary", width="stretch")
 
     if not entrar:
@@ -973,9 +1043,8 @@ def login_screen():
 
     rol, nombre = _resolver_pin(pin)
     if rol:
-        st.session_state.rol = rol
-        st.session_state.usuario = nombre
         st.session_state.intentos = 0
+        _abrir_sesion(rol, nombre)
         registrar_log("Inicio de sesión", detalle=f"rol={rol}")
         st.rerun()
         return
@@ -1926,6 +1995,8 @@ def herramientas(datos: dict):
 # MAIN
 # ---------------------------------------------------------------------------
 def main():
+    restaurar_sesion()
+
     if "rol" not in st.session_state:
         login_screen()
         return
@@ -1940,9 +2011,12 @@ def main():
             invalidar_caches()
             st.rerun()
         st.caption(f"Última lectura: {datos['hora'].strftime('%H:%M:%S')}")
+        restantes = st.session_state.get("refrescos_restantes")
+        if restantes is not None:
+            st.caption(f"Sesión recordada: quedan {restantes} recarga(s) sin PIN")
         st.write("")
         if st.button("Cerrar sesión", width="stretch"):
-            st.session_state.clear()
+            cerrar_sesion()
             st.rerun()
 
     if st.session_state.rol == "admin":

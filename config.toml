@@ -1,7 +1,23 @@
+# Va en .streamlit/config.toml, dentro del repo (mismo nivel que app.py).
+# Si ya tienes este archivo, fusiona las claves en vez de reemplazarlo entero.
+ 
 [theme]
 base = "light"
+# Azul corporativo del tablero. Sin esto, el botón "Entrar" y todos los botones
+# primarios salen en el rojo por defecto de Streamlit, que no pega con nada del
+# resto de la interfaz.
 primaryColor = "#2E86DE"
 backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F3F4F6"
-textColor = "#1F2937"
+secondaryBackgroundColor = "#F9FAFB"
+textColor = "#111827"
 font = "sans serif"
+ 
+[client]
+# Oculta la barra con "Fork" y el ícono de GitHub que aparece arriba a la derecha
+# por ser un repo público. Es cosmético: el repo sigue siendo público, pero el
+# presidente no ve un botón que invita a clonar la herramienta interna.
+toolbarMode = "minimal"
+showErrorDetails = false
+ 
+[browser]
+gatherUsageStats = false

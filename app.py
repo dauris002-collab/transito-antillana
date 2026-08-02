@@ -958,9 +958,15 @@ def login_screen():
         return
 
     with centro:
-        pin = st.text_input("PIN", type="password", max_chars=8,
-                            label_visibility="collapsed", placeholder="PIN")
-        entrar = st.button("Entrar", type="primary", width="stretch")
+        # El PIN va dentro de un st.form a propósito: con un text_input suelto +
+        # st.button, presionar Enter solo dispara un rerun y el botón nunca queda
+        # "pulsado", así que había que hacer clic obligatoriamente. Dentro de un
+        # formulario, Enter equivale a pulsar el submit.
+        with st.form("form_login", clear_on_submit=True, border=False):
+            pin = st.text_input("PIN", type="password", max_chars=8,
+                                label_visibility="collapsed",
+                                placeholder="PIN — escribe y presiona Enter")
+            entrar = st.form_submit_button("Entrar", type="primary", width="stretch")
 
     if not entrar:
         return

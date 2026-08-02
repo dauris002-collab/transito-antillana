@@ -1,5 +1,6 @@
 import time
 import functools
+import io
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -35,22 +36,18 @@ COL_DIAS_PUERTO = "Dias en puerto"
 REQUIRED_COLUMNS = ["BL", "Descripcion", "Modelo_Serie", "Cantidad", "Pais_Origen", COL_ETA]
 ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, "Fecha_Actualizacion"]
 
-# Cada categoría es una PESTAÑA distinta dentro del mismo Google Sheet.
-# El nombre de la pestaña debe coincidir exactamente (tal cual, con tilde donde aplique).
-# "En Puerto" y "Recibido (por mes)" NO son categorías de producto — son estados/histórico
-# que la app calcula y archiva automáticamente, no pestañas donde se cargan embarques nuevos.
 CATEGORIAS = ["Equipos", "Generadores", "Aéreos", "Carga Suelta", "Consolidados"]
 RECIBIDO_SHEET = "Recibido (Mes)"
 
-# Paleta alineada al reporte de Power BI: bloques de color sólido, planos, alto contraste.
 STATUS_COLOR = {
-    "En tránsito": "#2E86DE",       # azul (igual al KPI "Total")
+    "En tránsito": "#2E86DE",       # azul
     "Próximo a llegar": "#5C6BC0",  # morado
-    "En Puerto": "#F0B90B",         # amarillo — llegó pero falta confirmar recibido
-    "Recibido": "#2E7D32",          # verde — solo para consulta histórica
-    "Sin fecha válida": "#6b7280",
+    "En Puerto": "#F0B90B",         # amarillo
+    "Recibido": "#2E7D32",          # verde
+    "Sin fecha válida": "#6b7280",  # gris
 }
-COLOR_TOTAL = "#17A2B8"  # teal, distintivo para el total general
+COLOR_TOTAL = "#17A2B8"  # teal
+COLOR_SIN_FECHA = "#dc2626" # rojo para destacar errores de datos
 COLOR_RECIBIDAS_MES = "#2E7D32"
 STATUS_ORDER = ["Próximo a llegar", "En Puerto", "En tránsito", "Sin fecha válida"]
 PALETA_PAISES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
@@ -74,6 +71,7 @@ CUSTOM_CSS = """
 .kpi-value { font-size: 2.1rem; font-weight: 800; line-height: 1; color: #ffffff; }
 .kpi-sub { font-size: 0.72rem; color: rgba(255,255,255,0.9); margin-top: 6px; }
 
+/* Tarjetas de carga */
 .ship-card {
     border-radius: 12px;
     padding: 14px 20px;
@@ -83,7 +81,27 @@ CUSTOM_CSS = """
     border-left: 5px solid #6b7280;
     box-shadow: 0 1px 4px rgba(17, 24, 39, 0.06);
 }
-.ship-top { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+.ship-card summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.ship-card summary::-webkit-details-marker {
+    display: none; /* Elimina la flecha nativa del navegador */
+}
+.ship-card summary::after {
+    content: '▼';
+    font-size: 0.8rem;
+    color: #9CA3AF;
+    transition: transform 0.2s ease;
+}
+.ship-card[open] summary::after {
+    content: '▲';
+}
 .ship-bl { font-size: 1.02rem; font-weight: 700; color: #111827; }
 .ship-desc { font-size: 0.85rem; color: #6B7280; }
 .status-badge {
@@ -98,11 +116,14 @@ CUSTOM_CSS = """
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
     gap: 10px;
-    margin-top: 10px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid #E5E7EB;
 }
 .ship-field-label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.04em; color: #9CA3AF; }
 .ship-field-value { font-size: 0.92rem; font-weight: 600; color: #1F2937; }
 
+/* Tabla para desktop */
 .tbl-wrap {
     border: 1px solid #E5E7EB;
     border-radius: 12px;
@@ -133,10 +154,10 @@ CUSTOM_CSS = """
 .tbl-bl { font-weight: 700; color: #111827; }
 .tbl-desc { color: #6B7280; }
 
-/* Por defecto (desktop/tablet ancho): tabla visible, tarjetas ocultas */
+/* Responsive: Desktop/Tablet -> Tabla visible */
 .ship-cards { display: none; }
 
-/* Celular / viewport angosto: tabla oculta, tarjetas visibles */
+/* Celular -> Tarjetas plegables visibles */
 @media (max-width: 640px) {
     .tbl-wrap { display: none; }
     .ship-cards { display: block; }
@@ -151,7 +172,7 @@ BLOQUEO_SEGUNDOS = 15 * 60  # 15 minutos
 
 
 # ---------------------------------------------------------------------------
-# CONEXIÓN A GOOGLE SHEETS (una pestaña por categoría)
+# CONEXIÓN A GOOGLE SHEETS
 # ---------------------------------------------------------------------------
 @st.cache_resource
 def get_spreadsheet():
@@ -164,10 +185,7 @@ def get_spreadsheet():
 
 
 def get_worksheet(categoria: str):
-    """Devuelve la pestaña (hoja) correspondiente a esa categoría, o None si no existe todavía.
-    Primero intenta el nombre exacto; si falla, busca tolerando espacios extra y
-    mayúsculas/minúsculas distintas, para no depender de que el nombre de la
-    pestaña en Google Sheets coincida carácter por carácter con el código."""
+    """Devuelve la pestaña (hoja) correspondiente a esa categoría."""
     ss = get_spreadsheet()
     try:
         return ss.worksheet(categoria)
@@ -180,54 +198,11 @@ def get_worksheet(categoria: str):
     return None
 
 
-@st.cache_data(ttl=45, show_spinner=False)
-def load_data() -> pd.DataFrame:
-    """Lee las 5 pestañas de categoría y las combina en una sola tabla,
-    agregando la columna Categoria según de qué pestaña vino cada fila.
-    Si una pestaña falla al leer (error de la API de Google), se salta esa
-    pestaña con una advertencia en vez de tumbar todo el dashboard."""
-    frames = []
-    for categoria in CATEGORIAS:
-        ws = get_worksheet(categoria)
-        if ws is None:
-            continue
-        try:
-            records = ws.get_all_records()
-        except gspread.exceptions.APIError as e:
-            st.warning(f"⚠️ No se pudo leer la pestaña '{categoria}' en este momento ({e}). Se omitió temporalmente.")
-            continue
-        df_cat = pd.DataFrame(records)
-        if df_cat.empty:
-            df_cat = pd.DataFrame(columns=ALL_COLUMNS)
-        for col in ALL_COLUMNS:
-            if col not in df_cat.columns:
-                df_cat[col] = ""
-        df_cat["Categoria"] = categoria
-        # Descarta solo filas realmente vacías (ni BL ni Descripción): notas
-        # sueltas escritas en alguna celda, o filas en blanco que Google Sheets
-        # sigue devolviendo dentro del rango usado. Una fila con Descripción
-        # pero sin BL todavía cuenta como carga real (BL pendiente de asignar).
-        df_cat["BL"] = df_cat["BL"].astype(str).str.strip()
-        df_cat["Descripcion"] = df_cat["Descripcion"].astype(str).str.strip()
-        df_cat = df_cat[(df_cat["BL"] != "") | (df_cat["Descripcion"] != "")]
-        frames.append(df_cat)
-    if not frames:
-        return pd.DataFrame(columns=ALL_COLUMNS + ["Categoria"])
-    resultado = pd.concat(frames, ignore_index=True)
-    # Filas con BL primero que las que todavía no tienen BL asignado.
-    return resultado.sort_values(
-        by="BL", key=lambda s: s.eq(""), kind="stable"
-    ).reset_index(drop=True)
-
-
 def _headers(sheet):
     return sheet.row_values(1)
 
 
 def _fila_desde_dict(sheet, row: dict):
-    """Arma la fila a escribir respetando el orden REAL de columnas de esa pestaña,
-    no el orden asumido en el código (evita escribir en la columna equivocada
-    si el usuario agregó columnas en otro orden)."""
     headers = _headers(sheet)
     return [row.get(h, "") for h in headers]
 
@@ -257,10 +232,7 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str) -> bool:
 
 
 def _con_manejo_apierror(func):
-    """Decorador para funciones que devuelven (exito: bool, mensaje: str): si en
-    cualquier punto de la función gspread lanza un APIError (cuota excedida,
-    permisos, etc.), lo convierte en un mensaje legible en vez de tumbar la
-    página con un traceback."""
+    """Decorador para evitar que errores de Google tumben la app."""
     @functools.wraps(func)
     def envoltura(*args, **kwargs):
         try:
@@ -271,8 +243,6 @@ def _con_manejo_apierror(func):
 
 
 def _fila_por_bl_en(ws, bl: str):
-    """Igual que _fila_por_bl pero recibiendo el worksheet directamente
-    (reutilizable para pestañas que no son de categoría, como Recibido)."""
     if ws is None:
         return None
     headers = _headers(ws)
@@ -287,8 +257,6 @@ def _fila_por_bl_en(ws, bl: str):
 
 
 def _fila_por_bl(bl: str, categoria: str):
-    """Devuelve el número de fila (1-indexado, con encabezado) del BL dado
-    dentro de la pestaña de esa categoría, o None si no existe."""
     return _fila_por_bl_en(get_worksheet(categoria), bl)
 
 
@@ -296,29 +264,67 @@ def _fila_por_bl(bl: str, categoria: str):
 def eliminar_embarque(bl: str, categoria: str):
     ws = get_worksheet(categoria)
     if ws is None:
-        return False, f"No se encontró la pestaña '{categoria}' en el Google Sheet."
+        return False, f"No se encontró la pestaña '{categoria}'."
     fila = _fila_por_bl(bl, categoria)
     if fila is None:
-        return False, f"No se encontró el BL '{bl}' en la pestaña '{categoria}'."
+        return False, f"No se encontró el BL '{bl}' en '{categoria}'."
     ws.delete_rows(fila)
     return True, ""
 
 
 def _get_all_records_seguro(ws, nombre_pestaña: str) -> list:
-    """Envoltorio de ws.get_all_records() que absorbe errores de cuota/API de
-    Google (429, etc.) en vez de dejar que tumben toda la página. Devuelve una
-    lista vacía y muestra una advertencia si falla."""
     try:
         return ws.get_all_records()
     except gspread.exceptions.APIError as e:
-        st.warning(f"⚠️ No se pudo leer '{nombre_pestaña}' en este momento ({e}). Intenta recargar en unos segundos.")
+        st.warning(f"⚠️ No se pudo leer '{nombre_pestaña}' ({e}).")
         return []
 
 
 @st.cache_data(ttl=45, show_spinner=False)
+def load_data() -> pd.DataFrame:
+    """Lee las pestañas y las combina. Si falla alguna, usa el caché en memoria
+    para evitar que la app se quede sin datos."""
+    frames = []
+    error_total = False
+    for categoria in CATEGORIAS:
+        ws = get_worksheet(categoria)
+        if ws is None:
+            continue
+        try:
+            records = ws.get_all_records()
+        except gspread.exceptions.APIError as e:
+            st.warning(f"⚠️ No se pudo leer la pestaña '{categoria}' ({e}). Se mostrarán datos guardados localmente.")
+            error_total = True
+            continue
+        df_cat = pd.DataFrame(records)
+        if df_cat.empty:
+            df_cat = pd.DataFrame(columns=ALL_COLUMNS)
+        for col in ALL_COLUMNS:
+            if col not in df_cat.columns:
+                df_cat[col] = ""
+        df_cat["Categoria"] = categoria
+        df_cat["BL"] = df_cat["BL"].astype(str).str.strip()
+        df_cat["Descripcion"] = df_cat["Descripcion"].astype(str).str.strip()
+        df_cat = df_cat[(df_cat["BL"] != "") | (df_cat["Descripcion"] != "")]
+        frames.append(df_cat)
+    
+    if not frames:
+        if error_total and 'cached_embarques_df' in st.session_state:
+            st.warning("⚠️ Google Sheets no respondió completamente. Usando respaldo guardado en la sesión (puede estar desactualizado).")
+            return st.session_state['cached_embarques_df']
+        return pd.DataFrame(columns=ALL_COLUMNS + ["Categoria"])
+    
+    resultado = pd.concat(frames, ignore_index=True)
+    resultado = resultado.sort_values(
+        by="BL", key=lambda s: s.eq(""), kind="stable"
+    ).reset_index(drop=True)
+    
+    st.session_state['cached_embarques_df'] = resultado
+    return resultado
+
+
+@st.cache_data(ttl=45, show_spinner=False)
 def cargar_historico_recibidos() -> pd.DataFrame:
-    """Trae todo el histórico de la pestaña 'Recibido (por mes)', con la fecha
-    ya interpretada como objeto date para poder agrupar por mes calendario."""
     ws = get_worksheet(RECIBIDO_SHEET)
     columnas = ["BL", "Descripcion", "Cantidad", "Fecha_Recibido"]
     if ws is None:
@@ -358,7 +364,6 @@ def mostrar_historico(rol: str):
 
     df["MesKey"] = df["FechaParsed"].apply(lambda d: (d.year, d.month))
 
-    # -------------------- Comparación: mes que termina vs. mes en curso --------------------
     hoy = hoy_rd()
     mes_actual_key = (hoy.year, hoy.month)
     mes_anterior_key = (hoy.year - 1, 12) if hoy.month == 1 else (hoy.year, hoy.month - 1)
@@ -382,14 +387,12 @@ def mostrar_historico(rol: str):
     st.write("")
     st.divider()
 
-    # -------------------- Consulta libre por cualquier mes --------------------
     meses_disponibles = sorted(df["MesKey"].unique(), reverse=True)
     opciones = [f"{MESES_ES[m]} {y}" for (y, m) in meses_disponibles]
     seleccion = st.selectbox("Consultar otro mes", opciones, key="historico_mes")
     y_sel, m_sel = meses_disponibles[opciones.index(seleccion)]
 
     filtrado = df[df["MesKey"] == (y_sel, m_sel)].sort_values("FechaParsed")
-
     st.markdown(
         f'<div class="kpi-card" style="background:{COLOR_RECIBIDAS_MES}; max-width:280px;">'
         f'<div class="kpi-label">Recibidas en {seleccion}</div>'
@@ -413,16 +416,10 @@ def mostrar_historico(rol: str):
             if st.session_state.get(key_confirmar):
                 categoria_guardada = str(r.get("Categoria_Origen", "")).strip()
                 if categoria_guardada in CATEGORIAS:
-                    st.warning(f"¿Quitar el BL {bl_actual} de Recibido y devolverlo a '{categoria_guardada}'?")
                     categoria_elegida = categoria_guardada
                 else:
-                    st.warning(
-                        f"El BL {bl_actual} se archivó antes de guardar su categoría de origen. "
-                        "Elige a qué pestaña devolverlo:"
-                    )
-                    categoria_elegida = st.selectbox(
-                        "Categoría de destino", CATEGORIAS, key=f"cat_manual_{bl_actual}"
-                    )
+                    st.warning(f"El BL {bl_actual} no guardó su categoría de origen. Elige a qué pestaña devolverlo:")
+                    categoria_elegida = st.selectbox("Categoría de destino", CATEGORIAS, key=f"cat_manual_{bl_actual}")
                 cc1, cc2, _ = st.columns([1, 1, 3])
                 if cc1.button("Sí, quitar", key=f"si_quitar_{bl_actual}", type="primary"):
                     ok, mensaje = quitar_de_recibido(bl_actual, categoria_manual=categoria_elegida)
@@ -446,9 +443,6 @@ def mostrar_historico(rol: str):
 
 
 def _asegurar_columna(ws, nombre: str):
-    """Si la pestaña no tiene una columna con ese encabezado exacto, la agrega
-    al final de la fila 1. Evita depender de que alguien la haya creado a mano
-    en el Sheet — la app se autorepara."""
     headers = _headers(ws)
     if nombre in headers:
         return headers
@@ -458,23 +452,18 @@ def _asegurar_columna(ws, nombre: str):
 
 @_con_manejo_apierror
 def marcar_como_recibido(bl: str, categoria: str):
-    """Devuelve (exito: bool, mensaje_error: str). El mensaje solo importa
-    cuando exito es False — se muestra en pantalla en vez de fallar en silencio."""
     ws_origen = get_worksheet(categoria)
     if ws_origen is None:
-        return False, f"No se encontró la pestaña '{categoria}' en el Google Sheet."
+        return False, f"No se encontró la pestaña '{categoria}'."
 
     fila = _fila_por_bl(bl, categoria)
     if fila is None:
-        return False, f"No se encontró el BL '{bl}' en la pestaña '{categoria}' — puede que ya se haya movido o editado."
+        return False, f"No se encontró el BL '{bl}' en '{categoria}'."
 
     headers_origen = _headers(ws_origen)
     valores_fila = ws_origen.row_values(fila)
     datos = dict(zip(headers_origen, valores_fila))
 
-    # "El mes que llegó" es la fecha de Llegada a Puerto (ETA) de ese embarque
-    # específico, no el día en que un admin presiona el botón (que puede ser
-    # días o semanas después de la llegada real).
     fecha_llegada = None
     eta_raw = str(datos.get(COL_ETA, "")).strip()
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
@@ -488,17 +477,12 @@ def marcar_como_recibido(bl: str, categoria: str):
         return False, (
             f"El BL '{bl}' no tiene una fecha de Llegada a Puerto (ETA) válida "
             f"('{eta_raw or 'vacía'}'), así que no se puede archivar en el histórico mensual "
-            "sin saber a qué mes pertenece. Corrige la fecha en el Sheet y vuelve a intentar."
+            "sin saber a qué mes pertenece."
         )
 
     ws_destino = get_worksheet(RECIBIDO_SHEET)
     if ws_destino is None:
-        ss = get_spreadsheet()
-        nombres_reales = ", ".join(f"'{h.title}'" for h in ss.worksheets())
-        return False, (
-            f"No se encontró la pestaña '{RECIBIDO_SHEET}' en el Google Sheet. "
-            f"Las pestañas que la app sí ve son: {nombres_reales}."
-        )
+        return False, f"No se encontró la pestaña '{RECIBIDO_SHEET}' en el Google Sheet."
     _asegurar_columna(ws_destino, "Fecha_Recibido")
     _asegurar_columna(ws_destino, "Modelo_Serie")
     _asegurar_columna(ws_destino, "Pais_Origen")
@@ -524,17 +508,13 @@ def marcar_como_recibido(bl: str, categoria: str):
 
 @_con_manejo_apierror
 def quitar_de_recibido(bl: str, categoria_manual: str = None):
-    """Reversa 'Marcar como Recibido': devuelve el embarque a su pestaña de
-    categoría original y lo borra de 'Recibido (Mes)'. Devuelve (exito, mensaje).
-    Si el registro no tiene categoría de origen guardada (archivado antes de que
-    existiera ese dato), se puede pasar categoria_manual explícitamente."""
     ws_recibido = get_worksheet(RECIBIDO_SHEET)
     if ws_recibido is None:
-        return False, f"No se encontró la pestaña '{RECIBIDO_SHEET}' en el Google Sheet."
+        return False, f"No se encontró la pestaña '{RECIBIDO_SHEET}'."
 
     fila = _fila_por_bl_en(ws_recibido, bl)
     if fila is None:
-        return False, f"No se encontró el BL '{bl}' en '{RECIBIDO_SHEET}' — puede que ya se haya movido."
+        return False, f"No se encontró el BL '{bl}' en '{RECIBIDO_SHEET}'."
 
     headers = _headers(ws_recibido)
     valores = ws_recibido.row_values(fila)
@@ -542,10 +522,7 @@ def quitar_de_recibido(bl: str, categoria_manual: str = None):
 
     categoria = (categoria_manual or datos.get("Categoria_Origen", "")).strip()
     if categoria not in CATEGORIAS:
-        return False, (
-            f"'{categoria or 'vacía'}' no es una categoría válida. Elige una categoría del "
-            "menú antes de confirmar."
-        )
+        return False, f"'{categoria}' no es una categoría válida."
 
     ok = append_row({
         "BL": datos.get("BL", bl),
@@ -564,8 +541,6 @@ def quitar_de_recibido(bl: str, categoria_manual: str = None):
 
 @st.cache_data(ttl=45, show_spinner=False)
 def contar_recibidas_mes_actual() -> int:
-    """Cuenta cuántos embarques se archivaron como recibidos en el mes calendario actual,
-    leyendo la fecha de la columna 'Fecha_Recibido' de la pestaña 'Recibido (por mes)'."""
     ws = get_worksheet(RECIBIDO_SHEET)
     if ws is None:
         return 0
@@ -589,9 +564,6 @@ def contar_recibidas_mes_actual() -> int:
 # LÓGICA DE ESTADO DEL EMBARQUE
 # ---------------------------------------------------------------------------
 def estado_embarque(eta_str: str):
-    """Devuelve (texto_estado, icono, dias_en_puerto). dias_en_puerto es None
-    salvo cuando el estado es 'En Puerto' (ETA ya pasó y nadie lo ha confirmado
-    como recibido)."""
     eta = None
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
         try:
@@ -614,8 +586,6 @@ def estado_embarque(eta_str: str):
 
 
 def texto_badge_estado(fila) -> str:
-    """Arma el texto del badge de estado, incluyendo el contador de días
-    para 'Próximo a llegar' y 'En Puerto' (los dos estados con urgencia)."""
     icono, estado, dias = fila["EstadoIcono"], fila["EstadoTexto"], fila["DiasEnPuerto"]
     if estado == "En Puerto" and pd.notna(dias):
         d = int(dias)
@@ -747,12 +717,14 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
     conteo = df["EstadoTexto"].value_counts().to_dict()
     proximos_n = conteo.get("Próximo a llegar", 0)
     en_puerto_n = conteo.get("En Puerto", 0)
+    sin_fecha_n = conteo.get("Sin fecha válida", 0)
 
-    # -------------------- KPIs (clicables: filtran la tabla por ese estado) --------------------
+    # -------------------- KPIs (clicables y con reseteo global) --------------------
     kpis = [
         ("TOTAL EN TRÁNSITO", len(df), COLOR_TOTAL, "Todos", "total"),
         ("PRÓXIMOS 3 DÍAS", proximos_n, STATUS_COLOR["Próximo a llegar"], "Próximo a llegar", "proximos"),
         ("EN PUERTO (SIN CONFIRMAR)", en_puerto_n, STATUS_COLOR["En Puerto"], "En Puerto", "enpuerto"),
+        ("⚠️ SIN FECHA VÁLIDA", sin_fecha_n, COLOR_SIN_FECHA, "Sin fecha válida", "sinfecha"),
     ]
     estilos_kpi = "".join(
         f'.st-key-kpi_{tab_key}_{slug} button {{'
@@ -770,7 +742,13 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
         with col:
             with st.container(key=f"kpi_{tab_key}_{slug}"):
                 if st.button(f"{label} — {valor}", key=f"btn_kpi_{tab_key}_{slug}", use_container_width=True):
-                    st.session_state[f"estado_{tab_key}"] = valor_filtro
+                    if slug == "total":
+                        # Si es el Total, resetea PAÍS y ESTADO, y limpia el gráfico
+                        st.session_state[f"pais_{tab_key}"] = "Todos"
+                        st.session_state[f"estado_{tab_key}"] = "Todos"
+                        st.session_state[f"ultima_firma_pais_{tab_key}"] = ""
+                    else:
+                        st.session_state[f"estado_{tab_key}"] = valor_filtro
                     st.rerun(scope="fragment")
 
     st.write("")
@@ -846,9 +824,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
             if puntos:
                 pais_clic = puntos[0].get("y")
                 if pais_clic and pais_clic != "Sin especificar":
-                    # Plotly mantiene la selección activa entre reruns, así que sin este
-                    # control el clic se reaplicaría en cada rerun y anularía cualquier
-                    # cambio manual que el usuario haga luego en el selectbox.
                     firma_clic = f"{tab_key}:{pais_clic}"
                     key_firma = f"ultima_firma_pais_{tab_key}"
                     if firma_clic != st.session_state.get(key_firma):
@@ -874,10 +849,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
     filtrado = filtrado.sort_values(COL_ETA)
 
     # -------------------- LISTA DE EMBARQUES --------------------
-    # Se renderizan las DOS vistas (tabla y tarjetas) en el mismo HTML; el CSS
-    # (@media max-width:640px) decide cuál se muestra según el ancho real de
-    # pantalla del dispositivo que abre la app. Streamlit no puede detectar el
-    # ancho del navegador del lado del servidor, así que el toggle se hace en CSS.
     if not filtrado.empty:
         # --- Vista tabla (desktop / tablet) ---
         tabla_html = (
@@ -902,25 +873,27 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
         tabla_html += '</div>'
         st.markdown(tabla_html, unsafe_allow_html=True)
 
-        # --- Vista tarjetas (celular) ---
+        # --- Vista tarjetas plegables (celular) ---
         cards_html = '<div class="ship-cards">'
         for _, r in filtrado.iterrows():
             color = STATUS_COLOR.get(r["EstadoTexto"], "#6b7280")
             texto_badge = texto_badge_estado(r)
             cards_html += (
-                f'<div class="ship-card" style="border-left-color:{color};">'
-                f'<div class="ship-top">'
+                f'<details class="ship-card" style="border-left-color:{color};">'
+                f'<summary>'
+                f'<div>'
                 f'<div class="ship-bl">{r["BL"]}</div>'
-                f'<span class="status-badge" style="background:{color};">{texto_badge}</span>'
-                f'</div>'
                 f'<div class="ship-desc">{r["Descripcion"] or "—"}</div>'
+                f'</div>'
+                f'<span class="status-badge" style="background:{color};">{texto_badge}</span>'
+                f'</summary>'
                 f'<div class="ship-grid">'
                 f'<div><div class="ship-field-label">Modelo/Serie</div><div class="ship-field-value">{r["Modelo_Serie"] or "—"}</div></div>'
                 f'<div><div class="ship-field-label">Cant.</div><div class="ship-field-value">{r["Cantidad"] or "—"}</div></div>'
                 f'<div><div class="ship-field-label">País</div><div class="ship-field-value">{r["Pais_Origen"] or "—"}</div></div>'
                 f'<div><div class="ship-field-label">ETA</div><div class="ship-field-value">{r[COL_ETA] or "—"}</div></div>'
                 f'</div>'
-                f'</div>'
+                f'</details>'
             )
         cards_html += '</div>'
         st.markdown(cards_html, unsafe_allow_html=True)
@@ -971,8 +944,26 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str):
 # ---------------------------------------------------------------------------
 # ALTA MANUAL (SOLO ADMIN)
 # ---------------------------------------------------------------------------
+def _bl_ya_existe(bl: str) -> bool:
+    """Busca el BL en tiempo REAL en todas las pestañas de Google Sheets."""
+    ss = get_spreadsheet()
+    try:
+        ss.find(str(bl).strip(), in_column=1)
+        return True
+    except gspread.exceptions.CellNotFound:
+        return False
+
 def form_alta_manual():
     st.subheader("➕ Agregar embarque")
+    with st.expander("📖 ¿Cómo llenar el formulario?"):
+        st.markdown("""
+        - **BL**: Número de Bill of Lading (conocimiento de embarque). Este identificador **debe ser único**.
+        - **Descripción**: Nombre claro del producto o mercancía que viene en el contenedor.
+        - **Modelo/Serie**: (Opcional) Número de modelo o serie de los equipos.
+        - **Cantidad**: Número de unidades o bultos.
+        - **País de origen**: País donde se embarcó la mercancía.
+        - **ETA (Fecha estimada de llegada)**: La fecha en que el barco está previsto a llegar a puerto.
+        """)
     with st.form("form_embarque", clear_on_submit=True):
         c1, c2 = st.columns(2)
         bl = c1.text_input("BL")
@@ -990,10 +981,8 @@ def form_alta_manual():
             if not bl or not descripcion:
                 st.error("BL y Descripción son obligatorios.")
             else:
-                existentes = load_data()
-                bls_existentes = set(existentes["BL"].astype(str).str.strip())
-                if bl.strip() in bls_existentes:
-                    st.error(f"Ya existe un embarque con el BL '{bl}'. Revisa el dashboard antes de guardarlo de nuevo.")
+                if _bl_ya_existe(bl):
+                    st.error(f"¡Ya existe un embarque con el BL '{bl}' en el sistema! Revisa el dashboard.")
                 else:
                     ok = append_row({
                         "BL": bl,
@@ -1008,23 +997,36 @@ def form_alta_manual():
                         load_data.clear()
                         st.rerun()
                     else:
-                        st.error(
-                            f"No existe la pestaña '{categoria}' en el Google Sheet. "
-                            "Créala primero (ver instrucciones) y vuelve a intentar."
-                        )
+                        st.error(f"No existe la pestaña '{categoria}' en el Google Sheet. Créala primero.")
 
 
 # ---------------------------------------------------------------------------
 # CARGA MASIVA VÍA EXCEL (SOLO ADMIN)
 # ---------------------------------------------------------------------------
+def plantilla_ejemplo():
+    buffer = io.BytesIO()
+    pd.DataFrame(columns=REQUIRED_COLUMNS).to_excel(buffer, index=False, engine='openpyxl')
+    buffer.seek(0)
+    return buffer.getvalue()
+
 def form_carga_masiva():
     st.subheader("📤 Carga masiva desde Excel")
     categoria_destino = st.selectbox("Categoría de destino (todo el archivo se carga en esta pestaña)", CATEGORIAS)
-    st.caption(
-        "El archivo debe tener exactamente estas columnas: "
-        + ", ".join(REQUIRED_COLUMNS)
-        + ". La fecha ETA puede venir en cualquier formato reconocible."
-    )
+    
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.caption(
+            "El archivo debe tener exactamente estas columnas: "
+            + ", ".join(REQUIRED_COLUMNS)
+            + ". La fecha ETA puede venir en cualquier formato reconocible."
+        )
+    with col2:
+        st.download_button(
+            label="📥 Descargar plantilla",
+            data=plantilla_ejemplo(),
+            file_name="plantilla_embarques.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
     archivo = st.file_uploader("Sube el archivo .xlsx", type=["xlsx"])
     if archivo is not None:
@@ -1040,16 +1042,13 @@ def form_carga_masiva():
             return
 
         nuevo = nuevo[REQUIRED_COLUMNS].dropna(how="all").copy()
-
-        # Normalizar fechas ETA: Excel suele entregarlas con hora incluida
-        # (ej. "2026-08-25 00:00:00") aunque en la celda se vean como AAAA-MM-DD.
-        # Se acepta cualquier formato de fecha reconocible y se guarda como AAAA-MM-DD.
+        
         fechas_invalidas = []
         etas_normalizadas = []
         for i, val in enumerate(nuevo[COL_ETA]):
             parsed = pd.to_datetime(val, errors="coerce")
             if pd.isna(parsed):
-                fechas_invalidas.append((i + 2, val))  # +2: encabezado + índice base 1
+                fechas_invalidas.append((i + 2, val))
                 etas_normalizadas.append("")
             else:
                 etas_normalizadas.append(parsed.strftime("%Y-%m-%d"))

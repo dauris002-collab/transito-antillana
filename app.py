@@ -621,6 +621,31 @@ def _df_desde_valores(valores: list, columnas_canonicas: list) -> pd.DataFrame:
     return df
 
 
+NO_ESPECIFICADO = "Sin especificar"
+_VACIOS_PAIS = {"", "n/a", "na", "n.a.", "-", "--", "s/d", "nd", "no aplica", "pendiente", "?"}
+
+
+def unificar_paises(serie: pd.Series) -> pd.Series:
+    """'China', 'CHINA' y 'china ' son el mismo país y no deben salir como tres
+    barras distintas en el gráfico ni como tres opciones del filtro. Se agrupan
+    por nombre normalizado y se muestra la grafía más usada del propio Sheet, sin
+    inventar equivalencias: 'USA' y 'Estados Unidos' siguen separados porque
+    unificarlos es una decisión de negocio, no de formato."""
+    valores = [str(v or "").strip() for v in serie]
+    grupos = {}
+    for v in valores:
+        clave = _norm(v)
+        if clave in _VACIOS_PAIS:
+            continue
+        grupos.setdefault(clave, {})
+        grupos[clave][v] = grupos[clave].get(v, 0) + 1
+    canonico = {c: max(op.items(), key=lambda kv: (kv[1], -len(kv[0])))[0] for c, op in grupos.items()}
+    return pd.Series(
+        [canonico.get(_norm(v), NO_ESPECIFICADO) for v in valores],
+        index=serie.index,
+    )
+
+
 def columnas_extra(df: pd.DataFrame) -> list:
     """Columnas que el usuario agregó en el Sheet y que la app no gestiona."""
     conocidas = set(ALL_COLUMNS) | COLUMNAS_INTERNAS | {"Fecha_Recibido", "Categoria_Origen", "Registrado_Por"}
@@ -751,6 +776,7 @@ def cargar_todo() -> dict:
         # sueltas en una celda o filas en blanco dentro del rango usado.
         activos = activos[(activos[COL_BL] != "") | (activos[COL_DESC] != "")]
         activos = activos.reset_index(drop=True)
+        activos[COL_PAIS] = unificar_paises(activos[COL_PAIS])
     else:
         activos = pd.DataFrame(columns=ALL_COLUMNS + ["Categoria", "FilaSheet"])
 
@@ -1418,7 +1444,7 @@ def grafico_linea_tiempo(df: pd.DataFrame, key: str):
 
 
 def grafico_paises(df: pd.DataFrame, key: str):
-    serie = df[COL_PAIS].replace("", "Sin especificar").value_counts().sort_values()
+    serie = df[COL_PAIS].replace("", NO_ESPECIFICADO).value_counts().sort_values()
     if serie.empty:
         return
     colores = [PALETA_PAISES[i % len(PALETA_PAISES)] for i in range(len(serie))]
@@ -1442,7 +1468,7 @@ def grafico_paises(df: pd.DataFrame, key: str):
     puntos = (seleccion or {}).get("selection", {}).get("points", [])
     if puntos:
         pais = puntos[0].get("y")
-        if pais and pais != "Sin especificar":
+        if pais and pais != NO_ESPECIFICADO:
             # Plotly conserva la selección entre reruns: sin esta firma, el clic se
             # reaplicaría en cada rerun y anularía cualquier cambio manual posterior.
             firma = f"{key}:{pais}"
@@ -1455,7 +1481,8 @@ def grafico_paises(df: pd.DataFrame, key: str):
 # ---------------------------------------------------------------------------
 # DASHBOARD
 # ---------------------------------------------------------------------------
-def selector_horizontal(label: str, opciones: list, key: str, default=None, formato=None):
+def selector_horizontal(label: str, opciones: list, key: str, default=None, formato=None,
+                        ancho: str = "stretch"):
     """Segmented control cuando la versión de Streamlit lo trae; radio horizontal
     si no. Sustituye a st.tabs para las categorías: con tabs, Streamlit ejecuta el
     cuerpo de TODAS las pestañas en cada rerun aunque el usuario vea una sola, y
@@ -1468,7 +1495,7 @@ def selector_horizontal(label: str, opciones: list, key: str, default=None, form
     if hasattr(st, "segmented_control"):
         elegido = st.segmented_control(
             label, opciones, key=key, format_func=formato,
-            label_visibility="collapsed", width="stretch", **extra,
+            label_visibility="collapsed", width=ancho, **extra,
         )
     else:
         elegido = st.radio(label, opciones, key=key, horizontal=True,
@@ -1480,10 +1507,15 @@ def mostrar_dashboard(datos: dict):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     encabezado(datos)
 
+    # Los avisos técnicos son instrucciones de trabajo: solo los ve quien puede
+    # ejecutarlas. Al espectador no le sirven y le restan confianza en el dato.
+    es_admin = st.session_state.get("rol") == "admin"
     if datos["error"]:
-        st.error(datos["error"])
-    for aviso in datos.get("avisos", []):
-        st.warning(aviso)
+        st.error(datos["error"] if es_admin
+                 else "No se pudieron leer todos los datos en este momento. Intenta recargar en unos segundos.")
+    if es_admin:
+        for aviso in datos.get("avisos", []):
+            st.warning(aviso)
 
     df_todo = datos["activos"]
     if df_todo.empty:
@@ -1597,7 +1629,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
         )
         st.write("")
 
-    if sin_fecha_n:
+    if sin_fecha_n and rol == "admin":
         st.warning(
             f"{sin_fecha_n} embarque(s) tienen un ETA que la app no puede interpretar y quedan fuera de "
             "los conteos por fecha. Revísalos en Herramientas → Normalizar fechas."
@@ -2413,7 +2445,9 @@ def main():
             st.rerun()
 
     if len(secciones) > 1:
-        seccion = selector_horizontal("Sección", secciones, key="seccion_actual")
+        # ancho="content": estirado a toda la pantalla, con dos o tres opciones,
+        # parecía una barra de color suelta arriba de la página en vez de un menú.
+        seccion = selector_horizontal("Sección", secciones, key="seccion_actual", ancho="content")
     else:
         seccion = secciones[0]
 

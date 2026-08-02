@@ -74,15 +74,14 @@ LOG_SHEET = "Log"
 
 COLUMNAS_RECIBIDO = [
     COL_BL, COL_DESC, COL_MODELO, COL_CANT, COL_PAIS, COL_ETA,
-    "Fecha_Recibido", "Categoria_Origen", "Registrado_Por",
+    "Fecha_Recibido", "Categoria_Origen", "Registrado_Por", COL_ACTUALIZACION,
 ]
 COLUMNAS_LOG = ["Fecha_Hora", "Usuario", "Accion", "BL", "Categoria", "Detalle"]
 
 UMBRAL_PROXIMO = 3          # días para considerar un embarque "Próximo a llegar"
 CACHE_TTL = 45              # segundos de caché de lectura
 LARGO_PIN = 4               # dígitos del PIN; si algún día usas PIN más largos, cámbialo aquí
-REFRESCOS_PERMITIDOS = 2    # veces que se puede recargar la página sin volver a teclear el PIN
-VIDA_SESION_MINUTOS = 30    # tope de tiempo de la sesión recordada, pase lo que pase
+VIDA_SESION_MINUTOS = 5     # la sesión se recuerda mientras no pasen 5 minutos sin actividad
 MAX_INTENTOS_SESION = 5
 MAX_FALLOS_GLOBAL = 25      # freno global: el bloqueo por sesión se evade en incógnito
 VENTANA_FALLOS = 10 * 60
@@ -479,6 +478,28 @@ def _headers(titulo_hoja: str) -> list:
     return ws.row_values(1)
 
 
+def marca_ahora() -> str:
+    """Sello que se estampa en Fecha_Actualizacion cada vez que alguien carga o
+    modifica información. Lleva hora, no solo fecha, porque es lo que el tablero
+    muestra como 'información actualizada'."""
+    return ahora_rd().strftime("%Y-%m-%d %H:%M")
+
+
+def parsear_marca(valor):
+    """Lee un sello de Fecha_Actualizacion como datetime. Acepta los registros
+    viejos que solo tienen fecha (se asumen a medianoche)."""
+    texto = "" if valor is None else str(valor).strip()
+    if not texto:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(texto, fmt)
+        except ValueError:
+            continue
+    f = parsear_fecha(texto)
+    return datetime(f.year, f.month, f.day) if f else None
+
+
 def _fila_desde_dict(headers: list, datos: dict) -> list:
     """Arma la fila respetando el orden REAL de columnas de la pestaña y
     tolerando diferencias de acento/mayúsculas en los encabezados."""
@@ -555,6 +576,7 @@ def cargar_todo() -> dict:
             "activos": pd.DataFrame(columns=ALL_COLUMNS + ["Categoria"]),
             "historico": pd.DataFrame(columns=COLUMNAS_RECIBIDO),
             "hora": ahora_rd(),
+            "ultima_carga": None,
             "error": f"No se pudo conectar con el Google Sheet: {e}",
         }
 
@@ -572,6 +594,7 @@ def cargar_todo() -> dict:
             "activos": pd.DataFrame(columns=ALL_COLUMNS + ["Categoria"]),
             "historico": pd.DataFrame(columns=COLUMNAS_RECIBIDO),
             "hora": ahora_rd(),
+            "ultima_carga": None,
             "error": "El Google Sheet no tiene ninguna de las pestañas esperadas.",
         }
 
@@ -583,6 +606,7 @@ def cargar_todo() -> dict:
             "activos": pd.DataFrame(columns=ALL_COLUMNS + ["Categoria"]),
             "historico": pd.DataFrame(columns=COLUMNAS_RECIBIDO),
             "hora": ahora_rd(),
+            "ultima_carga": None,
             "error": f"Google Sheets no respondió (posible límite de cuota): {e}",
         }
 
@@ -615,7 +639,18 @@ def cargar_todo() -> dict:
     if not historico.empty:
         historico = historico[historico[COL_BL].astype(str).str.strip() != ""].reset_index(drop=True)
 
-    return {"activos": activos, "historico": historico, "hora": ahora_rd(), "error": None}
+    # "Última carga" = la marca más reciente escrita por alguien al agregar,
+    # editar, cargar en masa o archivar un embarque. Es distinto de "última
+    # lectura", que es cuándo la app fue a buscar los datos: al presidente le
+    # importa cuándo se movió la información, no cuándo él abrió la página.
+    marcas = []
+    for cuadro in (activos, historico):
+        if not cuadro.empty and COL_ACTUALIZACION in cuadro.columns:
+            marcas += [m for m in (parsear_marca(v) for v in cuadro[COL_ACTUALIZACION]) if m]
+    ultima_carga = max(marcas) if marcas else None
+
+    return {"activos": activos, "historico": historico, "hora": ahora_rd(),
+            "ultima_carga": ultima_carga, "error": None}
 
 
 def invalidar_caches():
@@ -685,7 +720,7 @@ def append_row(datos: dict, categoria: str):
     if ws is None:
         return False, f"No existe la pestaña '{categoria}' en el Google Sheet."
     datos = dict(datos)
-    datos[COL_ACTUALIZACION] = hoy_rd().isoformat()
+    datos[COL_ACTUALIZACION] = marca_ahora()
     headers = _headers(ws.title)
     ws.append_row(_fila_desde_dict(headers, datos), value_input_option="RAW")
     return True, ""
@@ -697,11 +732,11 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str):
     if ws is None:
         return False, f"No existe la pestaña '{categoria}' en el Google Sheet."
     headers = _headers(ws.title)
-    hoy = hoy_rd().isoformat()
+    sello = marca_ahora()
     filas = []
     for _, r in df.iterrows():
         datos = {c: r.get(c, "") for c in REQUIRED_COLUMNS}
-        datos[COL_ACTUALIZACION] = hoy
+        datos[COL_ACTUALIZACION] = sello
         filas.append(_fila_desde_dict(headers, datos))
     ws.append_rows(filas, value_input_option="RAW")
     return True, ""
@@ -723,7 +758,7 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict):
     actuales += [""] * (len(headers) - len(actuales))
     combinado = {h: actuales[i] for i, h in enumerate(headers)}
     combinado.update(datos)
-    combinado[COL_ACTUALIZACION] = hoy_rd().isoformat()
+    combinado[COL_ACTUALIZACION] = marca_ahora()
 
     rango = f"{rowcol_to_a1(fila, 1)}:{rowcol_to_a1(fila, len(headers))}"
     ws.update(range_name=rango, values=[_fila_desde_dict(headers, combinado)], value_input_option="RAW")
@@ -788,6 +823,7 @@ def marcar_como_recibido(bl: str, categoria: str):
         "Fecha_Recibido": fecha_llegada.isoformat(),
         "Categoria_Origen": categoria,
         "Registrado_Por": usuario_actual(),
+        COL_ACTUALIZACION: marca_ahora(),
     }
     ws_destino.append_row(_fila_desde_dict(headers_destino, registro), value_input_option="RAW")
     ws_origen.delete_rows(fila)
@@ -942,7 +978,6 @@ def _abrir_sesion(rol: str, nombre: str):
         "rol": rol,
         "nombre": nombre,
         "expira": ahora + VIDA_SESION_MINUTOS * 60,
-        "restantes": REFRESCOS_PERMITIDOS,
     }
     st.session_state.rol = rol
     st.session_state.usuario = nombre
@@ -952,8 +987,9 @@ def _abrir_sesion(rol: str, nombre: str):
 
 def restaurar_sesion():
     """Al abrir la página, intenta reanudar la sesión desde el token de la URL.
-    Cada recarga consume uno de los refrescos permitidos; agotados esos, o
-    vencido el tiempo, se vuelve a pedir el PIN."""
+    No hay límite de recargas: mientras no pasen VIDA_SESION_MINUTOS desde la
+    última vez que se abrió la página, se entra directo, y cada recarga vuelve a
+    correr el reloj. Pasado ese tiempo, se pide el PIN otra vez."""
     if "rol" in st.session_state:
         return
     token = st.query_params.get("s")
@@ -963,16 +999,15 @@ def restaurar_sesion():
     ahora = time.time()
     _purgar_sesiones(ahora)
     datos = _sesiones_activas().get(token)
-    if not datos or datos["expira"] < ahora or datos["restantes"] <= 0:
+    if not datos or datos["expira"] < ahora:
         _sesiones_activas().pop(token, None)
         st.query_params.clear()
         return
 
-    datos["restantes"] -= 1
+    datos["expira"] = ahora + VIDA_SESION_MINUTOS * 60  # ventana deslizante
     st.session_state.rol = datos["rol"]
     st.session_state.usuario = datos["nombre"]
     st.session_state.token = token
-    st.session_state.refrescos_restantes = datos["restantes"]
 
 
 def cerrar_sesion():
@@ -1082,9 +1117,14 @@ def login_screen():
 # ---------------------------------------------------------------------------
 # COMPONENTES DE UI
 # ---------------------------------------------------------------------------
-def encabezado(hora_datos: datetime):
+def encabezado(datos: dict):
     anio = hoy_rd().year
-    sello = f"{hora_datos.day:02d} {MESES_ES_CORTO[hora_datos.month]} {hora_datos.year}, {hora_datos.strftime('%I:%M %p').lstrip('0').lower()}"
+    ultima = datos.get("ultima_carga")
+    if ultima:
+        sello = (f"Información actualizada: {ultima.day:02d} {MESES_ES_CORTO[ultima.month]} "
+                 f"{ultima.year}, {ultima.strftime('%I:%M %p').lstrip('0').lower()} (hora RD)")
+    else:
+        sello = "Sin registro de la última carga de información"
     st.markdown(
         f'<div class="ant-head">'
         f'<span class="ant-eyebrow">'
@@ -1094,7 +1134,7 @@ def encabezado(hora_datos: datetime):
         f'<div class="ant-title">Estatus de Cargas</div>'
         f'<div class="ant-rule"></div>'
         f'<div class="ant-sub">Antillana Comercial</div>'
-        f'<div class="ant-stamp"><span class="ant-dot"></span> Datos actualizados: {esc(sello)} (hora RD)</div>'
+        f'<div class="ant-stamp"><span class="ant-dot"></span> {esc(sello)}</div>'
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -1231,7 +1271,7 @@ def grafico_paises(df: pd.DataFrame, key: str):
 # ---------------------------------------------------------------------------
 def mostrar_dashboard(datos: dict):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-    encabezado(datos["hora"])
+    encabezado(datos)
 
     if datos["error"]:
         st.error(datos["error"])
@@ -2028,9 +2068,7 @@ def main():
             invalidar_caches()
             st.rerun()
         st.caption(f"Última lectura: {datos['hora'].strftime('%H:%M:%S')}")
-        restantes = st.session_state.get("refrescos_restantes")
-        if restantes is not None:
-            st.caption(f"Sesión recordada: quedan {restantes} recarga(s) sin PIN")
+        st.caption(f"Sesión recordada {VIDA_SESION_MINUTOS} min al recargar")
         st.write("")
         if st.button("Cerrar sesión", width="stretch"):
             cerrar_sesion()

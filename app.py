@@ -28,6 +28,7 @@ Cambios estructurales frente a la versión anterior (resumen para mantenimiento)
 
 from __future__ import annotations
 
+import base64
 import html
 import io
 import re
@@ -35,6 +36,7 @@ import time
 import unicodedata
 from secrets import token_urlsafe
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -64,9 +66,20 @@ COL_PAIS = "Pais_Origen"
 COL_ETA = "Llegada a Puerto (ETA)"
 COL_DIAS_PUERTO = "Dias en puerto"
 COL_ACTUALIZACION = "Fecha_Actualizacion"  # el Sheet lo tiene con tilde; _norm lo resuelve
+COL_ACTUALIZADO_POR = "Actualizado_Por"    # la app la crea sola la primera vez que escribe
+
+# Columnas opcionales: si existen en el Sheet, la app las usa; si no, ni se
+# mencionan. Así se pueden agregar Orden_Compra, Cliente, Puerto_Destino o
+# Valor_USD desde Google Sheets sin tocar una línea de código.
+NOMBRES_VALOR = {"valor_usd", "valor", "monto", "valor_cif", "monto_usd", "valor us$", "valor us"}
+MAX_FILAS_LECTURA = 20000
 
 REQUIRED_COLUMNS = [COL_BL, COL_DESC, COL_MODELO, COL_CANT, COL_PAIS, COL_ETA]
-ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, COL_ACTUALIZACION]
+ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
+# Columnas que la app calcula o gestiona internamente y que no se muestran como
+# "campos extra" del embarque.
+COLUMNAS_INTERNAS = {"Categoria", "FilaSheet", "EstadoTexto", "DiasRel", "ETAFecha",
+                     "Prioridad", "OrdenSec", COL_DIAS_PUERTO}
 
 CATEGORIAS = ["Equipos", "Generadores", "Aéreos", "Carga Suelta", "Consolidados"]
 RECIBIDO_SHEET = "Recibido (Mes)"
@@ -75,6 +88,7 @@ LOG_SHEET = "Log"
 COLUMNAS_RECIBIDO = [
     COL_BL, COL_DESC, COL_MODELO, COL_CANT, COL_PAIS, COL_ETA,
     "Fecha_Recibido", "Categoria_Origen", "Registrado_Por", COL_ACTUALIZACION,
+    COL_ACTUALIZADO_POR,
 ]
 COLUMNAS_LOG = ["Fecha_Hora", "Usuario", "Accion", "BL", "Categoria", "Detalle"]
 
@@ -187,6 +201,33 @@ CUSTOM_CSS = """
     display:inline-block; padding:3px 11px; border-radius:999px;
     font-size:0.73rem; font-weight:700; color:#fff; white-space:nowrap;
 }
+/* Ficha completa de un embarque */
+.ficha { border:1px solid var(--ant-borde); border-radius:12px; overflow:hidden; background:#fff; }
+.ficha-fila { display:grid; grid-template-columns: 210px 1fr; gap:12px;
+              padding:9px 16px; border-bottom:1px solid #F3F4F6; font-size:0.9rem; }
+.ficha-fila:last-child { border-bottom:none; }
+.ficha-k { color:#9CA3AF; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em;
+           font-weight:700; padding-top:2px; }
+.ficha-v { color:#1F2937; font-weight:600; word-break:break-word; }
+@media (max-width: 640px) { .ficha-fila { grid-template-columns:1fr; gap:2px; } }
+
+.ant-logo { max-height:54px; margin-bottom:0.4rem; }
+
+/* Impresión: una hoja limpia para llevar a reunión. Se van los gráficos, los
+   botones, la barra lateral y los filtros; queda el encabezado y la lista. */
+@media print {
+    [data-testid="stSidebar"], [data-testid="stToolbar"], [data-testid="stHeader"],
+    .stButton, .stDownloadButton, [data-testid="stExpander"], .solo-pantalla,
+    [data-testid="stTextInput"], [data-testid="stSelectbox"], [data-testid="stAlert"] {
+        display:none !important;
+    }
+    .block-container { padding:0 !important; max-width:100% !important; }
+    .lista { border:1px solid #999; box-shadow:none; }
+    .fila { break-inside:avoid; }
+    .badge { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    .kpi-card { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+}
+
 .vacio { padding:26px 18px; text-align:center; color:var(--ant-suave); font-size:0.9rem; background:#fff; }
 
 @media (max-width: 640px) {
@@ -470,7 +511,7 @@ def _refrescar_estructura():
     _headers.clear()
 
 
-@st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def _headers(titulo_hoja: str) -> list:
     ws = get_worksheet(titulo_hoja)
     if ws is None:
@@ -539,8 +580,11 @@ def _buscar_fila_por_bl(ws, bl: str):
 
 
 def _df_desde_valores(valores: list, columnas_canonicas: list) -> pd.DataFrame:
-    """Convierte la matriz cruda de una pestaña en DataFrame con nombres de
-    columna canónicos (resolviendo acentos) y todas las columnas esperadas."""
+    """Convierte la matriz cruda de una pestaña en DataFrame.
+    Las columnas conocidas se renombran al nombre canónico (resolviendo acentos y
+    mayúsculas); las demás se conservan tal cual venían, para que agregar una
+    columna nueva en Google Sheets (Orden_Compra, Cliente, Valor_USD...) baste
+    para que la app la reconozca sin cambiar código."""
     if not valores or not valores[0]:
         return pd.DataFrame(columns=columnas_canonicas)
     headers_reales = [str(h) for h in valores[0]]
@@ -548,12 +592,25 @@ def _df_desde_valores(valores: list, columnas_canonicas: list) -> pd.DataFrame:
     # Las filas pueden venir más cortas (celdas vacías al final) o más largas
     # (alguien escribió a la derecha del último encabezado): se ajustan al ancho.
     filas = [(list(f) + [""] * ancho)[:ancho] for f in valores[1:]]
-    df = pd.DataFrame(filas, columns=headers_reales)
+
+    # Encabezados vacíos o repetidos: se les pone un nombre único para que pandas
+    # no reviente y para que se vean en el detalle como lo que son, columnas sueltas.
+    vistos, limpios = {}, []
+    for i, h in enumerate(headers_reales):
+        nombre = h.strip() or f"Columna {i + 1}"
+        if _norm(nombre) in vistos:
+            vistos[_norm(nombre)] += 1
+            nombre = f"{nombre} ({vistos[_norm(nombre)]})"
+        else:
+            vistos[_norm(nombre)] = 1
+        limpios.append(nombre)
+
+    df = pd.DataFrame(filas, columns=limpios)
 
     mapa = {}
     for canon in columnas_canonicas:
         for real in df.columns:
-            if _norm(real) == _norm(canon):
+            if _norm(real) == _norm(canon) and real not in mapa:
                 mapa[real] = canon
                 break
     df = df.rename(columns=mapa)
@@ -562,6 +619,58 @@ def _df_desde_valores(valores: list, columnas_canonicas: list) -> pd.DataFrame:
         if c not in df.columns:
             df[c] = ""
     return df
+
+
+def columnas_extra(df: pd.DataFrame) -> list:
+    """Columnas que el usuario agregó en el Sheet y que la app no gestiona."""
+    conocidas = set(ALL_COLUMNS) | COLUMNAS_INTERNAS | {"Fecha_Recibido", "Categoria_Origen", "Registrado_Por"}
+    return [c for c in df.columns if c not in conocidas]
+
+
+def columna_de_valor(df: pd.DataFrame):
+    """Detecta si el Sheet trae una columna de valor monetario, sin obligar a que
+    se llame de una forma concreta."""
+    for c in df.columns:
+        if _norm(c) in NOMBRES_VALOR:
+            return c
+    return None
+
+
+def es_numero(v) -> bool:
+    """NaN es truthy en Python, así que 'if valor' NO sirve para descartar celdas
+    vacías de una columna numérica de pandas."""
+    return v is not None and pd.notna(v)
+
+
+def a_numero(valor):
+    """'US$ 145,300.50' -> 145300.5. Devuelve None si no hay número."""
+    texto = str(valor or "").strip()
+    if not texto:
+        return None
+    limpio = re.sub(r"[^0-9,.\-]", "", texto)
+    if not limpio:
+        return None
+    # Si hay coma y punto, el último separador que aparece es el decimal.
+    if "," in limpio and "." in limpio:
+        if limpio.rfind(",") > limpio.rfind("."):
+            limpio = limpio.replace(".", "").replace(",", ".")
+        else:
+            limpio = limpio.replace(",", "")
+    elif "," in limpio:
+        entero, _, decimales = limpio.rpartition(",")
+        limpio = f"{entero.replace(',', '')}.{decimales}" if len(decimales) in (1, 2) else limpio.replace(",", "")
+    try:
+        return float(limpio)
+    except ValueError:
+        return None
+
+
+def formato_dinero(monto: float) -> str:
+    if monto >= 1_000_000:
+        return f"US$ {monto / 1_000_000:,.2f} M"
+    if monto >= 10_000:
+        return f"US$ {monto / 1_000:,.0f} K"
+    return f"US$ {monto:,.0f}"
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
@@ -576,7 +685,7 @@ def cargar_todo() -> dict:
             "activos": pd.DataFrame(columns=ALL_COLUMNS + ["Categoria"]),
             "historico": pd.DataFrame(columns=COLUMNAS_RECIBIDO),
             "hora": ahora_rd(),
-            "ultima_carga": None,
+            "ultima_carga": None, "ultima_persona": "", "avisos": [],
             "error": f"No se pudo conectar con el Google Sheet: {e}",
         }
 
@@ -594,11 +703,11 @@ def cargar_todo() -> dict:
             "activos": pd.DataFrame(columns=ALL_COLUMNS + ["Categoria"]),
             "historico": pd.DataFrame(columns=COLUMNAS_RECIBIDO),
             "hora": ahora_rd(),
-            "ultima_carga": None,
+            "ultima_carga": None, "ultima_persona": "", "avisos": [],
             "error": "El Google Sheet no tiene ninguna de las pestañas esperadas.",
         }
 
-    rangos = [f"'{titulo}'!A1:Z5000" for _, titulo in objetivos]
+    rangos = [f"'{titulo}'!A1:AZ{MAX_FILAS_LECTURA}" for _, titulo in objetivos]
     try:
         respuesta = ss.values_batch_get(rangos)
     except gspread.exceptions.APIError as e:
@@ -606,15 +715,24 @@ def cargar_todo() -> dict:
             "activos": pd.DataFrame(columns=ALL_COLUMNS + ["Categoria"]),
             "historico": pd.DataFrame(columns=COLUMNAS_RECIBIDO),
             "hora": ahora_rd(),
-            "ultima_carga": None,
+            "ultima_carga": None, "ultima_persona": "", "avisos": [],
             "error": f"Google Sheets no respondió (posible límite de cuota): {e}",
         }
 
     bloques = respuesta.get("valueRanges", [])
-    frames, historico = [], pd.DataFrame(columns=COLUMNAS_RECIBIDO)
+    frames, historico, avisos = [], pd.DataFrame(columns=COLUMNAS_RECIBIDO), []
 
     for (etiqueta, _titulo), bloque in zip(objetivos, bloques):
         valores = bloque.get("values", [])
+        # Si una pestaña llega justo al tope del rango pedido, es muy probable que
+        # haya filas más abajo que la app no está viendo. Truncar en silencio es
+        # peor que cualquier error visible: se toman decisiones con datos a medias.
+        if len(valores) >= MAX_FILAS_LECTURA:
+            avisos.append(
+                f"La pestaña '{etiqueta}' llegó al tope de {MAX_FILAS_LECTURA:,} filas que la app lee. "
+                "Puede haber embarques más abajo que no se están mostrando; hay que archivar lo viejo "
+                "o subir el límite en el código."
+            )
         if etiqueta == RECIBIDO_SHEET:
             historico = _df_desde_valores(valores, COLUMNAS_RECIBIDO)
             continue
@@ -649,8 +767,27 @@ def cargar_todo() -> dict:
             marcas += [m for m in (parsear_marca(v) for v in cuadro[COL_ACTUALIZACION]) if m]
     ultima_carga = max(marcas) if marcas else None
 
+    # Quién hizo esa última carga, para que el sello no sea solo una hora.
+    ultima_persona = ""
+    if ultima_carga is not None:
+        for cuadro in (activos, historico):
+            if cuadro.empty or COL_ACTUALIZACION not in cuadro.columns:
+                continue
+            columna_autor = COL_ACTUALIZADO_POR if COL_ACTUALIZADO_POR in cuadro.columns else None
+            if columna_autor is None and "Registrado_Por" in cuadro.columns:
+                columna_autor = "Registrado_Por"
+            if columna_autor is None:
+                continue
+            for marca, autor in zip(cuadro[COL_ACTUALIZACION], cuadro[columna_autor]):
+                if parsear_marca(marca) == ultima_carga and str(autor).strip():
+                    ultima_persona = str(autor).strip()
+                    break
+            if ultima_persona:
+                break
+
     return {"activos": activos, "historico": historico, "hora": ahora_rd(),
-            "ultima_carga": ultima_carga, "error": None}
+            "ultima_carga": ultima_carga, "ultima_persona": ultima_persona,
+            "avisos": avisos, "error": None}
 
 
 def invalidar_caches():
@@ -721,7 +858,8 @@ def append_row(datos: dict, categoria: str):
         return False, f"No existe la pestaña '{categoria}' en el Google Sheet."
     datos = dict(datos)
     datos[COL_ACTUALIZACION] = marca_ahora()
-    headers = _headers(ws.title)
+    datos[COL_ACTUALIZADO_POR] = usuario_actual()
+    headers = _asegurar_columnas(ws, [COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
     ws.append_row(_fila_desde_dict(headers, datos), value_input_option="RAW")
     return True, ""
 
@@ -731,12 +869,13 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str):
     ws = get_worksheet(categoria)
     if ws is None:
         return False, f"No existe la pestaña '{categoria}' en el Google Sheet."
-    headers = _headers(ws.title)
-    sello = marca_ahora()
+    headers = _asegurar_columnas(ws, [COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    sello, autor = marca_ahora(), usuario_actual()
     filas = []
     for _, r in df.iterrows():
         datos = {c: r.get(c, "") for c in REQUIRED_COLUMNS}
         datos[COL_ACTUALIZACION] = sello
+        datos[COL_ACTUALIZADO_POR] = autor
         filas.append(_fila_desde_dict(headers, datos))
     ws.append_rows(filas, value_input_option="RAW")
     return True, ""
@@ -753,12 +892,13 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict):
     if fila is None:
         return False, f"El BL '{bl_original}' ya no está en '{categoria}' — puede que alguien lo movió."
 
-    headers = _headers(ws.title)
+    headers = _asegurar_columnas(ws, [COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
     actuales = ws.row_values(fila)
     actuales += [""] * (len(headers) - len(actuales))
     combinado = {h: actuales[i] for i, h in enumerate(headers)}
     combinado.update(datos)
     combinado[COL_ACTUALIZACION] = marca_ahora()
+    combinado[COL_ACTUALIZADO_POR] = usuario_actual()
 
     rango = f"{rowcol_to_a1(fila, 1)}:{rowcol_to_a1(fila, len(headers))}"
     ws.update(range_name=rango, values=[_fila_desde_dict(headers, combinado)], value_input_option="RAW")
@@ -824,6 +964,7 @@ def marcar_como_recibido(bl: str, categoria: str):
         "Categoria_Origen": categoria,
         "Registrado_Por": usuario_actual(),
         COL_ACTUALIZACION: marca_ahora(),
+        COL_ACTUALIZADO_POR: usuario_actual(),
     }
     ws_destino.append_row(_fila_desde_dict(headers_destino, registro), value_input_option="RAW")
     ws_origen.delete_rows(fila)
@@ -899,13 +1040,14 @@ def normalizar_etas(cambios: list):
 # ---------------------------------------------------------------------------
 # LÓGICA DE ESTADO
 # ---------------------------------------------------------------------------
-def estado_embarque(eta_valor):
+def estado_embarque(eta_valor, hoy: date = None):
     """Devuelve (estado, dias_relativos). dias_relativos es el atraso en días si
-    está En Puerto, los días que faltan si está Próximo a llegar, y None si no aplica."""
+    está En Puerto, los días que faltan si está Próximo a llegar, y None si no aplica.
+    'hoy' se recibe por parámetro para no consultar el reloj una vez por fila."""
     eta = parsear_fecha(eta_valor)
     if eta is None:
         return EST_SIN_FECHA, None
-    dias = (eta - hoy_rd()).days
+    dias = (eta - (hoy or hoy_rd())).days
     if dias < 0:
         return EST_PUERTO, abs(dias)
     if dias <= UMBRAL_PROXIMO:
@@ -928,24 +1070,52 @@ def texto_estado(estado: str, dias) -> str:
 
 
 def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
-    """Agrega estado, fecha parseada y clave de orden operativo."""
+    """Agrega estado, fecha parseada, valor numérico y clave de orden operativo.
+    Se llama UNA vez por refresco sobre la tabla completa; las vistas por
+    categoría trabajan sobre rebanadas de este resultado en vez de recalcular."""
     df = df.copy()
     if df.empty:
-        for c in ("EstadoTexto", "DiasRel", "ETAFecha", "Prioridad", "OrdenSec"):
+        for c in ("EstadoTexto", "DiasRel", "ETAFecha", "Prioridad", "OrdenSec", "ValorNum"):
             df[c] = []
         return df
 
-    calculado = [estado_embarque(v) for v in df[COL_ETA]]
+    hoy = hoy_rd()
+    etas = [parsear_fecha(v) for v in df[COL_ETA]]
+    calculado = [estado_embarque(f, hoy) for f in etas]
+    df["ETAFecha"] = etas
     df["EstadoTexto"] = [c[0] for c in calculado]
     df["DiasRel"] = [c[1] for c in calculado]
-    df["ETAFecha"] = [parsear_fecha(v) for v in df[COL_ETA]]
     df["Prioridad"] = df["EstadoTexto"].map(PRIORIDAD_ESTADO).fillna(9).astype(int)
     # Dentro de "En Puerto", primero el más atrasado; en el resto, el ETA más cercano.
     df["OrdenSec"] = [
         -(dias or 0) if estado == EST_PUERTO else (fecha.toordinal() if fecha else 10**9)
         for estado, dias, fecha in zip(df["EstadoTexto"], df["DiasRel"], df["ETAFecha"])
     ]
+    col_valor = columna_de_valor(df)
+    df["ValorNum"] = [a_numero(v) for v in df[col_valor]] if col_valor else [None] * len(df)
     return df.sort_values(["Prioridad", "OrdenSec"], kind="stable").reset_index(drop=True)
+
+
+def ordenar_vista(df: pd.DataFrame, criterio: str) -> pd.DataFrame:
+    """Ordena la lista según lo que el usuario elija. El orden por defecto es
+    operativo (lo atrasado primero), no alfabético."""
+    if df.empty:
+        return df
+    if criterio == "Urgencia":
+        return df.sort_values(["Prioridad", "OrdenSec"], kind="stable")
+    if criterio == "ETA más próximo":
+        return df.sort_values("OrdenSec", key=lambda s: s.where(s > 0, 10**9), kind="stable")
+    if criterio == "ETA más lejano":
+        return df.sort_values("OrdenSec", ascending=False, kind="stable")
+    if criterio == "BL":
+        return df.sort_values(COL_BL, kind="stable")
+    if criterio == "País":
+        return df.sort_values([COL_PAIS, "Prioridad"], kind="stable")
+    if criterio == "Descripción":
+        return df.sort_values(COL_DESC, kind="stable")
+    if criterio == "Valor" and "ValorNum" in df.columns:
+        return df.sort_values("ValorNum", ascending=False, na_position="last", kind="stable")
+    return df
 
 
 # ---------------------------------------------------------------------------
@@ -1117,12 +1287,28 @@ def login_screen():
 # ---------------------------------------------------------------------------
 # COMPONENTES DE UI
 # ---------------------------------------------------------------------------
+@st.cache_data(show_spinner=False)
+def _logo_base64() -> str:
+    """Si existe assets/logo.png (o .jpg) en el repo, se muestra en el encabezado.
+    Si no, no pasa nada: la app sigue con el ícono vectorial. No invento un logo
+    ni lo traigo de internet."""
+    for nombre in ("assets/logo.png", "assets/logo.jpg", "assets/logo.jpeg", "logo.png"):
+        ruta = Path(nombre)
+        if ruta.exists():
+            tipo = "jpeg" if ruta.suffix.lower() in (".jpg", ".jpeg") else "png"
+            return f"data:image/{tipo};base64," + base64.b64encode(ruta.read_bytes()).decode()
+    return ""
+
+
 def encabezado(datos: dict):
     anio = hoy_rd().year
     ultima = datos.get("ultima_carga")
+    persona = str(datos.get("ultima_persona", "") or "").strip()
     if ultima:
         sello = (f"Información actualizada: {ultima.day:02d} {MESES_ES_CORTO[ultima.month]} "
                  f"{ultima.year}, {ultima.strftime('%I:%M %p').lstrip('0').lower()} (hora RD)")
+        if persona:
+            sello += f" · por {persona}"
     else:
         sello = "Sin registro de la última carga de información"
     st.markdown(
@@ -1269,25 +1455,56 @@ def grafico_paises(df: pd.DataFrame, key: str):
 # ---------------------------------------------------------------------------
 # DASHBOARD
 # ---------------------------------------------------------------------------
+def selector_horizontal(label: str, opciones: list, key: str, default=None, formato=None):
+    """Segmented control cuando la versión de Streamlit lo trae; radio horizontal
+    si no. Sustituye a st.tabs para las categorías: con tabs, Streamlit ejecuta el
+    cuerpo de TODAS las pestañas en cada rerun aunque el usuario vea una sola, y
+    eso significaba armar seis bloques de KPI, doce gráficos y seis listas para
+    mostrar la sexta parte."""
+    formato = formato or (lambda x: str(x))
+    # Si la clave ya tiene valor en session_state, pasar default= además dispara
+    # una advertencia de Streamlit; el estado guardado manda.
+    extra = {} if key in st.session_state else {"default": default or opciones[0]}
+    if hasattr(st, "segmented_control"):
+        elegido = st.segmented_control(
+            label, opciones, key=key, format_func=formato,
+            label_visibility="collapsed", width="stretch", **extra,
+        )
+    else:
+        elegido = st.radio(label, opciones, key=key, horizontal=True,
+                           format_func=formato, label_visibility="collapsed")
+    return elegido or (default or opciones[0])
+
+
 def mostrar_dashboard(datos: dict):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     encabezado(datos)
 
     if datos["error"]:
         st.error(datos["error"])
+    for aviso in datos.get("avisos", []):
+        st.warning(aviso)
 
-    df = datos["activos"]
-    if df.empty:
+    df_todo = datos["activos"]
+    if df_todo.empty:
         st.info("Todavía no hay embarques cargados.")
         return
 
+    # Enriquecimiento único: estados, fechas y valores se calculan una sola vez
+    # por refresco y las vistas por categoría son rebanadas de este resultado.
+    df_todo = enriquecer(df_todo)
     recibidas_mes = contar_recibidas_mes(datos["historico"])
-    pestanas = ["Todos"] + CATEGORIAS
-    tabs = st.tabs(pestanas)
-    for nombre, tab in zip(pestanas, tabs):
-        with tab:
-            sub = df if nombre == "Todos" else df[df["Categoria"] == nombre]
-            _render_categoria(sub, st.session_state.get("rol", "viewer"), nombre, recibidas_mes)
+
+    opciones = ["Todos"] + [c for c in CATEGORIAS if (df_todo["Categoria"] == c).any()]
+    conteos = df_todo["Categoria"].value_counts().to_dict()
+    etiquetas = {c: (f"{c} · {len(df_todo)}" if c == "Todos" else f"{c} · {conteos.get(c, 0)}")
+                 for c in opciones}
+    seleccion = selector_horizontal(
+        "Categoría", opciones, key="categoria_activa", formato=lambda c: etiquetas.get(c, c),
+    )
+
+    sub = df_todo if seleccion == "Todos" else df_todo[df_todo["Categoria"] == seleccion]
+    _render_categoria(sub, st.session_state.get("rol", "viewer"), seleccion, recibidas_mes)
 
 
 def contar_recibidas_mes(historico: pd.DataFrame) -> int:
@@ -1303,29 +1520,32 @@ def contar_recibidas_mes(historico: pd.DataFrame) -> int:
 
 
 @st.fragment
-def _render_categoria(df_bruto: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: int):
-    if df_bruto.empty:
+def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: int):
+    if df.empty:
         st.info("No hay embarques en esta categoría.")
         return
 
-    df = enriquecer(df_bruto)
     conteo = df["EstadoTexto"].value_counts().to_dict()
     proximos_n = conteo.get(EST_PROXIMO, 0)
     en_puerto_n = conteo.get(EST_PUERTO, 0)
     sin_fecha_n = conteo.get(EST_SIN_FECHA, 0)
+
+    valores = [v for v in df.get("ValorNum", []) if es_numero(v)]
+    valor_total = sum(valores) if valores else None
+    valor_puerto = sum(v for v, e in zip(df.get("ValorNum", []), df["EstadoTexto"])
+                       if es_numero(v) and e == EST_PUERTO) if valores else None
 
     # -------------------- KPIs --------------------
     kpis = [
         ("Total en tránsito", len(df), COLOR_TOTAL, "Todos", "total"),
         (f"Próximos {UMBRAL_PROXIMO} días", proximos_n, STATUS_COLOR[EST_PROXIMO], EST_PROXIMO, "proximos"),
         ("En puerto sin confirmar", en_puerto_n, STATUS_COLOR[EST_PUERTO], EST_PUERTO, "enpuerto"),
+        (f"Recibidas en {MESES_ES[hoy_rd().month]}", recibidas_mes, COLOR_RECIBIDAS_MES, "__historico__", "recibidas"),
     ]
-    # Los KPI son botones (para que sean clicables) maquillados como tarjetas.
     # OJO con la clave del contenedor: Streamlit la usa TAL CUAL como clase CSS
-    # (st-key-<clave>). Si la clave lleva un espacio ("Carga Suelta") el navegador
-    # la parte en dos clases y el selector no engancha; con acentos ("Aéreos")
-    # tampoco es fiable. Por eso la clave se construye con un slug ASCII y el
-    # nombre visible de la pestaña solo se usa para el session_state.
+    # (st-key-<clave>). Si lleva un espacio ("Carga Suelta") el navegador la parte
+    # en dos clases y el selector no engancha; con acentos ("Aéreos") tampoco es
+    # fiable. Por eso la clave se construye con un slug ASCII.
     clave = _slug_css(tab_key)
     estilos = "".join(
         f".st-key-kpi_{clave}_{slug} button {{"
@@ -1351,19 +1571,31 @@ def _render_categoria(df_bruto: pd.DataFrame, rol: str, tab_key: str, recibidas_
     )
     st.markdown(f"<style>{estilos}</style>", unsafe_allow_html=True)
 
-    cols = st.columns(4)
+    cols = st.columns(len(kpis))
     for col, (label, valor, color, filtro, slug) in zip(cols, kpis):
         with col:
             with st.container(key=f"kpi_{clave}_{slug}"):
-                if st.button(f"{label.upper()}\n\n{valor}", key=f"btn_{clave}_{slug}",
-                             width="stretch"):
+                if st.button(f"{label.upper()}\n\n{valor}", key=f"btn_{clave}_{slug}", width="stretch"):
+                    if filtro == "__historico__":
+                        st.session_state["seccion"] = "Histórico"
+                        st.rerun()
                     st.session_state[f"estado_{tab_key}"] = filtro
                     rerun_fragmento()
-    with cols[3]:
-        st.markdown(
-            tarjeta_kpi(f"Recibidas en {MESES_ES[hoy_rd().month]}", recibidas_mes, COLOR_RECIBIDAS_MES),
+
+    # -------------------- Valor en tránsito (solo si el Sheet lo trae) --------------------
+    if valor_total:
+        v1, v2 = st.columns(2)
+        v1.markdown(
+            tarjeta_kpi("Valor en tránsito", formato_dinero(valor_total), "#0C447C",
+                        f"{len(valores)} de {len(df)} embarque(s) con valor declarado"),
             unsafe_allow_html=True,
         )
+        v2.markdown(
+            tarjeta_kpi("Valor detenido en puerto", formato_dinero(valor_puerto or 0), "#B45309",
+                        "mercancía llegada y sin confirmar recepción"),
+            unsafe_allow_html=True,
+        )
+        st.write("")
 
     if sin_fecha_n:
         st.warning(
@@ -1374,30 +1606,42 @@ def _render_categoria(df_bruto: pd.DataFrame, rol: str, tab_key: str, recibidas_
     st.write("")
 
     # -------------------- GRÁFICOS --------------------
-    g1, g2 = st.columns([1.5, 1])
-    with g1:
-        st.caption("Llegadas previstas")
-        grafico_linea_tiempo(df, tab_key)
-    with g2:
-        st.caption("Origen")
-        grafico_paises(df, tab_key)
+    with st.container():
+        st.markdown('<div class="solo-pantalla">', unsafe_allow_html=True)
+        g1, g2 = st.columns([1.5, 1])
+        with g1:
+            st.caption("Llegadas previstas")
+            grafico_linea_tiempo(df, tab_key)
+        with g2:
+            st.caption("Origen")
+            grafico_paises(df, tab_key)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.divider()
 
     # -------------------- FILTROS --------------------
     paises = ["Todos"] + sorted({p for p in df[COL_PAIS] if str(p).strip()})
     estados = ["Todos"] + [e for e in STATUS_ORDER]
+    criterios = ["Urgencia", "ETA más próximo", "ETA más lejano", "BL", "País", "Descripción"]
+    if valor_total:
+        criterios.append("Valor")
 
-    f1, f2, f3, f4 = st.columns([1.6, 1.1, 1.1, 0.6])
+    f1, f2, f3 = st.columns([2, 1, 1])
     busqueda = f1.text_input("Buscar", key=f"busca_{tab_key}",
                              placeholder="BL, descripción o modelo…", label_visibility="collapsed")
     pais_sel = f2.selectbox("País", paises, key=f"pais_{tab_key}", label_visibility="collapsed")
     estado_sel = f3.selectbox("Estado", estados, key=f"estado_{tab_key}", label_visibility="collapsed")
-    if f4.button("Limpiar", key=f"limpiar_{tab_key}", width="stretch"):
-        for k in (f"busca_{tab_key}", f"pais_{tab_key}", f"estado_{tab_key}"):
-            st.session_state.pop(k, None)
-        st.session_state.pop(f"firma_pais_{tab_key}", None)
-        rerun_fragmento()
+
+    f4, f5 = st.columns([1, 1])
+    orden_sel = f4.selectbox("Ordenar por", criterios, key=f"orden_{tab_key}")
+    with f5:
+        st.write("")
+        st.write("")
+        if st.button("Limpiar filtros", key=f"limpiar_{tab_key}", width="stretch"):
+            for k in (f"busca_{tab_key}", f"pais_{tab_key}", f"estado_{tab_key}", f"orden_{tab_key}"):
+                st.session_state.pop(k, None)
+            st.session_state.pop(f"firma_pais_{tab_key}", None)
+            rerun_fragmento()
 
     filtrado = df
     if pais_sel != "Todos":
@@ -1406,19 +1650,100 @@ def _render_categoria(df_bruto: pd.DataFrame, rol: str, tab_key: str, recibidas_
         filtrado = filtrado[filtrado["EstadoTexto"] == estado_sel]
     if busqueda and busqueda.strip():
         q = _norm(busqueda)
-        mascara = filtrado.apply(
+        filtrado = filtrado[filtrado.apply(
             lambda r: q in _norm(f"{r[COL_BL]} {r[COL_DESC]} {r[COL_MODELO]}"), axis=1
-        )
-        filtrado = filtrado[mascara]
+        )]
+    filtrado = ordenar_vista(filtrado, orden_sel)
 
-    st.caption(f"Mostrando {len(filtrado)} de {len(df)} embarque(s) · ordenados por urgencia")
+    resumen_valor = ""
+    if valor_total:
+        parcial = sum(v for v in filtrado.get("ValorNum", []) if es_numero(v))
+        if parcial:
+            resumen_valor = f" · {formato_dinero(parcial)}"
+    st.caption(f"Mostrando {len(filtrado)} de {len(df)} embarque(s){resumen_valor}")
+
     render_lista(filtrado)
+
+    # -------------------- EXPORTAR Y VER DETALLE --------------------
+    e1, e2 = st.columns([1, 2])
+    with e1:
+        st.download_button(
+            "Descargar esta vista",
+            data=_df_a_excel(tabla_exportable(filtrado), f"{tab_key}"[:28] or "Vista"),
+            file_name=f"embarques_{_slug_css(tab_key)}_{hoy_rd().isoformat()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"dl_vista_{tab_key}",
+            width="stretch",
+        )
+
+    if not filtrado.empty:
+        with st.expander("Ver ficha completa de un embarque", expanded=False):
+            opciones_det = [
+                f"{r[COL_BL] or '(sin BL)'} · {str(r[COL_DESC])[:40]}"
+                for _, r in filtrado.iterrows()
+            ]
+            elegido = st.selectbox("Embarque", opciones_det, key=f"detalle_{tab_key}",
+                                   label_visibility="collapsed")
+            _ficha_embarque(filtrado.iloc[opciones_det.index(elegido)])
 
     # -------------------- ACCIONES DE ADMIN --------------------
     if rol == "admin":
         st.write("")
         with st.expander("Acciones sobre un embarque", expanded=False):
             _panel_acciones(filtrado, tab_key)
+
+
+def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
+    """La vista tal como se está viendo, lista para Excel: sin columnas internas,
+    con el estado ya redactado y el ETA en formato legible."""
+    if df.empty:
+        return pd.DataFrame(columns=[COL_BL, "Descripción", "Estado"])
+    salida = pd.DataFrame({
+        "BL": df[COL_BL],
+        "Descripción": df[COL_DESC],
+        "Modelo/Serie": df[COL_MODELO],
+        "Cantidad": df[COL_CANT],
+        "País de origen": df[COL_PAIS],
+        "ETA": [formato_eta(v) for v in df[COL_ETA]],
+        "Estado": [texto_estado(e, d) for e, d in zip(df["EstadoTexto"], df["DiasRel"])],
+        "Categoría": df["Categoria"],
+    })
+    for extra in columnas_extra(df):
+        salida[extra] = df[extra]
+    if COL_ACTUALIZACION in df.columns:
+        salida["Última actualización"] = df[COL_ACTUALIZACION]
+    if COL_ACTUALIZADO_POR in df.columns:
+        salida["Actualizado por"] = df[COL_ACTUALIZADO_POR]
+    return salida.reset_index(drop=True)
+
+
+def _ficha_embarque(fila):
+    """Todos los campos del embarque, incluidas las columnas que alguien haya
+    agregado en el Sheet y que la app no gestiona."""
+    campos = [
+        ("BL", fila[COL_BL]),
+        ("Descripción", fila[COL_DESC]),
+        ("Modelo / Serie", fila[COL_MODELO]),
+        ("Cantidad", fila[COL_CANT]),
+        ("País de origen", fila[COL_PAIS]),
+        ("Categoría", fila["Categoria"]),
+        ("ETA", formato_eta(fila[COL_ETA])),
+        ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"])),
+    ]
+    for extra in columnas_extra(fila.to_frame().T):
+        campos.append((extra.replace("_", " "), fila[extra]))
+    if str(fila.get(COL_ACTUALIZACION, "")).strip():
+        autor = str(fila.get(COL_ACTUALIZADO_POR, "")).strip()
+        campos.append(("Última actualización",
+                       f"{fila[COL_ACTUALIZACION]}" + (f" · {autor}" if autor else "")))
+    campos.append(("Fila en el Sheet", fila.get("FilaSheet", "—")))
+
+    filas_html = "".join(
+        f'<div class="ficha-fila"><div class="ficha-k">{esc(k)}</div>'
+        f'<div class="ficha-v">{esc(v)}</div></div>'
+        for k, v in campos
+    )
+    st.markdown(f'<div class="ficha">{filas_html}</div>', unsafe_allow_html=True)
 
 
 def _panel_acciones(df: pd.DataFrame, tab_key: str):
@@ -1455,8 +1780,7 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
 
     if c2.button("Editar", key=f"edit_{tab_key}", width="stretch"):
         st.session_state["editar_bl"] = bl
-        st.session_state["editar_categoria"] = categoria
-        st.session_state["ir_a_editar"] = True
+        st.session_state["seccion"] = "Editar"
         st.rerun()
 
     if c3.button("Eliminar", key=f"del_{tab_key}", width="stretch"):
@@ -2058,11 +2382,25 @@ def main():
         login_screen()
         return
 
-    datos = cargar_todo()
+    with st.spinner("Leyendo los embarques…"):
+        datos = cargar_todo()
+
+    es_admin = st.session_state.rol == "admin"
+    secciones = (["Dashboard", "Agregar", "Editar", "Carga masiva", "Histórico", "Herramientas"]
+                 if es_admin else ["Dashboard", "Histórico"])
+
+    # Navegación con estado propio en vez de st.tabs: además de no ejecutar el
+    # cuerpo de todas las secciones en cada rerun, permite saltar por código
+    # (el KPI de recibidas lleva al histórico; "Editar" se abre desde el dashboard).
+    destino = st.session_state.pop("seccion", None)
+    if destino in secciones:
+        st.session_state["seccion_actual"] = destino
+    if st.session_state.get("seccion_actual") not in secciones:
+        st.session_state["seccion_actual"] = "Dashboard"
 
     with st.sidebar:
         st.markdown(f"**{st.session_state.get('usuario', 'Usuario')}**")
-        st.caption("Administrador" if st.session_state.rol == "admin" else "Solo visualización")
+        st.caption("Administrador" if es_admin else "Solo visualización")
         st.write("")
         if st.button("Actualizar datos", width="stretch"):
             invalidar_caches()
@@ -2074,29 +2412,23 @@ def main():
             cerrar_sesion()
             st.rerun()
 
-    if st.session_state.rol == "admin":
-        etiquetas = ["Dashboard", "Agregar", "Editar", "Carga masiva", "Histórico", "Herramientas"]
-        if st.session_state.pop("ir_a_editar", False):
-            st.info("Ve a la pestaña **Editar** para modificar el embarque seleccionado.")
-        t1, t2, t3, t4, t5, t6 = st.tabs(etiquetas)
-        with t1:
-            mostrar_dashboard(datos)
-        with t2:
-            form_alta_manual(datos)
-        with t3:
-            form_editar(datos)
-        with t4:
-            form_carga_masiva(datos)
-        with t5:
-            mostrar_historico(datos, "admin")
-        with t6:
-            herramientas(datos)
+    if len(secciones) > 1:
+        seccion = selector_horizontal("Sección", secciones, key="seccion_actual")
     else:
-        t1, t2 = st.tabs(["Dashboard", "Histórico"])
-        with t1:
-            mostrar_dashboard(datos)
-        with t2:
-            mostrar_historico(datos, "viewer")
+        seccion = secciones[0]
+
+    if seccion == "Dashboard":
+        mostrar_dashboard(datos)
+    elif seccion == "Agregar":
+        form_alta_manual(datos)
+    elif seccion == "Editar":
+        form_editar(datos)
+    elif seccion == "Carga masiva":
+        form_carga_masiva(datos)
+    elif seccion == "Histórico":
+        mostrar_historico(datos, "admin" if es_admin else "viewer")
+    elif seccion == "Herramientas":
+        herramientas(datos)
 
 
 if __name__ == "__main__":

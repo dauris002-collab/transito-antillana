@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import html
 import io
+import re
 import time
 import unicodedata
 from datetime import date, datetime, timedelta
@@ -239,21 +240,114 @@ def esc(valor) -> str:
 
 # --- Fechas -----------------------------------------------------------------
 EPOCH_SHEETS = date(1899, 12, 30)
-FORMATOS_FECHA = ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%Y/%m/%d")
+
+# Nombres de mes que el parser reconoce. Se guardan normalizados (sin acentos,
+# minúsculas), en español e inglés, completos y abreviados, porque los correos de
+# navieras y proveedores llegan en los dos idiomas.
+_MESES_EN = ["january", "february", "march", "april", "may", "june",
+             "july", "august", "september", "october", "november", "december"]
+_MESES_TEXTO = {}
+for _n, _nombre_es in MESES_ES.items():
+    _MESES_TEXTO[_norm(_nombre_es)] = _n
+    _MESES_TEXTO[MESES_ES_CORTO[_n]] = _n
+for _i, _nombre_en in enumerate(_MESES_EN, start=1):
+    _MESES_TEXTO[_nombre_en] = _i
+    _MESES_TEXTO[_nombre_en[:3]] = _i
+_MESES_TEXTO.update({"setiembre": 9, "set": 9, "sept": 9, "sep": 9, "ene": 1, "abr": 4, "dic": 12})
+
+_SEPARADORES = re.compile(r"[\s/\\\-\.,;_|]+")
+_ORDINALES = re.compile(r"^(\d+)(ro|er|ero|do|to|mo|vo|no|st|nd|rd|th)$")
+# Palabras que la gente intercala y que no aportan nada: "6 DE julio DEL 2026".
+_RELLENO = {"de", "del", "dia", "el", "la", "los", "las", "ano", "a", "al", "of", "the"}
+
+
+def _tokenizar_fecha(texto: str) -> list:
+    """Parte cualquier forma de escribir una fecha en tres piezas.
+    Tolera separadores mezclados, palabras de relleno y ordinales:
+    '02-05-2026', '6 de julio 2026', 'julio 28 del 2026', '1ro de mayo/2026'."""
+    base = _norm(texto).split(" 00:00:00")[0]
+    tokens = []
+    for pieza in _SEPARADORES.split(base):
+        pieza = pieza.strip("º°ª'\"()[]")
+        pieza = _ORDINALES.sub(r"\1", pieza)
+        if pieza and pieza not in _RELLENO:
+            tokens.append(pieza)
+    return tokens
+
+
+def _normalizar_anio(n: int) -> int:
+    """Año de dos dígitos -> siglo razonable. '26' es 2026, no 26 d.C."""
+    if n >= 100:
+        return n
+    return 2000 + n if n < 80 else 1900 + n
+
+
+def _interpretar_tokens(tokens: list, dia_primero: bool = True):
+    """Devuelve (dia, mes, anio, ambigua) o None.
+    'ambigua' es True solo cuando día y mes son ambos <= 12 y están escritos en
+    número, que es el único caso donde el orden realmente no se puede deducir."""
+    if len(tokens) != 3:
+        return None
+
+    # Caso 1: uno de los tres es un nombre de mes -> no hay ambigüedad posible.
+    for i, t in enumerate(tokens):
+        mes = _MESES_TEXTO.get(t) or _MESES_TEXTO.get(t[:3]) if not t.isdigit() else None
+        if mes:
+            resto = [tokens[j] for j in range(3) if j != i]
+            if not all(r.isdigit() for r in resto):
+                return None
+            a, b = int(resto[0]), int(resto[1])
+            if len(resto[0]) == 4 or a > 31:
+                anio, dia = a, b
+            else:
+                dia, anio = a, b
+            return dia, mes, _normalizar_anio(anio), False
+
+    if not all(t.isdigit() for t in tokens):
+        return None
+    a, b, c = (int(t) for t in tokens)
+
+    # Caso 2: año al frente (2026-08-25, 2026/8/25).
+    if len(tokens[0]) == 4:
+        return c, b, a, False
+
+    # Caso 3: año al final. Si uno de los dos primeros pasa de 12, ese es el día.
+    anio = _normalizar_anio(c)
+    if a > 12 and b <= 12:
+        return a, b, anio, False
+    if b > 12 and a <= 12:
+        return b, a, anio, False
+    if a <= 12 and b <= 12:
+        dia, mes = (a, b) if dia_primero else (b, a)
+        return dia, mes, anio, True
+    return None
+
+
+def _fecha_de_tokens(tokens: list, dia_primero: bool = True):
+    resultado = _interpretar_tokens(tokens, dia_primero)
+    if resultado is None:
+        return None
+    dia, mes, anio, _ = resultado
+    try:
+        return date(anio, mes, dia)
+    except ValueError:
+        return None
 
 
 def parsear_fecha(valor):
-    """Convierte a date lo que sea que venga del Sheet o del Excel.
-    Entiende: date/datetime, ISO, dd/mm/aaaa, dd-mm-aaaa, aaaa/mm/dd,
-    '3 de enero de 2027', '03 enero 2027' y seriales numéricos de Sheets/Excel.
-    Devuelve None si no puede. Interpreta dd/mm (convención RD), NUNCA mm/dd."""
+    """Convierte a date lo que sea que venga del Sheet, del Excel o tecleado a mano.
+    Entiende date/datetime, ISO (2026-08-25), compacto (20260825), dd/mm/aaaa,
+    dd-mm-aa, aaaa/mm/dd, mes en texto en cualquier posición y en español o
+    inglés ('6 de julio 2026', 'julio 28 del 2026', '28-Jul-26', 'July 28, 2026')
+    y seriales numéricos de Sheets/Excel (46181).
+    Ante un número puro ambiguo (02-05-2026) asume día/mes, la convención local.
+    Devuelve None solo si de verdad no hay forma de interpretarlo."""
     if valor is None:
         return None
     if isinstance(valor, datetime):
         return valor.date()
     if isinstance(valor, date):
         return valor
-
     if isinstance(valor, (int, float)) and not isinstance(valor, bool):
         try:
             return EPOCH_SHEETS + timedelta(days=int(valor))
@@ -263,33 +357,31 @@ def parsear_fecha(valor):
     texto = str(valor).strip()
     if not texto:
         return None
-    texto = texto.split(" 00:00:00")[0].strip()
 
-    for fmt in FORMATOS_FECHA:
-        try:
-            return datetime.strptime(texto.split(" ")[0], fmt).date()
-        except ValueError:
-            continue
+    # ISO exacto: el formato en que la app escribe siempre.
+    try:
+        return datetime.strptime(texto[:10], "%Y-%m-%d").date()
+    except ValueError:
+        pass
 
-    # Serial numérico llegado como texto ("46181")
-    limpio = texto.replace(",", "")
-    if limpio.replace(".", "", 1).isdigit():
-        try:
-            return EPOCH_SHEETS + timedelta(days=int(float(limpio)))
-        except (ValueError, OverflowError):
-            pass
-
-    # Mes en texto español: "03 enero 2027", "3 de enero de 2027", "3-ene-2027"
-    partes = [p for p in texto.replace("-", " ").replace("/", " ").replace(",", " ").split() if p.lower() != "de"]
-    if len(partes) == 3:
-        dia_s, mes_s, anio_s = partes
-        mes = MESES_NUM.get(_norm(mes_s)) or MESES_NUM.get(_norm(mes_s)[:3])
-        if mes and dia_s.isdigit() and anio_s.isdigit():
+    solo_digitos = texto.replace(",", "").replace(" ", "")
+    if solo_digitos.replace(".", "", 1).isdigit():
+        entero = solo_digitos.split(".")[0]
+        if len(entero) == 8:  # 20260825
             try:
-                return date(int(anio_s), mes, int(dia_s))
+                return datetime.strptime(entero, "%Y%m%d").date()
             except ValueError:
-                return None
-    return None
+                pass
+        try:
+            numero = int(float(solo_digitos))
+        except (ValueError, OverflowError):
+            return None
+        # Rango de seriales plausibles de Sheets/Excel (aprox. 1954 a 2119).
+        if 20000 <= numero <= 80000:
+            return EPOCH_SHEETS + timedelta(days=numero)
+        return None
+
+    return _fecha_de_tokens(_tokenizar_fecha(texto), dia_primero=True)
 
 
 def formato_eta(valor) -> str:
@@ -305,10 +397,10 @@ def formato_eta(valor) -> str:
 def analizar_eta(valor) -> dict:
     """Diagnóstico de un ETA para la herramienta de normalización.
     - 'iso': ya está en AAAA-MM-DD, no hay nada que hacer.
-    - 'ambigua': texto tipo 06/08/2026 donde día y mes son ambos <= 12, así que
-      el valor guardado depende de cómo lo interprete quien lo lea.
+    - 'ambigua': número puro tipo 02-05-2026 donde día y mes son ambos <= 12; el
+      valor real depende de quién lo escribió, así que se pregunta.
     - 'convertible': se entiende sin ambigüedad pero no está en ISO.
-    - 'ilegible': no se pudo interpretar de ninguna forma."""
+    - 'ilegible': no hay forma de interpretarlo."""
     crudo = "" if valor is None else str(valor).strip()
     if not crudo:
         return {"tipo": "vacia", "crudo": crudo, "dm": None, "md": None}
@@ -319,23 +411,15 @@ def analizar_eta(valor) -> dict:
     except ValueError:
         pass
 
-    partes = crudo.replace("-", "/").replace(".", "/").split("/")
-    if len(partes) == 3 and all(p.strip().isdigit() for p in partes):
-        a, b, c = (int(p) for p in partes)
-        if len(partes[2].strip()) == 4:  # dd/mm/aaaa o mm/dd/aaaa
-            dm = md = None
-            try:
-                dm = date(c, b, a)
-            except ValueError:
-                pass
-            try:
-                md = date(c, a, b)
-            except ValueError:
-                pass
-            if dm and md and dm != md:
-                return {"tipo": "ambigua", "crudo": crudo, "dm": dm, "md": md}
-            if dm or md:
-                return {"tipo": "convertible", "crudo": crudo, "dm": dm or md, "md": None}
+    tokens = _tokenizar_fecha(crudo)
+    lectura = _interpretar_tokens(tokens, dia_primero=True)
+    if lectura is not None and lectura[3]:
+        dm = _fecha_de_tokens(tokens, dia_primero=True)
+        md = _fecha_de_tokens(tokens, dia_primero=False)
+        if dm and md and dm != md:
+            return {"tipo": "ambigua", "crudo": crudo, "dm": dm, "md": md}
+        if dm or md:
+            return {"tipo": "convertible", "crudo": crudo, "dm": dm or md, "md": None}
 
     f = parsear_fecha(crudo)
     if f:
@@ -1491,78 +1575,187 @@ def form_carga_masiva(datos: dict):
 # ---------------------------------------------------------------------------
 # HISTÓRICO
 # ---------------------------------------------------------------------------
+def _preparar_historico(historico: pd.DataFrame) -> pd.DataFrame:
+    """Historico crudo -> DataFrame con fecha parseada, año y mes.
+    Nada se borra nunca de la pestaña 'Recibido (Mes)': cada recepción queda ahí
+    con su fecha, así que en noviembre se puede consultar julio del año pasado
+    igual que el mes en curso."""
+    df = historico.copy()
+    if df.empty:
+        return df
+    df["FechaParsed"] = [parsear_fecha(v) for v in df.get("Fecha_Recibido", [])]
+    df = df[df["FechaParsed"].notna()].copy()
+    if df.empty:
+        return df
+    df["Anio"] = [f.year for f in df["FechaParsed"]]
+    df["Mes"] = [f.month for f in df["FechaParsed"]]
+    if "Categoria_Origen" in df.columns:
+        df["Categoria_Origen"] = df["Categoria_Origen"].replace("", "Sin categoría").fillna("Sin categoría")
+    else:
+        df["Categoria_Origen"] = "Sin categoría"
+    return df.sort_values("FechaParsed").reset_index(drop=True)
+
+
+def _grafico_anual(df_anio: pd.DataFrame, anio: int):
+    """Los 12 meses del año, incluidos los que van en cero: un mes vacío también
+    es información y desaparecerlo del gráfico distorsiona la lectura."""
+    conteo = df_anio.groupby("Mes").size().to_dict()
+    hoy = hoy_rd()
+    etiquetas = [MESES_ES_CORTO[m] for m in range(1, 13)]
+    valores = [int(conteo.get(m, 0)) for m in range(1, 13)]
+    colores = [
+        COLOR_RECIBIDAS_MES if not (anio == hoy.year and m == hoy.month) else "#1B5E20"
+        for m in range(1, 13)
+    ]
+    fig = go.Figure(data=[go.Bar(
+        x=etiquetas, y=valores, marker=dict(color=colores),
+        text=[v if v else "" for v in valores], textposition="outside",
+        hovertemplate="%{x} " + str(anio) + ": %{y} recibido(s)<extra></extra>",
+    )])
+    fig.update_layout(
+        margin=dict(t=20, b=10, l=10, r=10), height=250,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#374151", size=11), showlegend=False, bargap=0.3,
+        xaxis=dict(showgrid=False),
+        yaxis=dict(showgrid=True, gridcolor="#F3F4F6", showticklabels=False),
+    )
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key=f"hist_anual_{anio}")
+
+
 def mostrar_historico(datos: dict, rol: str):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     st.subheader("Histórico de embarques recibidos")
 
-    df = datos["historico"].copy()
+    crudo = datos["historico"]
+    df = _preparar_historico(crudo)
+
+    if crudo.empty:
+        st.info(
+            "Todavía no hay embarques archivados. Cada vez que marques uno como recibido, "
+            "queda guardado aquí de forma permanente con la fecha en que llegó, y se puede "
+            "consultar en cualquier momento futuro por mes y por año."
+        )
+        return
     if df.empty:
-        st.info("Todavía no hay embarques archivados como recibidos.")
+        st.warning("Hay registros archivados, pero ninguno tiene una fecha de recibido interpretable.")
         return
 
-    df["FechaParsed"] = [parsear_fecha(v) for v in df["Fecha_Recibido"]]
-    sin_fecha = int(df["FechaParsed"].isna().sum())
-    df = df[df["FechaParsed"].notna()].copy()
-    if sin_fecha:
-        st.caption(f"{sin_fecha} registro(s) del histórico no tienen fecha interpretable y no se están contando.")
-    if df.empty:
-        st.info("No hay registros con fecha válida en el histórico.")
-        return
-
-    df["MesKey"] = [(f.year, f.month) for f in df["FechaParsed"]]
+    descartados = len(crudo) - len(df)
     hoy = hoy_rd()
-    key_actual = (hoy.year, hoy.month)
-    key_anterior = (hoy.year - 1, 12) if hoy.month == 1 else (hoy.year, hoy.month - 1)
-    n_actual = int((df["MesKey"] == key_actual).sum())
-    n_anterior = int((df["MesKey"] == key_anterior).sum())
+
+    # -------------------- Indicadores del momento --------------------
+    mes_ant = (hoy.year - 1, 12) if hoy.month == 1 else (hoy.year, hoy.month - 1)
+    n_actual = int(((df["Anio"] == hoy.year) & (df["Mes"] == hoy.month)).sum())
+    n_anterior = int(((df["Anio"] == mes_ant[0]) & (df["Mes"] == mes_ant[1])).sum())
+    n_anio = int((df["Anio"] == hoy.year).sum())
+    n_mismo_mes_anio_pasado = int(((df["Anio"] == hoy.year - 1) & (df["Mes"] == hoy.month)).sum())
     delta = n_actual - n_anterior
 
-    c1, c2 = st.columns(2)
-    c1.markdown(tarjeta_kpi(f"{MESES_ES[key_anterior[1]]} {key_anterior[0]} (mes anterior)",
-                            n_anterior, "#6B7280"), unsafe_allow_html=True)
-    c2.markdown(tarjeta_kpi(f"{MESES_ES[key_actual[1]]} {key_actual[0]} (mes en curso)",
-                            n_actual, COLOR_RECIBIDAS_MES,
-                            f"{'+' if delta >= 0 else ''}{delta} vs. mes anterior"), unsafe_allow_html=True)
-    st.write("")
+    k1, k2, k3 = st.columns(3)
+    k1.markdown(
+        tarjeta_kpi(f"{MESES_ES[mes_ant[1]]} {mes_ant[0]} · mes anterior", n_anterior, "#6B7280"),
+        unsafe_allow_html=True,
+    )
+    k2.markdown(
+        tarjeta_kpi(
+            f"{MESES_ES[hoy.month]} {hoy.year} · mes en curso", n_actual, COLOR_RECIBIDAS_MES,
+            f"{'+' if delta >= 0 else ''}{delta} vs. mes anterior"
+            + (f" · {n_mismo_mes_anio_pasado} en {hoy.year - 1}" if n_mismo_mes_anio_pasado else ""),
+        ),
+        unsafe_allow_html=True,
+    )
+    k3.markdown(
+        tarjeta_kpi(f"Acumulado {hoy.year}", n_anio, COLOR_TOTAL, f"{len(df)} en todo el histórico"),
+        unsafe_allow_html=True,
+    )
+    if descartados:
+        st.caption(f"{descartados} registro(s) del archivo no tienen fecha interpretable y no se están contando.")
 
-    conteo_mes = df.groupby("MesKey").size().sort_index()
-    ultimos = list(conteo_mes.items())[-12:]
-    if len(ultimos) > 1:
-        fig = go.Figure(data=[go.Bar(
-            x=[f"{MESES_ES_CORTO[m]} {str(y)[2:]}" for (y, m), _ in ultimos],
-            y=[v for _, v in ultimos],
-            marker=dict(color=COLOR_RECIBIDAS_MES),
-            text=[v for _, v in ultimos], textposition="outside",
-            hovertemplate="%{x}: %{y} recibido(s)<extra></extra>",
-        )])
-        fig.update_layout(margin=dict(t=18, b=10, l=10, r=10), height=230,
-                          paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                          font=dict(color="#374151", size=11), showlegend=False,
-                          xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor="#F3F4F6",
-                                                                 showticklabels=False))
-        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key="hist_meses")
+    st.write("")
+    st.divider()
+
+    # -------------------- Año a consultar --------------------
+    anios = sorted(df["Anio"].unique(), reverse=True)
+    idx_anio = anios.index(hoy.year) if hoy.year in anios else 0
+    c_anio, c_info = st.columns([1, 3])
+    anio_sel = int(c_anio.selectbox("Año", anios, index=idx_anio, key="hist_anio"))
+    df_anio = df[df["Anio"] == anio_sel]
+    c_info.markdown(
+        f"<div style='padding-top:1.9rem; color:#6B7280; font-size:0.9rem;'>"
+        f"{len(df_anio)} embarque(s) recibido(s) en {anio_sel}"
+        f"{' · el histórico completo arranca en ' + str(min(anios)) if len(anios) > 1 else ''}</div>",
+        unsafe_allow_html=True,
+    )
+
+    _grafico_anual(df_anio, anio_sel)
+
+    # -------------------- Resumen mes por mes y por categoría --------------------
+    resumen = pd.crosstab(df_anio["Mes"], df_anio["Categoria_Origen"])
+    resumen = resumen.reindex(range(1, 13), fill_value=0)
+    resumen.insert(len(resumen.columns), "Total", resumen.sum(axis=1))
+    resumen.index = [MESES_ES[m] for m in range(1, 13)]
+    resumen.index.name = "Mes"
+    fila_total = pd.DataFrame([resumen.sum(axis=0)], index=[f"Total {anio_sel}"])
+    tabla_resumen = pd.concat([resumen, fila_total])
+    st.markdown(f"**Resumen {anio_sel} por mes y categoría**")
+    st.dataframe(tabla_resumen, width="stretch")
+
+    d1, d2 = st.columns(2)
+    d1.download_button(
+        f"Descargar resumen {anio_sel}",
+        data=_df_a_excel(tabla_resumen.reset_index().rename(columns={"index": "Mes"}), f"Resumen {anio_sel}"),
+        file_name=f"resumen_recibidos_{anio_sel}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_resumen_anio",
+    )
+    d2.download_button(
+        "Descargar histórico completo",
+        data=_df_a_excel(_tabla_detalle(df), "Historico"),
+        file_name="historico_recibidos_completo.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_historico_total",
+    )
 
     st.divider()
 
-    meses = sorted(df["MesKey"].unique(), reverse=True)
-    etiquetas = [f"{MESES_ES[m]} {y}" for (y, m) in meses]
-    seleccion = st.selectbox("Consultar un mes", etiquetas, key="historico_mes")
-    y_sel, m_sel = meses[etiquetas.index(seleccion)]
-    filtrado = df[df["MesKey"] == (y_sel, m_sel)].sort_values("FechaParsed")
+    # -------------------- Detalle de un mes concreto --------------------
+    st.markdown("**Detalle mes por mes**")
+    meses_con_datos = sorted(df_anio["Mes"].unique(), reverse=True)
+    if not meses_con_datos:
+        st.info(f"No hay embarques recibidos registrados en {anio_sel}.")
+        return
 
-    columnas = [c for c in (COL_BL, COL_DESC, COL_MODELO, COL_CANT, COL_PAIS,
-                            "Fecha_Recibido", "Categoria_Origen", "Registrado_Por") if c in filtrado.columns]
-    tabla = filtrado[columnas].rename(columns={
-        COL_DESC: "Descripción", COL_MODELO: "Modelo/Serie", COL_PAIS: "Origen",
-        "Fecha_Recibido": "Fecha recibido", "Categoria_Origen": "Categoría", "Registrado_Por": "Registrado por",
-    })
+    idx_mes = meses_con_datos.index(hoy.month) if (anio_sel == hoy.year and hoy.month in meses_con_datos) else 0
+    m1, m2 = st.columns([1, 2])
+    mes_sel = m1.selectbox(
+        "Mes", meses_con_datos, index=idx_mes,
+        format_func=lambda m: MESES_ES[m], key="hist_mes",
+    )
+    busqueda = m2.text_input("Buscar en el mes", key="hist_busca",
+                             placeholder="BL, descripción o modelo…")
+
+    filtrado = df_anio[df_anio["Mes"] == mes_sel]
+    if busqueda and busqueda.strip():
+        q = _norm(busqueda)
+        filtrado = filtrado[filtrado.apply(
+            lambda r: q in _norm(f"{r.get(COL_BL,'')} {r.get(COL_DESC,'')} {r.get(COL_MODELO,'')}"), axis=1
+        )]
+
+    etiqueta_mes = f"{MESES_ES[mes_sel]} {anio_sel}"
+    st.markdown(
+        tarjeta_kpi(f"Recibidos en {etiqueta_mes}", len(filtrado), COLOR_RECIBIDAS_MES),
+        unsafe_allow_html=True,
+    )
+    st.write("")
+
+    tabla = _tabla_detalle(filtrado)
     st.dataframe(tabla, width="stretch", hide_index=True)
-
     st.download_button(
-        f"Descargar {seleccion} en Excel",
-        data=_df_a_excel(tabla, seleccion),
-        file_name=f"recibidos_{y_sel}_{m_sel:02d}.xlsx",
+        f"Descargar {etiqueta_mes} en Excel",
+        data=_df_a_excel(tabla, etiqueta_mes),
+        file_name=f"recibidos_{anio_sel}_{mes_sel:02d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_mes",
     )
 
     if rol != "admin" or filtrado.empty:
@@ -1591,6 +1784,24 @@ def mostrar_historico(datos: dict, rol: str):
                 st.rerun()
             else:
                 st.error(mensaje)
+
+
+def _tabla_detalle(df: pd.DataFrame) -> pd.DataFrame:
+    """Vista legible del histórico, con la fecha ya formateada en español."""
+    if df.empty:
+        return pd.DataFrame(columns=["BL", "Descripción", "Modelo/Serie", "Cantidad",
+                                     "Origen", "Fecha recibido", "Categoría", "Registrado por"])
+    salida = pd.DataFrame({
+        "BL": df.get(COL_BL, ""),
+        "Descripción": df.get(COL_DESC, ""),
+        "Modelo/Serie": df.get(COL_MODELO, ""),
+        "Cantidad": df.get(COL_CANT, ""),
+        "Origen": df.get(COL_PAIS, ""),
+        "Fecha recibido": [f"{f.day:02d} {MESES_ES_CORTO[f.month]} {f.year}" for f in df["FechaParsed"]],
+        "Categoría": df.get("Categoria_Origen", ""),
+        "Registrado por": df.get("Registrado_Por", ""),
+    })
+    return salida.reset_index(drop=True)
 
 
 def _df_a_excel(df: pd.DataFrame, hoja: str) -> bytes:

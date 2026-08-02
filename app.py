@@ -152,9 +152,9 @@ CUSTOM_CSS = """
 .ant-dot { width:8px; height:8px; border-radius:50%; background:#22C55E; display:inline-block; }
 
 /* ---------- KPIs ---------- */
-.kpi-card { border-radius:14px; padding:14px 18px; min-height:86px; height:100%;
-            display:flex; flex-direction:column; justify-content:center;
-            box-shadow:0 2px 8px rgba(17,24,39,0.12); }
+.kpi-card { border-radius:14px; padding:14px 18px; min-height:92px; height:100%;
+            display:flex; flex-direction:column; justify-content:center; align-items:center;
+            text-align:center; box-shadow:0 2px 8px rgba(17,24,39,0.12); }
 .kpi-label {
     font-size:0.70rem; font-weight:700; text-transform:uppercase; letter-spacing:0.06em;
     color:rgba(255,255,255,0.92); margin-bottom:6px;
@@ -234,6 +234,16 @@ def _norm(texto) -> str:
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
     return s.casefold()
+
+
+def _slug_css(texto) -> str:
+    """Convierte un nombre visible ('Aéreos', 'Carga Suelta') en un identificador
+    ASCII apto para usarse como clase CSS: 'aereos', 'carga_suelta'."""
+    base = _norm(texto)
+    limpio = "".join(c if c.isalnum() else "_" for c in base)
+    while "__" in limpio:
+        limpio = limpio.replace("__", "_")
+    return limpio.strip("_") or "x"
 
 
 def esc(valor) -> str:
@@ -1271,25 +1281,32 @@ def _render_categoria(df_bruto: pd.DataFrame, rol: str, tab_key: str, recibidas_
         ("En puerto sin confirmar", en_puerto_n, STATUS_COLOR[EST_PUERTO], EST_PUERTO, "enpuerto"),
     ]
     # Los KPI son botones (para que sean clicables) maquillados como tarjetas.
-    # El label lleva dos párrafos de markdown: rótulo arriba, número abajo.
+    # OJO con la clave del contenedor: Streamlit la usa TAL CUAL como clase CSS
+    # (st-key-<clave>). Si la clave lleva un espacio ("Carga Suelta") el navegador
+    # la parte en dos clases y el selector no engancha; con acentos ("Aéreos")
+    # tampoco es fiable. Por eso la clave se construye con un slug ASCII y el
+    # nombre visible de la pestaña solo se usa para el session_state.
+    clave = _slug_css(tab_key)
     estilos = "".join(
-        f".st-key-kpi_{tab_key}_{slug} button {{"
+        f".st-key-kpi_{clave}_{slug} button {{"
         f"background:{color} !important; color:#fff !important; border:none !important;"
-        f"border-radius:14px !important; width:100% !important; min-height:86px !important;"
-        f"text-align:left !important; padding:14px 18px !important;"
+        f"border-radius:14px !important; width:100% !important; min-height:92px !important;"
+        f"text-align:center !important; padding:14px 18px !important;"
         f"box-shadow:0 2px 8px rgba(17,24,39,0.12) !important; transition:filter .15s ease;}} "
-        f".st-key-kpi_{tab_key}_{slug} button > div {{"
-        f"display:flex !important; flex-direction:column !important; align-items:flex-start !important;"
+        f".st-key-kpi_{clave}_{slug} button > div {{"
+        f"display:flex !important; flex-direction:column !important; align-items:center !important;"
         f"justify-content:center !important; width:100% !important;}} "
-        f".st-key-kpi_{tab_key}_{slug} button p {{margin:0 !important; color:#fff !important;}} "
-        f".st-key-kpi_{tab_key}_{slug} button p:first-of-type {{"
+        f".st-key-kpi_{clave}_{slug} button p {{margin:0 !important; color:#fff !important;"
+        f"text-align:center !important; width:100% !important;}} "
+        f".st-key-kpi_{clave}_{slug} button p:first-of-type {{"
         f"font-size:0.70rem !important; font-weight:700 !important; letter-spacing:0.06em !important;"
         f"opacity:0.92 !important;}} "
-        f".st-key-kpi_{tab_key}_{slug} button p:last-of-type {{"
+        f".st-key-kpi_{clave}_{slug} button p:last-of-type {{"
         f"font-size:2.0rem !important; font-weight:800 !important; line-height:1.05 !important;"
         f"margin-top:6px !important;}} "
-        f".st-key-kpi_{tab_key}_{slug} button:hover {{filter:brightness(0.93); color:#fff !important;}} "
-        f".st-key-kpi_{tab_key}_{slug} button:focus {{color:#fff !important; box-shadow:0 0 0 3px rgba(17,24,39,0.15) !important;}}"
+        f".st-key-kpi_{clave}_{slug} button:hover {{filter:brightness(0.93); color:#fff !important;}} "
+        f".st-key-kpi_{clave}_{slug} button:focus {{color:#fff !important;"
+        f"box-shadow:0 0 0 3px rgba(17,24,39,0.15) !important;}}"
         for _, _, color, _, slug in kpis
     )
     st.markdown(f"<style>{estilos}</style>", unsafe_allow_html=True)
@@ -1297,8 +1314,8 @@ def _render_categoria(df_bruto: pd.DataFrame, rol: str, tab_key: str, recibidas_
     cols = st.columns(4)
     for col, (label, valor, color, filtro, slug) in zip(cols, kpis):
         with col:
-            with st.container(key=f"kpi_{tab_key}_{slug}"):
-                if st.button(f"{label.upper()}\n\n{valor}", key=f"btn_{tab_key}_{slug}",
+            with st.container(key=f"kpi_{clave}_{slug}"):
+                if st.button(f"{label.upper()}\n\n{valor}", key=f"btn_{clave}_{slug}",
                              width="stretch"):
                     st.session_state[f"estado_{tab_key}"] = filtro
                     rerun_fragmento()

@@ -1,6 +1,7 @@
-streamlit>=1.37
-pandas>=2.0
+streamlit>=1.49
 gspread>=6.0
-google-auth>=2.29
+google-auth>=2.28
+pandas>=2.0
+plotly>=5.20
 openpyxl>=3.1
-plotly>=5.22
+ 

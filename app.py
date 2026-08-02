@@ -67,6 +67,7 @@ COL_ETA = "Llegada a Puerto (ETA)"
 COL_DIAS_PUERTO = "Dias en puerto"
 COL_ACTUALIZACION = "Fecha_Actualizacion"  # el Sheet lo tiene con tilde; _norm lo resuelve
 COL_ACTUALIZADO_POR = "Actualizado_Por"    # la app la crea sola la primera vez que escribe
+COL_ESTATUS_LLEGADA = "Estatus_Llegada"    # vacío = sin confirmar; "Retrasado" = se verificó que NO llegó
 
 # Columnas opcionales: si existen en el Sheet, la app las usa; si no, ni se
 # mencionan. Así se pueden agregar Orden_Compra, Cliente, Puerto_Destino o
@@ -75,7 +76,8 @@ NOMBRES_VALOR = {"valor_usd", "valor", "monto", "valor_cif", "monto_usd", "valor
 MAX_FILAS_LECTURA = 20000
 
 REQUIRED_COLUMNS = [COL_BL, COL_DESC, COL_MODELO, COL_CANT, COL_PAIS, COL_ETA]
-ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
+ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
+                                  COL_ESTATUS_LLEGADA]
 # Columnas que la app calcula o gestiona internamente y que no se muestran como
 # "campos extra" del embarque.
 COLUMNAS_INTERNAS = {"Categoria", "FilaSheet", "EstadoTexto", "DiasRel", "ETAFecha",
@@ -105,20 +107,27 @@ SEMANAS_HORIZONTE = 8
 EST_TRANSITO = "En tránsito"
 EST_PROXIMO = "Próximo a llegar"
 EST_PUERTO = "En Puerto"
+# "En Puerto" y "Retrasado" son cosas distintas y antes se confundían: el ETA
+# vencido solo dice que la fecha pasó, no si la mercancía llegó. Cuando alguien
+# responde "No, no llegó", el embarque pasa a Retrasado y deja de contarse como
+# mercancía esperando confirmación en puerto.
+EST_RETRASADO = "Retrasado"
 EST_SIN_FECHA = "Sin fecha válida"
+VALOR_RETRASADO = "Retrasado"
 
 STATUS_COLOR = {
     EST_TRANSITO: "#2E86DE",
     EST_PROXIMO: "#5C6BC0",
     EST_PUERTO: "#F0B90B",
+    EST_RETRASADO: "#D7263D",
     "Recibido": "#2E7D32",
     EST_SIN_FECHA: "#6B7280",
 }
 COLOR_TOTAL = "#17A2B8"
 COLOR_RECIBIDAS_MES = "#2E7D32"
 # Orden operativo: lo que exige acción primero.
-STATUS_ORDER = [EST_PUERTO, EST_PROXIMO, EST_TRANSITO, EST_SIN_FECHA]
-PRIORIDAD_ESTADO = {EST_PUERTO: 0, EST_PROXIMO: 1, EST_TRANSITO: 2, EST_SIN_FECHA: 3}
+STATUS_ORDER = [EST_RETRASADO, EST_PUERTO, EST_PROXIMO, EST_TRANSITO, EST_SIN_FECHA]
+PRIORIDAD_ESTADO = {EST_RETRASADO: 0, EST_PUERTO: 1, EST_PROXIMO: 2, EST_TRANSITO: 3, EST_SIN_FECHA: 4}
 PALETA_PAISES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
 
 MESES_ES = {
@@ -142,7 +151,21 @@ CUSTOM_CSS = """
     --ant-texto: #111827;
     --ant-suave: #6B7280;
 }
-.block-container { padding-top: 2.2rem; }
+/* El menú de secciones es el primer elemento de la página: sin este aire, en
+   algunas resoluciones queda medio escondido bajo la barra fija de Streamlit. */
+.block-container { padding-top: 4.2rem; }
+
+.nav-rotulo { font-size:0.70rem; text-transform:uppercase; letter-spacing:0.08em;
+              color:#9CA3AF; font-weight:700; margin:0 0 4px 2px; }
+
+/* Panel de confirmación de llegadas */
+.conf-titulo { font-size:0.78rem; text-transform:uppercase; letter-spacing:0.06em;
+               font-weight:800; color:#92400E; background:#FEF7E6;
+               border-left:4px solid #F0B90B; padding:8px 14px; border-radius:8px;
+               margin:6px 0 10px 0; }
+.conf-fila { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:6px 2px; }
+.conf-bl { font-weight:700; color:#111827; font-size:0.92rem; }
+.conf-desc { color:#6B7280; font-size:0.85rem; }
 
 /* ---------- Encabezado ---------- */
 .ant-head { text-align:center; margin: 0 0 1.4rem 0; }
@@ -1001,9 +1024,36 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict):
     combinado.update(datos)
     combinado[COL_ACTUALIZACION] = marca_ahora()
     combinado[COL_ACTUALIZADO_POR] = usuario_actual()
+    # Si el ETA se movió a futuro, el embarque vuelve a estar en tránsito y la
+    # marca de "verificado que no llegó" queda obsoleta.
+    eta_nuevo = parsear_fecha(datos.get(COL_ETA, combinado.get(COL_ETA, "")))
+    if eta_nuevo and eta_nuevo > hoy_rd():
+        combinado[COL_ESTATUS_LLEGADA] = ""
 
     rango = f"{rowcol_to_a1(fila, 1)}:{rowcol_to_a1(fila, len(headers))}"
     ws.update(range_name=rango, values=[_fila_desde_dict(headers, combinado)], value_input_option="RAW")
+    return True, ""
+
+
+@_con_manejo_apierror
+def marcar_estatus_llegada(bl: str, categoria: str, valor: str):
+    """Escribe (o limpia) la respuesta a '¿ya llegó?'. valor="" borra la marca,
+    valor="Retrasado" deja constancia de que se verificó que NO llegó."""
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return False, f"No existe la pestaña '{categoria}'."
+    fila = _buscar_fila_por_bl(ws, bl)
+    if fila is None:
+        return False, f"No se encontró el BL '{bl}' en '{categoria}'."
+
+    headers = _asegurar_columnas(ws, [COL_ESTATUS_LLEGADA, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ESTATUS_LLEGADA)]), "values": [[valor]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+    ]
+    ws.batch_update(peticiones, value_input_option="RAW")
     return True, ""
 
 
@@ -1158,6 +1208,9 @@ def estado_embarque(eta_valor, hoy: date = None):
 
 
 def texto_estado(estado: str, dias) -> str:
+    if estado == EST_RETRASADO and dias is not None:
+        d = int(dias)
+        return f"Retrasado {d} día{'s' if d != 1 else ''}"
     if estado == EST_PUERTO and dias is not None:
         d = int(dias)
         return f"En Puerto hace {d} día{'s' if d != 1 else ''}"
@@ -1185,7 +1238,13 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     etas = [parsear_fecha(v) for v in df[COL_ETA]]
     calculado = [estado_embarque(f, hoy) for f in etas]
     df["ETAFecha"] = etas
-    df["EstadoTexto"] = [c[0] for c in calculado]
+    estados = [c[0] for c in calculado]
+    if COL_ESTATUS_LLEGADA in df.columns:
+        estados = [
+            EST_RETRASADO if (e == EST_PUERTO and _norm(f) == _norm(VALOR_RETRASADO)) else e
+            for e, f in zip(estados, df[COL_ESTATUS_LLEGADA])
+        ]
+    df["EstadoTexto"] = estados
     df["DiasRel"] = [c[1] for c in calculado]
     df["Prioridad"] = df["EstadoTexto"].map(PRIORIDAD_ESTADO).fillna(9).astype(int)
     # Dentro de "En Puerto", primero el más atrasado; en el resto, el ETA más cercano.
@@ -1475,13 +1534,19 @@ def grafico_linea_tiempo(df: pd.DataFrame, key: str):
     inicio_semana = hoy - timedelta(days=hoy.weekday())
     etiquetas, valores, colores = [], [], []
 
+    retrasados = int((df["EstadoTexto"] == EST_RETRASADO).sum())
+    if retrasados:
+        etiquetas.append("Retrasados")
+        valores.append(retrasados)
+        colores.append(STATUS_COLOR[EST_RETRASADO])
+
     vencidos = int((df["EstadoTexto"] == EST_PUERTO).sum())
     if vencidos:
-        etiquetas.append("En puerto")
+        etiquetas.append("Por confirmar")
         valores.append(vencidos)
         colores.append(STATUS_COLOR[EST_PUERTO])
 
-    con_fecha = df[df["ETAFecha"].notna() & (df["EstadoTexto"] != EST_PUERTO)]
+    con_fecha = df[df["ETAFecha"].notna() & ~df["EstadoTexto"].isin([EST_PUERTO, EST_RETRASADO])]
     for i in range(SEMANAS_HORIZONTE):
         desde = inicio_semana + timedelta(weeks=i)
         hasta = desde + timedelta(days=6)
@@ -1636,6 +1701,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     conteo = df["EstadoTexto"].value_counts().to_dict()
     proximos_n = conteo.get(EST_PROXIMO, 0)
     en_puerto_n = conteo.get(EST_PUERTO, 0)
+    retrasados_n = conteo.get(EST_RETRASADO, 0)
     sin_fecha_n = conteo.get(EST_SIN_FECHA, 0)
 
     valores = [v for v in df.get("ValorNum", []) if es_numero(v)]
@@ -1647,7 +1713,8 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     kpis = [
         ("Total en tránsito", len(df), COLOR_TOTAL, "Todos", "total"),
         (f"Próximos {UMBRAL_PROXIMO} días", proximos_n, STATUS_COLOR[EST_PROXIMO], EST_PROXIMO, "proximos"),
-        ("En puerto sin confirmar", en_puerto_n, STATUS_COLOR[EST_PUERTO], EST_PUERTO, "enpuerto"),
+        ("Por confirmar llegada", en_puerto_n, STATUS_COLOR[EST_PUERTO], EST_PUERTO, "enpuerto"),
+        ("Retrasados", retrasados_n, STATUS_COLOR[EST_RETRASADO], EST_RETRASADO, "retrasados"),
         (f"Recibidas en {MESES_ES[hoy_rd().month]}", recibidas_mes, COLOR_RECIBIDAS_MES, "__historico__", "recibidas"),
     ]
     # OJO con la clave del contenedor: Streamlit la usa TAL CUAL como clase CSS
@@ -1704,6 +1771,9 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
             unsafe_allow_html=True,
         )
         st.write("")
+
+    if rol == "admin":
+        _panel_confirmacion(df, tab_key)
 
     if sin_fecha_n and rol == "admin":
         st.warning(
@@ -1799,6 +1869,78 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
         st.write("")
         with st.expander("Acciones sobre un embarque", expanded=False):
             _panel_acciones(filtrado, tab_key)
+
+
+def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
+    """El ETA vencido no dice si la mercancía llegó, solo que la fecha pasó.
+    Este panel hace la pregunta directa —¿llegó, sí o no?— y con la respuesta el
+    embarque se archiva como recibido o se marca como retrasado. Va a la vista,
+    sin desplegable, porque es lo único de la pantalla que exige acción hoy."""
+    pendientes = df[df["EstadoTexto"] == EST_PUERTO]
+    retrasados = df[df["EstadoTexto"] == EST_RETRASADO]
+    if pendientes.empty and retrasados.empty:
+        return
+
+    TOPE = 12
+    if not pendientes.empty:
+        st.markdown(
+            f'<div class="conf-titulo">¿Ya llegó? · {len(pendientes)} embarque(s) con la fecha vencida</div>',
+            unsafe_allow_html=True,
+        )
+
+    def _fila_confirmacion(r, marcados_como_retrasados: bool):
+        bl = str(r[COL_BL]).strip()
+        categoria = r["Categoria"]
+        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"])
+        color = STATUS_COLOR.get(r["EstadoTexto"], "#6B7280")
+        c1, c2, c3 = st.columns([3.2, 1.2, 1.6])
+        c1.markdown(
+            f'<div class="conf-fila"><span class="conf-bl">{esc(bl or "(sin BL)")}</span>'
+            f'<span class="conf-desc">{esc(r[COL_DESC])}</span>'
+            f'<span class="badge" style="background:{color};">{esc(etiqueta)}</span></div>',
+            unsafe_allow_html=True,
+        )
+        if not bl:
+            c2.caption("Sin BL: no se puede gestionar")
+            return
+        clave = f"{_slug_css(tab_key)}_{_slug_css(bl)}"
+        if c2.button("Sí, llegó", key=f"si_llego_{clave}", type="primary", width="stretch"):
+            ok, mensaje = marcar_como_recibido(bl, categoria)
+            if ok:
+                registrar_log("Llegada confirmada", bl, categoria, f"ETA {r[COL_ETA]}")
+                invalidar_caches()
+                st.rerun()
+            else:
+                st.error(mensaje)
+        if marcados_como_retrasados:
+            if c3.button("Sigue retrasado", key=f"sigue_{clave}", width="stretch", disabled=True):
+                pass
+            c3.caption("Actualiza el ETA en Editar")
+        else:
+            if c3.button("No, está retrasado", key=f"no_llego_{clave}", width="stretch"):
+                ok, mensaje = marcar_estatus_llegada(bl, categoria, VALOR_RETRASADO)
+                if ok:
+                    registrar_log("Marcado como retrasado", bl, categoria, f"ETA {r[COL_ETA]}")
+                    invalidar_caches()
+                    st.rerun()
+                else:
+                    st.error(mensaje)
+
+    for _, r in pendientes.head(TOPE).iterrows():
+        _fila_confirmacion(r, False)
+    if len(pendientes) > TOPE:
+        st.caption(f"…y {len(pendientes) - TOPE} más. Filtra por estado 'En Puerto' para verlos todos.")
+
+    if not retrasados.empty:
+        st.markdown(
+            f'<div class="conf-titulo" style="margin-top:14px;">Ya verificados como retrasados · {len(retrasados)}</div>',
+            unsafe_allow_html=True,
+        )
+        for _, r in retrasados.head(TOPE).iterrows():
+            _fila_confirmacion(r, True)
+        if len(retrasados) > TOPE:
+            st.caption(f"…y {len(retrasados) - TOPE} más.")
+    st.write("")
 
 
 def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
@@ -2493,6 +2635,7 @@ def main():
     with st.spinner("Leyendo los embarques…"):
         datos = cargar_todo()
 
+    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     es_admin = st.session_state.rol == "admin"
     secciones = (["Dashboard", "Agregar", "Editar", "Carga masiva", "Histórico", "Herramientas"]
                  if es_admin else ["Dashboard", "Histórico"])
@@ -2523,6 +2666,7 @@ def main():
     if len(secciones) > 1:
         # ancho="content": estirado a toda la pantalla, con dos o tres opciones,
         # parecía una barra de color suelta arriba de la página en vez de un menú.
+        st.markdown('<div class="nav-rotulo">Sección</div>', unsafe_allow_html=True)
         seccion = selector_horizontal("Sección", secciones, key="seccion_actual", ancho="content")
     else:
         seccion = secciones[0]

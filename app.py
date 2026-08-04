@@ -145,6 +145,12 @@ ETIQUETA_CORTA_ETAPA = {
     "Pago realizado": "Pago realizado",
     "Despachado": "Despachado",
 }
+# Vista adicional en el dashboard (no es una pestaña del Sheet): cruza todas las
+# categorías marítimas y muestra solo lo que ya confirmó llegada a puerto pero
+# aún no se despachó. Nace de un pedido explícito de Dauris: ver de un vistazo,
+# sin entrar categoría por categoría, todo lo que está en declaración o
+# pendiente de pago.
+VISTA_EN_PROCESO_PUERTO = "En proceso (puerto)"
 
 RECIBIDO_SHEET = "Recibido (Mes)"
 LOG_SHEET = "Log"
@@ -1637,8 +1643,11 @@ def tarjeta_kpi(label: str, valor, color: str, sub: str = "") -> str:
     )
 
 
-def render_lista(df: pd.DataFrame):
-    """Un solo bloque HTML: tabla en desktop, tarjetas en celular (lo decide el CSS)."""
+def render_lista(df: pd.DataFrame, mostrar_categoria: bool = False):
+    """Un solo bloque HTML: tabla en desktop, tarjetas en celular (lo decide el CSS).
+    mostrar_categoria antepone la categoría al badge — solo hace falta en vistas
+    que mezclan categorías (la vista cruzada de puerto), no en la vista normal
+    por categoría, donde repetirla en cada fila sería ruido."""
     if df.empty:
         st.markdown('<div class="lista"><div class="vacio">No hay embarques que coincidan con el filtro.</div></div>',
                     unsafe_allow_html=True)
@@ -1655,6 +1664,8 @@ def render_lista(df: pd.DataFrame):
         etapa_puerto = str(r.get(COL_ESTADO_PUERTO, "")).strip()
         if etapa_puerto:
             etiqueta = f"{etiqueta} · {ETIQUETA_CORTA_ETAPA.get(etapa_puerto, etapa_puerto)}"
+        if mostrar_categoria:
+            etiqueta = f"{r['Categoria']} · {etiqueta}"
         partes.append(
             f'<div class="fila" style="border-left-color:{color};">'
             f'<div class="c-bl" data-l="BL">{esc(r[COL_BL]) if str(r[COL_BL]).strip() else "(sin BL)"}</div>'
@@ -1845,6 +1856,28 @@ def selector_horizontal(label: str, opciones: list, key: str, default=None, form
     return elegido or (default or opciones[0])
 
 
+def _filtro_en_proceso_puerto(df: pd.DataFrame) -> pd.DataFrame:
+    """Cruza todas las categorías marítimas: todo lo que ya confirmó llegada a
+    puerto pero todavía no se despachó (Recepción y declaración, Solicitud de
+    pago o Pago realizado). Aéreos nunca aparece aquí porque no usa este flujo."""
+    if df.empty or COL_ESTADO_PUERTO not in df.columns:
+        return df.iloc[0:0]
+    es_maritimo = df["Categoria"].isin(CATEGORIAS_PUERTO)
+    etapa = df[COL_ESTADO_PUERTO].astype(str).str.strip()
+    en_proceso = es_maritimo & (etapa != "") & (etapa != ETAPAS_PUERTO[-1])
+    return df[en_proceso]
+
+
+def _resumen_etapas_puerto(df: pd.DataFrame):
+    """Conteo por etapa para la vista cruzada — de un vistazo, cuántos
+    embarques hay en declaración vs. cuántos esperando que Finanzas pague."""
+    conteo = df[COL_ESTADO_PUERTO].value_counts().to_dict()
+    etapas_previas = ETAPAS_PUERTO[:-1]  # sin "Despachado": esta vista no lo incluye
+    cols = st.columns(len(etapas_previas))
+    for col, etapa in zip(cols, etapas_previas):
+        col.metric(ETIQUETA_CORTA_ETAPA.get(etapa, etapa), conteo.get(etapa, 0))
+
+
 def mostrar_dashboard(datos: dict):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     encabezado(datos)
@@ -1870,15 +1903,29 @@ def mostrar_dashboard(datos: dict):
     recibidas_mes = contar_recibidas_mes(datos["historico"])
 
     opciones = ["Todos"] + [c for c in CATEGORIAS if (df_todo["Categoria"] == c).any()]
+    en_proceso_df = _filtro_en_proceso_puerto(df_todo)
+    if not en_proceso_df.empty:
+        opciones.append(VISTA_EN_PROCESO_PUERTO)
     conteos = df_todo["Categoria"].value_counts().to_dict()
-    etiquetas = {c: (f"{c} · {len(df_todo)}" if c == "Todos" else f"{c} · {conteos.get(c, 0)}")
-                 for c in opciones}
+    etiquetas = {
+        c: (f"{c} · {len(df_todo)}" if c == "Todos"
+            else f"{c} · {len(en_proceso_df)}" if c == VISTA_EN_PROCESO_PUERTO
+            else f"{c} · {conteos.get(c, 0)}")
+        for c in opciones
+    }
     seleccion = selector_horizontal(
         "Categoría", opciones, key="categoria_activa", formato=lambda c: etiquetas.get(c, c),
     )
 
-    sub = df_todo if seleccion == "Todos" else df_todo[df_todo["Categoria"] == seleccion]
-    _render_categoria(sub, st.session_state.get("rol", "viewer"), seleccion, recibidas_mes)
+    if seleccion == "Todos":
+        sub = df_todo
+    elif seleccion == VISTA_EN_PROCESO_PUERTO:
+        sub = en_proceso_df
+        _resumen_etapas_puerto(sub)
+    else:
+        sub = df_todo[df_todo["Categoria"] == seleccion]
+    _render_categoria(sub, st.session_state.get("rol", "viewer"), seleccion, recibidas_mes,
+                      mostrar_categoria=(seleccion == VISTA_EN_PROCESO_PUERTO))
 
 
 def contar_recibidas_mes(historico: pd.DataFrame) -> int:
@@ -1894,7 +1941,8 @@ def contar_recibidas_mes(historico: pd.DataFrame) -> int:
 
 
 @st.fragment
-def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: int):
+def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: int,
+                      mostrar_categoria: bool = False):
     if df.empty:
         st.info("No hay embarques en esta categoría.")
         return
@@ -2041,7 +2089,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
             resumen_valor = f" · {formato_dinero(parcial)}"
     st.caption(f"Mostrando {len(filtrado)} de {len(df)} embarque(s){resumen_valor}")
 
-    render_lista(filtrado)
+    render_lista(filtrado, mostrar_categoria=mostrar_categoria)
 
     # -------------------- EXPORTAR Y VER DETALLE --------------------
     e1, e2 = st.columns([1, 2])

@@ -1884,18 +1884,26 @@ def _resumen_etapas_puerto(df: pd.DataFrame):
         col.metric(ETIQUETA_CORTA_ETAPA.get(etapa, etapa), conteo.get(etapa, 0))
 
 
-def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str):
+def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str, contexto: str):
     """Un diagrama por embarque, siempre visible — no hay que ir a buscarlo en
     la ficha ni volver a elegir el BL en 'Acciones'. Nace de un problema real:
     el diagrama se veía una vez al confirmar la llegada y después 'desaparecía'
     porque solo se mostraba si volvías a seleccionar ese embarque a mano.
-    Admins pueden avanzar o retroceder la etapa aquí mismo."""
+    Admins pueden avanzar o retroceder la etapa aquí mismo.
+
+    contexto identifica DESDE DÓNDE se llama (Todos / una categoría puntual /
+    la pestaña dedicada 'En proceso (puerto)'): el mismo embarque puede
+    aparecer en más de un lugar, y sin esto las claves de sus widgets
+    colisionarían — una selección de etapa sin guardar en una vista se vería
+    reflejada en otra, porque Streamlit ignora el valor por defecto una vez
+    que una clave ya tiene algo en session_state."""
     es_admin = rol == "admin"
     for _, fila in df.sort_values(["Categoria", COL_ETA]).iterrows():
         bl = str(fila[COL_BL]).strip()
         categoria = fila["Categoria"]
         etapa_actual = str(fila.get(COL_ESTADO_PUERTO, "")).strip()
-        clave = f"{_slug_css(categoria)}_{_slug_css(bl or str(fila.get('FilaSheet', '')))}"
+        clave = (f"{_slug_css(contexto)}_{_slug_css(categoria)}_"
+                f"{_slug_css(bl or str(fila.get('FilaSheet', '')))}")
 
         st.markdown(f"**{esc(bl) or '(sin BL)'}** · {esc(fila[COL_DESC])} · {esc(categoria)}")
         grafico_flujo_puerto(etapa_actual, f"proceso_{clave}")
@@ -1970,7 +1978,8 @@ def mostrar_dashboard(datos: dict):
     elif seleccion == VISTA_EN_PROCESO_PUERTO:
         _resumen_etapas_puerto(en_proceso_df)
         st.divider()
-        _panel_en_proceso_puerto(en_proceso_df, st.session_state.get("rol", "viewer"))
+        _panel_en_proceso_puerto(en_proceso_df, st.session_state.get("rol", "viewer"),
+                                 contexto=VISTA_EN_PROCESO_PUERTO)
     else:
         sub = df_todo[df_todo["Categoria"] == seleccion]
         _render_categoria(sub, st.session_state.get("rol", "viewer"), seleccion, recibidas_mes)
@@ -2090,6 +2099,17 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
             st.caption("Origen")
             grafico_paises(df, tab_key)
         st.markdown("</div>", unsafe_allow_html=True)
+
+    # -------------------- EN PROCESO EN PUERTO --------------------
+    # Mismo filtro que la pestaña dedicada "En proceso (puerto)", pero aquí
+    # aparece directo en la vista donde ya estás (Todos o una categoría
+    # puntual) — pedido explícito: no obligar a navegar a otra pestaña para
+    # ver qué hay en puerto y en qué etapa está cada uno.
+    en_proceso_aqui = _filtro_en_proceso_puerto(df)
+    if not en_proceso_aqui.empty:
+        st.markdown("**En proceso en puerto**")
+        _resumen_etapas_puerto(en_proceso_aqui)
+        _panel_en_proceso_puerto(en_proceso_aqui, rol, contexto=tab_key)
 
     st.divider()
 

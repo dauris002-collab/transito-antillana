@@ -430,6 +430,26 @@ def _slug_css(texto) -> str:
     return limpio.strip("_") or "x"
 
 
+def _etiquetas_desambiguadas(df: pd.DataFrame, con_categoria: bool = True, largo_desc: int = 38) -> list:
+    """Etiquetas 'BL · descripción [· categoría]' para selectbox. Los BLs se
+    repiten en los datos reales (embarques parciales del mismo BL, confirmado
+    en Recibido) — sin desambiguar, dos filas podían generar la MISMA
+    etiqueta, y elegir la segunda en la lista en realidad seleccionaba la
+    primera (o, en paneles que renderizan un widget por fila, hacía chocar
+    las claves y tumbaba la página). Cuando una etiqueta se repite, se le
+    agrega el número de fila del Sheet, que sí es único."""
+    base = []
+    for _, r in df.iterrows():
+        desc = str(r[COL_DESC])[:largo_desc] or "sin descripción"
+        etq = f"{r[COL_BL]} · {desc} · {r['Categoria']}" if con_categoria else f"{r[COL_BL]} · {desc}"
+        base.append(etq)
+    conteo = pd.Series(base).value_counts() if base else pd.Series(dtype=int)
+    return [
+        f"{etq} · fila {r.get('FilaSheet', '?')}" if conteo.get(etq, 0) > 1 else etq
+        for etq, (_, r) in zip(base, df.iterrows())
+    ]
+
+
 def esc(valor) -> str:
     """Escapa cualquier valor que venga del Sheet antes de meterlo en HTML."""
     texto = "" if valor is None else str(valor).strip()
@@ -942,6 +962,10 @@ def cargar_todo() -> dict:
             )
         if etiqueta == RECIBIDO_SHEET:
             historico = _df_desde_valores(valores, COLUMNAS_RECIBIDO)
+            # Igual que en los activos: permite desambiguar cuando dos filas
+            # del histórico comparten BL (embarques parciales), algo que sí
+            # pasa en los datos reales.
+            historico["FilaSheet"] = range(2, len(historico) + 2)
             continue
         df_cat = _df_desde_valores(valores, ALL_COLUMNS)
         df_cat["Categoria"] = etiqueta
@@ -1905,8 +1929,8 @@ def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str, contexto: str):
         bl = str(fila[COL_BL]).strip()
         categoria = fila["Categoria"]
         etapa_actual = str(fila.get(COL_ESTADO_PUERTO, "")).strip()
-        clave = (f"{_slug_css(contexto)}_{_slug_css(categoria)}_"
-                f"{_slug_css(bl or str(fila.get('FilaSheet', '')))}")
+        clave = (f"{_slug_css(contexto)}_{_slug_css(categoria)}_{_slug_css(bl)}_"
+                f"{_slug_css(str(fila.get('FilaSheet', '')))}")
 
         st.markdown(f"**{esc(bl) or '(sin BL)'}** · {esc(fila[COL_DESC])} · {esc(categoria)}")
         grafico_flujo_puerto(etapa_actual, f"proceso_{clave}")
@@ -2250,7 +2274,7 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
         if not bl:
             c2.caption("Sin BL: no se puede gestionar")
             return
-        clave = f"{_slug_css(tab_key)}_{_slug_css(bl)}"
+        clave = f"{_slug_css(tab_key)}_{_slug_css(bl)}_{_slug_css(str(r.get('FilaSheet', '')))}"
         es_maritimo_fila = categoria in CATEGORIAS_PUERTO
         etiqueta_boton = "Sí, llegó a puerto" if es_maritimo_fila else "Sí, llegó"
         if c2.button(etiqueta_boton, key=f"si_llego_{clave}", type="primary", width="stretch"):
@@ -2386,7 +2410,8 @@ def _ficha_embarque(fila):
 
     if es_maritimo and etapa_puerto:
         st.caption("Flujo en puerto")
-        clave = f"{_slug_css(str(fila['Categoria']))}_{_slug_css(str(fila[COL_BL]) or fila.get('FilaSheet', ''))}"
+        clave = (f"{_slug_css(str(fila['Categoria']))}_{_slug_css(str(fila[COL_BL]))}_"
+                f"{_slug_css(str(fila.get('FilaSheet', '')))}")
         grafico_flujo_puerto(etapa_puerto, f"ficha_{clave}")
 
 
@@ -2404,10 +2429,7 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
         st.info("No hay embarques con BL en la vista actual.")
         return
 
-    opciones = [
-        f"{r[COL_BL]} · {str(r[COL_DESC])[:38] or 'sin descripción'} · {r['Categoria']}"
-        for _, r in con_bl.iterrows()
-    ]
+    opciones = _etiquetas_desambiguadas(con_bl)
     elegido = st.selectbox("Embarque", opciones, key=f"sel_accion_{tab_key}")
     fila = con_bl.iloc[opciones.index(elegido)]
     bl, categoria = str(fila[COL_BL]).strip(), fila["Categoria"]
@@ -2427,7 +2449,7 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
             if es_numero(dias_espera):
                 st.caption(f"{int(dias_espera)} día(s) desde que se pagó, esperando despacho.")
             idx_default = INDICE_ETAPA.get(etapa_actual, 0)
-            clave_bl = f"{_slug_css(tab_key)}_{_slug_css(bl)}"
+            clave_bl = f"{_slug_css(tab_key)}_{_slug_css(bl)}_{_slug_css(str(fila.get('FilaSheet', '')))}"
             a1, a2 = st.columns([2, 1])
             nueva_etapa = a1.selectbox("Etapa", ETAPAS_PUERTO, index=idx_default,
                                        key=f"etapa_{clave_bl}", label_visibility="collapsed")
@@ -2564,7 +2586,7 @@ def form_editar(datos: dict):
         st.info("No hay embarques con BL asignado.")
         return
 
-    opciones = [f"{r[COL_BL]} · {str(r[COL_DESC])[:40]} · {r['Categoria']}" for _, r in con_bl.iterrows()]
+    opciones = _etiquetas_desambiguadas(con_bl, largo_desc=40)
     indice_default = 0
     preseleccion = st.session_state.pop("editar_bl", None)
     if preseleccion:
@@ -2922,7 +2944,7 @@ def mostrar_historico(datos: dict, rol: str):
 
     st.write("")
     with st.expander("Revertir una recepción", expanded=False):
-        opciones = [f"{r[COL_BL]} · {str(r[COL_DESC])[:40]}" for _, r in filtrado.iterrows()]
+        opciones = _etiquetas_desambiguadas(filtrado, con_categoria=False, largo_desc=40)
         elegido = st.selectbox("Embarque", opciones, key="sel_revertir")
         fila = filtrado.iloc[opciones.index(elegido)]
         bl = str(fila[COL_BL]).strip()

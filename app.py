@@ -173,7 +173,8 @@ LOG_SHEET = "Log"
 COLUMNAS_RECIBIDO = [
     COL_BL, COL_DESC, COL_MODELO, COL_CANT, COL_PAIS, COL_ETA,
     "Fecha_Recibido", "Categoria_Origen", "Registrado_Por", COL_ACTUALIZACION,
-    COL_ACTUALIZADO_POR,
+    COL_ACTUALIZADO_POR, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_DECLARACION,
+    COL_FECHA_SOLICITUD_PAGO, COL_FECHA_PAGO,
 ]
 COLUMNAS_LOG = ["Fecha_Hora", "Usuario", "Accion", "BL", "Categoria", "Detalle"]
 
@@ -1274,6 +1275,14 @@ def marcar_como_recibido(bl: str, categoria: str):
         COL_ACTUALIZACION: marca_ahora(),
         COL_ACTUALIZADO_POR: usuario_actual(),
     }
+    # Si venía de categoría marítima con flujo de puerto, se conserva el rastro
+    # completo en el histórico — sin esto, archivar borraba toda la evidencia
+    # de por dónde pasó (llegada, declaración, solicitud de pago, pago).
+    for columna_fecha in (COL_FECHA_LLEGADA_PUERTO, COL_FECHA_DECLARACION,
+                          COL_FECHA_SOLICITUD_PAGO, COL_FECHA_PAGO):
+        valor = str(datos_norm.get(_norm(columna_fecha), "")).strip()
+        if valor:
+            registro[columna_fecha] = valor
     ws_destino.append_row(_fila_desde_dict(headers_destino, registro), value_input_option="RAW")
     ws_origen.delete_rows(fila)
     return True, ""
@@ -1934,6 +1943,9 @@ def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str, contexto: str):
 
         st.markdown(f"**{esc(bl) or '(sin BL)'}** · {esc(fila[COL_DESC])} · {esc(categoria)}")
         grafico_flujo_puerto(etapa_actual, f"proceso_{clave}")
+        if etapa_actual and etapa_actual not in ETAPAS_PUERTO:
+            st.warning(f"Etapa guardada ('{etapa_actual}') no coincide con ninguna de las 4 actuales — "
+                      "es de un diseño anterior. Elige la etapa correcta abajo y guarda para corregirla.")
 
         dias_solicitud = fila.get("DiasSolicitudPago")
         if es_numero(dias_solicitud):
@@ -2440,6 +2452,9 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
         st.markdown("**Flujo de puerto**")
         if etapa_actual:
             grafico_flujo_puerto(etapa_actual, f"acciones_{tab_key}")
+            if etapa_actual not in ETAPAS_PUERTO:
+                st.warning(f"Etapa guardada ('{etapa_actual}') no coincide con ninguna de las 4 actuales — "
+                          "es de un diseño anterior. Elige la etapa correcta abajo y guarda para corregirla.")
             dias_solicitud = fila.get("DiasSolicitudPago")
             if es_numero(dias_solicitud):
                 etiqueta_pago = "tardó en pagarse" if str(fila.get(COL_FECHA_PAGO, "")).strip() \
@@ -2468,10 +2483,13 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
         st.write("")
 
     # "Despachado" no es una etapa: equivale a la entrada a almacén. Para
-    # categorías marítimas que ya entraron al flujo, el archivo como recibido
-    # solo se habilita en la última etapa ("Pago realizado") — candado duro,
-    # no una sugerencia que se pueda ignorar sin querer.
-    bloqueado = bool(es_maritimo_sel and etapa_actual and etapa_actual != ETAPAS_PUERTO[-1])
+    # categorías marítimas, el archivo como recibido solo se habilita en la
+    # última etapa ("Pago realizado") — sin excepción ni siquiera cuando el
+    # embarque nunca entró al flujo (etapa vacía). Antes esa excepción existía
+    # "por flexibilidad" y permitió que un embarque real se archivara como
+    # recibido sin haber pasado por ninguna etapa — exactamente lo que no debe
+    # pasar, según lo confirmado explícitamente.
+    bloqueado = es_maritimo_sel and etapa_actual != ETAPAS_PUERTO[-1]
     c1, c2, c3 = st.columns(3)
     if c1.button("Marcar como recibido", key=f"rec_{tab_key}", type="primary", width="stretch",
                  disabled=bloqueado):
@@ -2483,7 +2501,10 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
         else:
             st.error(mensaje)
     if bloqueado:
-        c1.caption(f"Falta llegar a '{ETAPAS_PUERTO[-1]}' (etapa actual: '{etapa_actual}').")
+        if etapa_actual:
+            c1.caption(f"Falta llegar a '{ETAPAS_PUERTO[-1]}' (etapa actual: '{etapa_actual}').")
+        else:
+            c1.caption("Aún no confirmó llegada a puerto — usa 'Sí, llegó a puerto' para iniciar el flujo.")
 
     if c2.button("Editar", key=f"edit_{tab_key}", width="stretch"):
         st.session_state["editar_bl"] = bl

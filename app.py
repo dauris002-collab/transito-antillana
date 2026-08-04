@@ -145,6 +145,17 @@ ETIQUETA_CORTA_ETAPA = {
     "Pago realizado": "Pago realizado",
     "Despachado": "Despachado",
 }
+# Un ícono por etapa en el diagrama, pedido explícitamente: barco al llegar,
+# hoja de documentos en declaración. "Recepción y declaración" sigue siendo UNA
+# sola etapa (una sola fecha) — le puse el barco porque el evento que la
+# dispara es la llegada. Si prefieres separar llegada y declaración en dos
+# etapas con fecha propia cada una, es un cambio rápido de ETAPAS_PUERTO.
+ICONO_ETAPA = {
+    "Recepción y declaración de la mercancía": "🚢",
+    "Solicitud de pago a finanzas": "💰",
+    "Pago realizado": "✅",
+    "Despachado": "📦",
+}
 # Vista adicional en el dashboard (no es una pestaña del Sheet): cruza todas las
 # categorías marítimas y muestra solo lo que ya confirmó llegada a puerto pero
 # aún no se despachó. Nace de un pedido explícito de Dauris: ver de un vistazo,
@@ -1643,11 +1654,8 @@ def tarjeta_kpi(label: str, valor, color: str, sub: str = "") -> str:
     )
 
 
-def render_lista(df: pd.DataFrame, mostrar_categoria: bool = False):
-    """Un solo bloque HTML: tabla en desktop, tarjetas en celular (lo decide el CSS).
-    mostrar_categoria antepone la categoría al badge — solo hace falta en vistas
-    que mezclan categorías (la vista cruzada de puerto), no en la vista normal
-    por categoría, donde repetirla en cada fila sería ruido."""
+def render_lista(df: pd.DataFrame):
+    """Un solo bloque HTML: tabla en desktop, tarjetas en celular (lo decide el CSS)."""
     if df.empty:
         st.markdown('<div class="lista"><div class="vacio">No hay embarques que coincidan con el filtro.</div></div>',
                     unsafe_allow_html=True)
@@ -1664,8 +1672,6 @@ def render_lista(df: pd.DataFrame, mostrar_categoria: bool = False):
         etapa_puerto = str(r.get(COL_ESTADO_PUERTO, "")).strip()
         if etapa_puerto:
             etiqueta = f"{etiqueta} · {ETIQUETA_CORTA_ETAPA.get(etapa_puerto, etapa_puerto)}"
-        if mostrar_categoria:
-            etiqueta = f"{r['Categoria']} · {etiqueta}"
         partes.append(
             f'<div class="fila" style="border-left-color:{color};">'
             f'<div class="c-bl" data-l="BL">{esc(r[COL_BL]) if str(r[COL_BL]).strip() else "(sin BL)"}</div>'
@@ -1812,9 +1818,9 @@ def grafico_flujo_puerto(etapa_actual: str, key: str):
         ))
     fig.add_trace(go.Scatter(
         x=xs, y=[0] * n, mode="markers+text", showlegend=False,
-        marker=dict(size=26, color=colores_punto, line=dict(color="#FFFFFF", width=2)),
-        text=[str(i + 1) for i in range(n)], textfont=dict(color="#111827", size=12),
-        hovertext=ETAPAS_PUERTO, hovertemplate="%{hovertext}<extra></extra>",
+        marker=dict(size=32, color=colores_punto, line=dict(color="#FFFFFF", width=2)),
+        text=[ICONO_ETAPA.get(etapa, str(i + 1)) for i, etapa in enumerate(ETAPAS_PUERTO)],
+        textfont=dict(size=16), hovertext=ETAPAS_PUERTO, hovertemplate="%{hovertext}<extra></extra>",
     ))
     anotaciones = [
         dict(x=xs[i], y=-0.55, text=_envolver_etiqueta(etapa), showarrow=False,
@@ -1878,6 +1884,47 @@ def _resumen_etapas_puerto(df: pd.DataFrame):
         col.metric(ETIQUETA_CORTA_ETAPA.get(etapa, etapa), conteo.get(etapa, 0))
 
 
+def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str):
+    """Un diagrama por embarque, siempre visible — no hay que ir a buscarlo en
+    la ficha ni volver a elegir el BL en 'Acciones'. Nace de un problema real:
+    el diagrama se veía una vez al confirmar la llegada y después 'desaparecía'
+    porque solo se mostraba si volvías a seleccionar ese embarque a mano.
+    Admins pueden avanzar o retroceder la etapa aquí mismo."""
+    es_admin = rol == "admin"
+    for _, fila in df.sort_values(["Categoria", COL_ETA]).iterrows():
+        bl = str(fila[COL_BL]).strip()
+        categoria = fila["Categoria"]
+        etapa_actual = str(fila.get(COL_ESTADO_PUERTO, "")).strip()
+        clave = f"{_slug_css(categoria)}_{_slug_css(bl or str(fila.get('FilaSheet', '')))}"
+
+        st.markdown(f"**{esc(bl) or '(sin BL)'}** · {esc(fila[COL_DESC])} · {esc(categoria)}")
+        grafico_flujo_puerto(etapa_actual, f"proceso_{clave}")
+
+        dias_pago = fila.get("DiasPuertoPago")
+        if es_numero(dias_pago):
+            etiqueta_pago = "tardó en pagarse" if str(fila.get(COL_FECHA_PAGO, "")).strip() \
+                else "lleva sin pagarse"
+            st.caption(f"{int(dias_pago)} día(s) {etiqueta_pago} (desde recepción y declaración)")
+
+        if es_admin:
+            idx_default = INDICE_ETAPA.get(etapa_actual, 0)
+            a1, a2 = st.columns([3, 1])
+            nueva_etapa = a1.selectbox("Etapa", ETAPAS_PUERTO, index=idx_default,
+                                       key=f"etapa_{clave}", label_visibility="collapsed")
+            a2.write("")
+            if a2.button("Guardar", key=f"guardar_{clave}", width="stretch"):
+                ok, mensaje = avanzar_estado_puerto(bl, categoria, nueva_etapa)
+                if ok:
+                    accion = "Avance en puerto" if INDICE_ETAPA.get(nueva_etapa, 0) >= idx_default \
+                        else "Retroceso en puerto"
+                    registrar_log(accion, bl, categoria, nueva_etapa)
+                    invalidar_caches()
+                    st.rerun()
+                else:
+                    st.error(mensaje)
+        st.divider()
+
+
 def mostrar_dashboard(datos: dict):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     encabezado(datos)
@@ -1919,13 +1966,14 @@ def mostrar_dashboard(datos: dict):
 
     if seleccion == "Todos":
         sub = df_todo
+        _render_categoria(sub, st.session_state.get("rol", "viewer"), seleccion, recibidas_mes)
     elif seleccion == VISTA_EN_PROCESO_PUERTO:
-        sub = en_proceso_df
-        _resumen_etapas_puerto(sub)
+        _resumen_etapas_puerto(en_proceso_df)
+        st.divider()
+        _panel_en_proceso_puerto(en_proceso_df, st.session_state.get("rol", "viewer"))
     else:
         sub = df_todo[df_todo["Categoria"] == seleccion]
-    _render_categoria(sub, st.session_state.get("rol", "viewer"), seleccion, recibidas_mes,
-                      mostrar_categoria=(seleccion == VISTA_EN_PROCESO_PUERTO))
+        _render_categoria(sub, st.session_state.get("rol", "viewer"), seleccion, recibidas_mes)
 
 
 def contar_recibidas_mes(historico: pd.DataFrame) -> int:
@@ -1941,8 +1989,7 @@ def contar_recibidas_mes(historico: pd.DataFrame) -> int:
 
 
 @st.fragment
-def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: int,
-                      mostrar_categoria: bool = False):
+def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: int):
     if df.empty:
         st.info("No hay embarques en esta categoría.")
         return
@@ -2089,7 +2136,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
             resumen_valor = f" · {formato_dinero(parcial)}"
     st.caption(f"Mostrando {len(filtrado)} de {len(df)} embarque(s){resumen_valor}")
 
-    render_lista(filtrado, mostrar_categoria=mostrar_categoria)
+    render_lista(filtrado)
 
     # -------------------- EXPORTAR Y VER DETALLE --------------------
     e1, e2 = st.columns([1, 2])

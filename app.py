@@ -1215,6 +1215,46 @@ def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
 
 
 @_con_manejo_apierror
+def completar_flujo_puerto(bl: str, categoria: str):
+    """Completa de una vez todas las etapas del flujo que todavía no se hayan
+    marcado, con la fecha de hoy, y deja Estado_Puerto en la última etapa.
+    Para cuando la carga ya llegó y se procesó más rápido de lo que se
+    alcanzó a registrar paso a paso: evita perder el rastro completo ('todo
+    lo recibido en puerto debe tener este estatus') sin obligar a hacer clic
+    etapa por etapa cuando eso ya no aporta nada. No pisa fechas que ya
+    estaban puestas — solo llena las que faltan."""
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return False, f"No existe la pestaña '{categoria}'."
+    fila = _buscar_fila_por_bl(ws, bl)
+    if fila is None:
+        return False, f"No se encontró el BL '{bl}' en '{categoria}'."
+
+    columnas_fecha = list(COLUMNA_FECHA_ETAPA.values())
+    headers = _asegurar_columnas(
+        ws, [COL_ESTADO_PUERTO, *columnas_fecha, COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
+    )
+    indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
+    actuales = ws.row_values(fila)
+    actuales += [""] * (len(headers) - len(actuales))
+    combinado = {h: actuales[i] for i, h in enumerate(headers)}
+
+    hoy_iso = hoy_rd().isoformat()
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ESTADO_PUERTO)]), "values": [[ETAPAS_PUERTO[-1]]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+    ]
+    for columna_fecha in columnas_fecha:
+        if not str(combinado.get(columna_fecha, "")).strip():
+            peticiones.append({"range": rowcol_to_a1(fila, indices[_norm(columna_fecha)]),
+                               "values": [[hoy_iso]]})
+
+    ws.batch_update(peticiones, value_input_option="RAW")
+    return True, ""
+
+
+@_con_manejo_apierror
 def eliminar_embarque(bl: str, categoria: str):
     ws = get_worksheet(categoria)
     if ws is None:
@@ -1973,21 +2013,34 @@ def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str, contexto: str):
                 else:
                     st.error(mensaje)
 
-            # "Despachado" no es una etapa: equivale a la entrada a almacén,
-            # así que archivar como recibido solo se habilita en la última
-            # etapa del flujo — pedido explícito, no una sugerencia blanda.
-            if etapa_actual == ETAPAS_PUERTO[-1]:
-                if st.button("Despachado — marcar como recibido", key=f"recibido_{clave}",
-                             type="primary", width="stretch"):
+            # "Despachado" no es una etapa: equivale a la entrada a almacén.
+            # Si faltan etapas, se completan solas con la fecha de hoy antes
+            # de archivar — la carga real a veces llega y se procesa más
+            # rápido de lo que alguien alcanza a registrar paso a paso.
+            falta_flujo = etapa_actual != ETAPAS_PUERTO[-1]
+            etiqueta_recibido = "Marcar como recibido" if not falta_flujo \
+                else "Ya llegó completa — marcar como recibido"
+            if st.button(etiqueta_recibido, key=f"recibido_{clave}", type="primary", width="stretch"):
+                listo_para_archivar = True
+                if falta_flujo:
+                    ok_flujo, msg_flujo = completar_flujo_puerto(bl, categoria)
+                    if not ok_flujo:
+                        st.error(msg_flujo)
+                        listo_para_archivar = False
+                if listo_para_archivar:
                     ok, mensaje = marcar_como_recibido(bl, categoria)
                     if ok:
+                        if falta_flujo:
+                            registrar_log("Flujo completado automáticamente", bl, categoria,
+                                         f"etapa previa: '{etapa_actual}'")
                         registrar_log("Recibido", bl, categoria, f"ETA {fila[COL_ETA]}")
                         invalidar_caches()
                         st.rerun()
                     else:
                         st.error(mensaje)
-            else:
-                st.caption(f"Falta llegar a '{ETAPAS_PUERTO[-1]}' para poder marcarlo como recibido.")
+            if falta_flujo:
+                st.caption(f"Etapa actual: '{etapa_actual}'. Si ya llegó completa, esto completa "
+                          "solas las etapas que falten con la fecha de hoy.")
         st.divider()
 
 
@@ -2482,29 +2535,37 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
                        "en la sección de confirmación.")
         st.write("")
 
-    # "Despachado" no es una etapa: equivale a la entrada a almacén. Para
-    # categorías marítimas, el archivo como recibido solo se habilita en la
-    # última etapa ("Pago realizado") — sin excepción ni siquiera cuando el
-    # embarque nunca entró al flujo (etapa vacía). Antes esa excepción existía
-    # "por flexibilidad" y permitió que un embarque real se archivara como
-    # recibido sin haber pasado por ninguna etapa — exactamente lo que no debe
-    # pasar, según lo confirmado explícitamente.
-    bloqueado = es_maritimo_sel and etapa_actual != ETAPAS_PUERTO[-1]
+    # "Despachado" no es una etapa: equivale a la entrada a almacén. Antes esto
+    # bloqueaba el botón hasta llegar a "Pago realizado" — pero la carga real
+    # a veces llega y se procesa más rápido de lo que alguien alcanza a
+    # registrar etapa por etapa. Ahora el botón siempre funciona: si faltan
+    # etapas, primero se completan con la fecha de hoy (sin pisar las que ya
+    # estaban) y después se archiva — así nunca se pierde el rastro, pero
+    # tampoco frena a nadie.
+    falta_flujo = es_maritimo_sel and etapa_actual != ETAPAS_PUERTO[-1]
     c1, c2, c3 = st.columns(3)
-    if c1.button("Marcar como recibido", key=f"rec_{tab_key}", type="primary", width="stretch",
-                 disabled=bloqueado):
-        ok, mensaje = marcar_como_recibido(bl, categoria)
-        if ok:
-            registrar_log("Recibido", bl, categoria, f"ETA {fila[COL_ETA]}")
-            invalidar_caches()
-            st.rerun()
-        else:
-            st.error(mensaje)
-    if bloqueado:
-        if etapa_actual:
-            c1.caption(f"Falta llegar a '{ETAPAS_PUERTO[-1]}' (etapa actual: '{etapa_actual}').")
-        else:
-            c1.caption("Aún no confirmó llegada a puerto — usa 'Sí, llegó a puerto' para iniciar el flujo.")
+    if c1.button("Marcar como recibido", key=f"rec_{tab_key}", type="primary", width="stretch"):
+        listo_para_archivar = True
+        if falta_flujo:
+            ok_flujo, msg_flujo = completar_flujo_puerto(bl, categoria)
+            if not ok_flujo:
+                st.error(msg_flujo)
+                listo_para_archivar = False
+        if listo_para_archivar:
+            ok, mensaje = marcar_como_recibido(bl, categoria)
+            if ok:
+                if falta_flujo:
+                    registrar_log("Flujo completado automáticamente", bl, categoria,
+                                 f"etapa previa: '{etapa_actual or '(sin iniciar)'}'")
+                registrar_log("Recibido", bl, categoria, f"ETA {fila[COL_ETA]}")
+                invalidar_caches()
+                st.rerun()
+            else:
+                st.error(mensaje)
+    if falta_flujo:
+        etiqueta_previa = etapa_actual or "sin iniciar"
+        c1.caption(f"Etapa actual: '{etiqueta_previa}'. Si la carga ya llegó completa, al marcarla "
+                  "como recibido se completan solas las etapas que falten, con la fecha de hoy.")
 
     if c2.button("Editar", key=f"edit_{tab_key}", width="stretch"):
         st.session_state["editar_bl"] = bl

@@ -114,11 +114,14 @@ COLUMNAS_INTERNAS = {"Categoria", "FilaSheet", "EstadoTexto", "DiasRel", "ETAFec
                      "DiasSolicitudPago", "DiasPagoDespacho"}
 
 CATEGORIAS = ["Equipos", "Generadores", "Aéreos", "Carga Suelta", "Consolidados"]
-# El flujo detallado de puerto solo aplica a carga marítima. Aéreos pasa por
-# aeropuerto, no por Caucedo/Río Haina, y mantiene el comportamiento simple de
-# siempre (ETA vencido -> confirmar sí/no llegó).
+# El flujo detallado de 4 etapas aplica a TODAS las categorías, sin importar
+# el modo de llegada. Lo único que cambia con el modo es el rótulo/ícono de la
+# primera etapa: "Llegada a puerto" (🚢) para carga marítima, "Llegada al
+# aeropuerto" (✈️) para Aéreos — ver es_aerea en grafico_flujo_puerto y en la
+# pregunta de confirmación. El resto de las etapas (declaración, solicitud de
+# pago, pago) es igual para cualquier modo.
 CATEGORIA_AEREA = "Aéreos"
-CATEGORIAS_PUERTO = [c for c in CATEGORIAS if c != CATEGORIA_AEREA]
+CATEGORIAS_PUERTO = list(CATEGORIAS)
 
 # 3 contadores operativos:
 #   1) Salida -> Llegada a puerto (Contador de tránsito, se congela ahí)
@@ -1178,7 +1181,7 @@ def marcar_estatus_llegada(bl: str, categoria: str, valor: str):
 
 @_con_manejo_apierror
 def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
-    """Mueve el sub-estado del flujo de puerto (solo categorías marítimas).
+    """Mueve el sub-estado del flujo de puerto/aeropuerto (todas las categorías).
     Cada etapa en COLUMNA_FECHA_ETAPA estampa su columna de fecha la primera
     vez que se marca, sin pisarla si ya estaba puesta — así una corrección de
     etapa no borra la fecha real en que ocurrió cada hito."""
@@ -1868,13 +1871,21 @@ def _envolver_etiqueta(texto: str) -> str:
     return " ".join(palabras[:medio]) + "<br>" + " ".join(palabras[medio:])
 
 
-def grafico_flujo_puerto(etapa_actual: str, key: str):
-    """Diagrama de las etapas del proceso en puerto (solo carga marítima):
+def grafico_flujo_puerto(etapa_actual: str, key: str, es_aerea: bool = False):
+    """Diagrama de las etapas del proceso (puerto o aeropuerto según el modo):
     hecho en verde, la etapa actual en ámbar, lo que falta en gris. etapa_actual
-    puede venir vacía (recepción aún sin confirmar)."""
+    puede venir vacía (recepción aún sin confirmar). El dato guardado ('Llegada
+    a puerto') es el mismo para mar y aire; es_aerea solo cambia el rótulo y el
+    ícono que se muestran para esa primera etapa."""
     idx_actual = INDICE_ETAPA.get(etapa_actual, -1)
     n = len(ETAPAS_PUERTO)
     xs = list(range(n))
+    etiquetas_mostradas = list(ETAPAS_PUERTO)
+    if es_aerea:
+        etiquetas_mostradas[0] = "Llegada al aeropuerto"
+    iconos_mostrados = dict(ICONO_ETAPA)
+    if es_aerea:
+        iconos_mostrados[ETAPAS_PUERTO[0]] = "✈️"
 
     colores_punto, colores_linea = [], []
     for i in range(n):
@@ -1896,11 +1907,11 @@ def grafico_flujo_puerto(etapa_actual: str, key: str):
     fig.add_trace(go.Scatter(
         x=xs, y=[0] * n, mode="markers+text", showlegend=False,
         marker=dict(size=32, color=colores_punto, line=dict(color="#FFFFFF", width=2)),
-        text=[ICONO_ETAPA.get(etapa, str(i + 1)) for i, etapa in enumerate(ETAPAS_PUERTO)],
-        textfont=dict(size=16), hovertext=ETAPAS_PUERTO, hovertemplate="%{hovertext}<extra></extra>",
+        text=[iconos_mostrados.get(etapa, str(i + 1)) for i, etapa in enumerate(ETAPAS_PUERTO)],
+        textfont=dict(size=16), hovertext=etiquetas_mostradas, hovertemplate="%{hovertext}<extra></extra>",
     ))
     anotaciones = [
-        dict(x=xs[i], y=-0.55, text=_envolver_etiqueta(etapa), showarrow=False,
+        dict(x=xs[i], y=-0.55, text=_envolver_etiqueta(etiquetas_mostradas[i]), showarrow=False,
              font=dict(size=10, color="#111827" if i == idx_actual else "#6B7280"), align="center")
         for i, etapa in enumerate(ETAPAS_PUERTO)
     ]
@@ -1940,9 +1951,9 @@ def selector_horizontal(label: str, opciones: list, key: str, default=None, form
 
 
 def _filtro_en_proceso_puerto(df: pd.DataFrame) -> pd.DataFrame:
-    """Cruza todas las categorías marítimas: todo lo que ya confirmó llegada a
-    puerto y sigue activo (no se ha archivado como recibido). Aéreos nunca
-    aparece aquí porque no usa este flujo."""
+    """Cruza todas las categorías (mar y aire): todo lo que ya confirmó
+    llegada a puerto/aeropuerto y sigue activo (no se ha archivado como
+    recibido)."""
     if df.empty or COL_ESTADO_PUERTO not in df.columns:
         return df.iloc[0:0]
     es_maritimo = df["Categoria"].isin(CATEGORIAS_PUERTO)
@@ -1982,7 +1993,7 @@ def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str, contexto: str):
                 f"{_slug_css(str(fila.get('FilaSheet', '')))}")
 
         st.markdown(f"**{esc(bl) or '(sin BL)'}** · {esc(fila[COL_DESC])} · {esc(categoria)}")
-        grafico_flujo_puerto(etapa_actual, f"proceso_{clave}")
+        grafico_flujo_puerto(etapa_actual, f"proceso_{clave}", es_aerea=(categoria == CATEGORIA_AEREA))
         if etapa_actual and etapa_actual not in ETAPAS_PUERTO:
             st.warning(f"Etapa guardada ('{etapa_actual}') no coincide con ninguna de las 4 actuales — "
                       "es de un diseño anterior. Elige la etapa correcta abajo y guarda para corregirla.")
@@ -2300,13 +2311,16 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
 
 def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
     """El ETA vencido no dice si la mercancía llegó, solo que la fecha pasó.
-    Este panel hace la pregunta directa —¿llegó, sí o no?— y con la respuesta el
-    embarque se archiva como recibido o se marca como retrasado. Va a la vista,
-    sin desplegable, porque es lo único de la pantalla que exige acción hoy."""
-    # En categorías marítimas, una vez confirmada la llegada a puerto el
-    # embarque pasa al flujo detallado (ver _panel_acciones) y esta pregunta
-    # ya no aplica: preguntar "¿ya llegó?" indefinidamente sería ruido, porque
-    # ETA vencido + EstadoTexto no cambian mientras avanza por las etapas.
+    Este panel hace la pregunta directa —¿llegó a puerto/aeropuerto, sí o no?—
+    y con la respuesta el embarque entra al flujo de 4 etapas (Sí) o se marca
+    como retrasado, contando desde el día en que debía llegar (No). Va a la
+    vista, sin desplegable, porque es lo único de la pantalla que exige acción
+    hoy. Aplica a TODAS las categorías por igual: lo único que cambia según el
+    modo (mar/aire) es si el botón y la etapa dicen 'puerto' o 'aeropuerto'."""
+    # Una vez confirmada la llegada, el embarque pasa al flujo detallado (ver
+    # _panel_acciones) y esta pregunta ya no aplica: preguntar "¿ya llegó?"
+    # indefinidamente sería ruido, porque ETA vencido + EstadoTexto no cambian
+    # mientras avanza por las etapas.
     es_maritimo = df["Categoria"].isin(CATEGORIAS_PUERTO)
     tiene_etapa = df.get(COL_ESTADO_PUERTO, pd.Series([""] * len(df), index=df.index)) \
         .astype(str).str.strip().ne("")
@@ -2320,7 +2334,8 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
     TOPE = 12
     if not pendientes.empty:
         st.markdown(
-            f'<div class="conf-titulo">¿Ya llegó? · {len(pendientes)} embarque(s) con la fecha vencida</div>',
+            f'<div class="conf-titulo">¿Llegó a Puerto/Aeropuerto? · {len(pendientes)} '
+            f'embarque(s) con la fecha vencida</div>',
             unsafe_allow_html=True,
         )
 
@@ -2340,18 +2355,14 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
             c2.caption("Sin BL: no se puede gestionar")
             return
         clave = f"{_slug_css(tab_key)}_{_slug_css(bl)}_{_slug_css(str(r.get('FilaSheet', '')))}"
-        es_maritimo_fila = categoria in CATEGORIAS_PUERTO
-        etiqueta_boton = "Sí, llegó a puerto" if es_maritimo_fila else "Sí, llegó"
+        es_aerea_fila = categoria == CATEGORIA_AEREA
+        etiqueta_boton = "Sí, llegó al aeropuerto" if es_aerea_fila else "Sí, llegó a puerto"
         if c2.button(etiqueta_boton, key=f"si_llego_{clave}", type="primary", width="stretch"):
-            if es_maritimo_fila:
-                # No se archiva todavía: entra al flujo de puerto (declaración,
-                # pago, despacho) y el archivo final se hace desde "Acciones"
-                # una vez despachado y recibido en almacén.
-                ok, mensaje = avanzar_estado_puerto(bl, categoria, ETAPAS_PUERTO[0])
-                accion_log = "Llegada a puerto confirmada"
-            else:
-                ok, mensaje = marcar_como_recibido(bl, categoria)
-                accion_log = "Llegada confirmada"
+            # No se archiva todavía, sin importar el modo (mar o aire): entra
+            # al flujo de 4 etapas (declaración, pago, despacho) y el archivo
+            # final se hace desde "Acciones" una vez recibido en almacén.
+            ok, mensaje = avanzar_estado_puerto(bl, categoria, ETAPAS_PUERTO[0])
+            accion_log = "Llegada al aeropuerto confirmada" if es_aerea_fila else "Llegada a puerto confirmada"
             if ok:
                 registrar_log(accion_log, bl, categoria, f"ETA {r[COL_ETA]}")
                 invalidar_caches()
@@ -2436,11 +2447,15 @@ def _ficha_embarque(fila):
         campos.append((etiqueta_transito, f"{d} día{'s' if d != 1 else ''}"))
 
     es_maritimo = fila["Categoria"] in CATEGORIAS_PUERTO
+    es_aerea_ficha = fila["Categoria"] == CATEGORIA_AEREA
     etapa_puerto = str(fila.get(COL_ESTADO_PUERTO, "")).strip()
     if es_maritimo and etapa_puerto:
-        campos.append(("Etapa en puerto", etapa_puerto))
+        etapa_mostrada = "Llegada al aeropuerto" if (es_aerea_ficha and etapa_puerto == ETAPAS_PUERTO[0]) \
+            else etapa_puerto
+        campos.append(("Etapa en aeropuerto" if es_aerea_ficha else "Etapa en puerto", etapa_mostrada))
         if str(fila.get(COL_FECHA_LLEGADA_PUERTO, "")).strip():
-            campos.append(("Llegada a puerto", formato_eta(fila[COL_FECHA_LLEGADA_PUERTO])))
+            campos.append(("Llegada al aeropuerto" if es_aerea_ficha else "Llegada a puerto",
+                           formato_eta(fila[COL_FECHA_LLEGADA_PUERTO])))
         if str(fila.get(COL_FECHA_DECLARACION, "")).strip():
             campos.append(("Recepción y declaración", formato_eta(fila[COL_FECHA_DECLARACION])))
         if str(fila.get(COL_FECHA_SOLICITUD_PAGO, "")).strip():
@@ -2474,10 +2489,11 @@ def _ficha_embarque(fila):
     st.markdown(f'<div class="ficha">{filas_html}</div>', unsafe_allow_html=True)
 
     if es_maritimo and etapa_puerto:
-        st.caption("Flujo en puerto")
+        es_aerea_fila = fila["Categoria"] == CATEGORIA_AEREA
+        st.caption("Flujo en aeropuerto" if es_aerea_fila else "Flujo en puerto")
         clave = (f"{_slug_css(str(fila['Categoria']))}_{_slug_css(str(fila[COL_BL]))}_"
                 f"{_slug_css(str(fila.get('FilaSheet', '')))}")
-        grafico_flujo_puerto(etapa_puerto, f"ficha_{clave}")
+        grafico_flujo_puerto(etapa_puerto, f"ficha_{clave}", es_aerea=es_aerea_fila)
 
 
 def _panel_acciones(df: pd.DataFrame, tab_key: str):
@@ -2500,11 +2516,12 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
     bl, categoria = str(fila[COL_BL]).strip(), fila["Categoria"]
 
     es_maritimo_sel = categoria in CATEGORIAS_PUERTO
+    es_aerea_sel = categoria == CATEGORIA_AEREA
     etapa_actual = str(fila.get(COL_ESTADO_PUERTO, "")).strip()
     if es_maritimo_sel and (etapa_actual or fila["EstadoTexto"] in (EST_PUERTO, EST_RETRASADO)):
-        st.markdown("**Flujo de puerto**")
+        st.markdown("**Flujo de aeropuerto**" if es_aerea_sel else "**Flujo de puerto**")
         if etapa_actual:
-            grafico_flujo_puerto(etapa_actual, f"acciones_{tab_key}")
+            grafico_flujo_puerto(etapa_actual, f"acciones_{tab_key}", es_aerea=es_aerea_sel)
             if etapa_actual not in ETAPAS_PUERTO:
                 st.warning(f"Etapa guardada ('{etapa_actual}') no coincide con ninguna de las 4 actuales — "
                           "es de un diseño anterior. Elige la etapa correcta abajo y guarda para corregirla.")
@@ -2531,7 +2548,8 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
                 else:
                     st.error(mensaje)
         else:
-            st.caption("Llegada a puerto sin confirmar todavía — usa 'Sí, llegó a puerto' arriba, "
+            texto_boton_pendiente = "'Sí, llegó al aeropuerto'" if es_aerea_sel else "'Sí, llegó a puerto'"
+            st.caption(f"Llegada sin confirmar todavía — usa {texto_boton_pendiente} arriba, "
                        "en la sección de confirmación.")
         st.write("")
 

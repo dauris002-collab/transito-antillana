@@ -24,13 +24,15 @@ Cambios estructurales frente a la versión anterior (resumen para mantenimiento)
 7.  Un solo bloque de HTML para la lista, que el CSS convierte en tabla (desktop)
     o tarjetas (celular). Antes se renderizaban las dos y el celular descargaba
     ambas.
-8.  Fecha_Salida (opcional, todas las categorías) alimenta un contador de días
-    en tránsito. Las categorías marítimas (todas menos Aéreos) tienen además un
-    flujo detallado de puerto — Estado_Puerto con 5 etapas, desde "Llegada a
-    puerto" hasta "Despachado" — con su propio diagrama y un segundo contador
-    (despacho -> almacén). El botón "¿Ya llegó?" para esas categorías ya no
-    archiva directo: confirma solo la llegada a puerto y el archivo final
-    ("Marcar como recibido") queda como acción aparte una vez despachado.
+8.  Fecha_Salida (opcional, todas las categorías) + flujo detallado de puerto
+    en categorías marítimas (todas menos Aéreos): Estado_Puerto con 4 etapas
+    ("Recepción y declaración de la mercancía" -> "Solicitud de pago a
+    finanzas" -> "Pago realizado" -> "Despachado"), cada una con su propia
+    fecha (ver COLUMNA_FECHA_ETAPA) y diagrama. 3 contadores: (1) salida ->
+    recepción y declaración, se congela ahí; (2) recepción y declaración ->
+    pago realizado; (3) despachado -> recibido en almacén. El botón "¿Ya
+    llegó?" para categorías marítimas ya no archiva directo: confirma solo la
+    recepción en puerto, y "Marcar como recibido" queda como acción aparte.
 """
 
 from __future__ import annotations
@@ -77,15 +79,18 @@ COL_ACTUALIZADO_POR = "Actualizado_Por"    # la app la crea sola la primera vez 
 COL_ESTATUS_LLEGADA = "Estatus_Llegada"    # vacío = sin confirmar; "Retrasado" = se verificó que NO llegó
 
 # Fecha de salida del origen: opcional, la trae quien la conoce (booking del
-# forwarder/naviera). Alimenta el contador "días en tránsito". Aplica a
+# forwarder/naviera). Alimenta el Contador 1 (salida -> puerto). Aplica a
 # cualquier categoría, no solo a las marítimas.
 COL_FECHA_SALIDA = "Fecha_Salida"
 # Flujo detallado de puerto: solo tiene sentido en categorías marítimas (ver
 # CATEGORIAS_PUERTO más abajo). Vacío = todavía no se confirmó la llegada
-# física a puerto, aunque el ETA ya haya vencido.
+# física a puerto, aunque el ETA ya haya vencido. Cada etapa estampa su propia
+# fecha la primera vez que se marca (ver COLUMNA_FECHA_ETAPA).
 COL_ESTADO_PUERTO = "Estado_Puerto"
-COL_FECHA_LLEGADA_PUERTO = "Fecha_Llegada_Puerto"  # se estampa sola al marcar la 1a etapa
-COL_FECHA_DESPACHO = "Fecha_Despacho"              # se estampa sola al marcar "Despachado"
+COL_FECHA_LLEGADA_PUERTO = "Fecha_Llegada_Puerto"    # Recepción y declaración
+COL_FECHA_SOLICITUD_PAGO = "Fecha_Solicitud_Pago"    # cuándo se le pidió el pago a Finanzas
+COL_FECHA_PAGO = "Fecha_Pago"                        # Finanzas confirma que ya pagó
+COL_FECHA_DESPACHO = "Fecha_Despacho"                # mercancía despachada del puerto
 
 # Columnas opcionales: si existen en el Sheet, la app las usa; si no, ni se
 # mencionan. Así se pueden agregar Orden_Compra, Cliente, Puerto_Destino o
@@ -96,32 +101,50 @@ MAX_FILAS_LECTURA = 20000
 REQUIRED_COLUMNS = [COL_BL, COL_DESC, COL_MODELO, COL_CANT, COL_PAIS, COL_ETA]
 ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
                                   COL_ESTATUS_LLEGADA, COL_FECHA_SALIDA, COL_ESTADO_PUERTO,
-                                  COL_FECHA_LLEGADA_PUERTO, COL_FECHA_DESPACHO]
+                                  COL_FECHA_LLEGADA_PUERTO, COL_FECHA_SOLICITUD_PAGO,
+                                  COL_FECHA_PAGO, COL_FECHA_DESPACHO]
 # Columnas que la app calcula o gestiona internamente y que no se muestran como
 # "campos extra" del embarque.
 COLUMNAS_INTERNAS = {"Categoria", "FilaSheet", "EstadoTexto", "DiasRel", "ETAFecha",
                      "Prioridad", "OrdenSec", COL_DIAS_PUERTO, "DiasTransito",
-                     "DiasDespachoAlmacen"}
+                     "DiasPuertoPago", "DiasDespachoAlmacen"}
 
 CATEGORIAS = ["Equipos", "Generadores", "Aéreos", "Carga Suelta", "Consolidados"]
-# El flujo detallado de puerto (llegada, declaración y verificación, pago de
-# aduanas, en espera de despacho, despachado) solo aplica a carga marítima.
-# Aéreos pasa por aeropuerto, no por Caucedo/Río Haina, y mantiene el
-# comportamiento simple de siempre (ETA vencido -> confirmar sí/no llegó).
+# El flujo detallado de puerto solo aplica a carga marítima. Aéreos pasa por
+# aeropuerto, no por Caucedo/Río Haina, y mantiene el comportamiento simple de
+# siempre (ETA vencido -> confirmar sí/no llegó).
 CATEGORIA_AEREA = "Aéreos"
 CATEGORIAS_PUERTO = [c for c in CATEGORIAS if c != CATEGORIA_AEREA]
 
+# 3 contadores operativos:
+#   1) Salida -> Recepción y declaración (Contador de tránsito, se congela ahí)
+#   2) Recepción y declaración -> Pago realizado (Contador puerto->pago)
+#   3) Despachado -> Recibido en almacén (Contador puerto->almacén)
 ETAPAS_PUERTO = [
-    "Llegada a puerto",
-    "Declaración y verificación",
-    "Pago de aduanas y cargos",
-    "En espera de despacho",
+    "Recepción y declaración de la mercancía",
+    "Solicitud de pago a finanzas",
+    "Pago realizado",
     "Despachado",
 ]
 INDICE_ETAPA = {e: i for i, e in enumerate(ETAPAS_PUERTO)}
+# Cada etapa estampa su propia columna de fecha la primera vez que se marca.
+COLUMNA_FECHA_ETAPA = {
+    "Recepción y declaración de la mercancía": COL_FECHA_LLEGADA_PUERTO,
+    "Solicitud de pago a finanzas": COL_FECHA_SOLICITUD_PAGO,
+    "Pago realizado": COL_FECHA_PAGO,
+    "Despachado": COL_FECHA_DESPACHO,
+}
 COLOR_ETAPA_PENDIENTE = "#E5E7EB"
 COLOR_ETAPA_ACTUAL = "#F0B90B"
 COLOR_ETAPA_HECHA = "#2E7D32"
+# Nombres completos para la ficha y el panel de acciones, donde hay espacio;
+# versión corta solo para el badge de la lista compacta.
+ETIQUETA_CORTA_ETAPA = {
+    "Recepción y declaración de la mercancía": "Recepción/declaración",
+    "Solicitud de pago a finanzas": "Solicitud de pago",
+    "Pago realizado": "Pago realizado",
+    "Despachado": "Despachado",
+}
 
 RECIBIDO_SHEET = "Recibido (Mes)"
 LOG_SHEET = "Log"
@@ -1110,10 +1133,9 @@ def marcar_estatus_llegada(bl: str, categoria: str, valor: str):
 @_con_manejo_apierror
 def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
     """Mueve el sub-estado del flujo de puerto (solo categorías marítimas).
-    Estampa Fecha_Llegada_Puerto la primera vez que se marca 'Llegada a
-    puerto' y Fecha_Despacho la primera vez que se marca 'Despachado', sin
-    pisarlas si ya estaban puestas — así una corrección de etapa no borra la
-    fecha real en que ocurrió cada hito."""
+    Cada etapa en COLUMNA_FECHA_ETAPA estampa su columna de fecha la primera
+    vez que se marca, sin pisarla si ya estaba puesta — así una corrección de
+    etapa no borra la fecha real en que ocurrió cada hito."""
     if nueva_etapa not in ETAPAS_PUERTO:
         return False, f"Etapa '{nueva_etapa}' no reconocida."
     ws = get_worksheet(categoria)
@@ -1123,9 +1145,9 @@ def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
     if fila is None:
         return False, f"No se encontró el BL '{bl}' en '{categoria}'."
 
+    columnas_fecha = list(COLUMNA_FECHA_ETAPA.values())
     headers = _asegurar_columnas(
-        ws, [COL_ESTADO_PUERTO, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_DESPACHO,
-             COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
+        ws, [COL_ESTADO_PUERTO, *columnas_fecha, COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
     )
     indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
     actuales = ws.row_values(fila)
@@ -1137,11 +1159,9 @@ def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
         {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
         {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
     ]
-    if nueva_etapa == ETAPAS_PUERTO[0] and not str(combinado.get(COL_FECHA_LLEGADA_PUERTO, "")).strip():
-        peticiones.append({"range": rowcol_to_a1(fila, indices[_norm(COL_FECHA_LLEGADA_PUERTO)]),
-                           "values": [[hoy_rd().isoformat()]]})
-    if nueva_etapa == ETAPAS_PUERTO[-1] and not str(combinado.get(COL_FECHA_DESPACHO, "")).strip():
-        peticiones.append({"range": rowcol_to_a1(fila, indices[_norm(COL_FECHA_DESPACHO)]),
+    columna_fecha = COLUMNA_FECHA_ETAPA.get(nueva_etapa)
+    if columna_fecha and not str(combinado.get(columna_fecha, "")).strip():
+        peticiones.append({"range": rowcol_to_a1(fila, indices[_norm(columna_fecha)]),
                            "values": [[hoy_rd().isoformat()]]})
 
     ws.batch_update(peticiones, value_input_option="RAW")
@@ -1322,7 +1342,7 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     if df.empty:
         for c in ("EstadoTexto", "DiasRel", "ETAFecha", "Prioridad", "OrdenSec", "ValorNum",
-                  "DiasTransito", "DiasDespachoAlmacen"):
+                  "DiasTransito", "DiasPuertoPago", "DiasDespachoAlmacen"):
             df[c] = []
         return df
 
@@ -1348,6 +1368,8 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
         else [None] * len(df)
     llegadas_puerto = [parsear_fecha(v) for v in df[COL_FECHA_LLEGADA_PUERTO]] \
         if COL_FECHA_LLEGADA_PUERTO in df.columns else [None] * len(df)
+    pagos = [parsear_fecha(v) for v in df[COL_FECHA_PAGO]] if COL_FECHA_PAGO in df.columns \
+        else [None] * len(df)
     despachos = [parsear_fecha(v) for v in df[COL_FECHA_DESPACHO]] \
         if COL_FECHA_DESPACHO in df.columns else [None] * len(df)
 
@@ -1355,9 +1377,16 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
         (ll - sal).days if (sal and ll) else ((hoy - sal).days if sal else None)
         for sal, ll in zip(salidas, llegadas_puerto)
     ]
-    # Contador puerto -> almacén: corre desde que se marca "Despachado" hasta
-    # hoy (el embarque sale del tablero activo al marcarlo Recibido, así que
-    # deja de verse solo; no hace falta congelarlo aquí).
+    # Contador 2: puerto -> pago. Corre desde "Recepción y declaración" y se
+    # congela en cuanto se marca "Pago realizado"; mientras no haya pago,
+    # sigue el reloj de hoy (para que se vea cuánto lleva sin pagarse).
+    df["DiasPuertoPago"] = [
+        (pg - ll).days if (ll and pg) else ((hoy - ll).days if ll else None)
+        for ll, pg in zip(llegadas_puerto, pagos)
+    ]
+    # Contador 3: puerto -> almacén. Corre desde que se marca "Despachado"
+    # hasta hoy (el embarque sale del tablero activo al marcarlo Recibido, así
+    # que deja de verse solo; no hace falta congelarlo aquí).
     df["DiasDespachoAlmacen"] = [(hoy - d).days if d else None for d in despachos]
     # Dentro de "En Puerto", primero el más atrasado; en el resto, el ETA más cercano.
     df["OrdenSec"] = [
@@ -1625,7 +1654,7 @@ def render_lista(df: pd.DataFrame):
         etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"])
         etapa_puerto = str(r.get(COL_ESTADO_PUERTO, "")).strip()
         if etapa_puerto:
-            etiqueta = f"{etiqueta} · {etapa_puerto}"
+            etiqueta = f"{etiqueta} · {ETIQUETA_CORTA_ETAPA.get(etapa_puerto, etapa_puerto)}"
         partes.append(
             f'<div class="fila" style="border-left-color:{color};">'
             f'<div class="c-bl" data-l="BL">{esc(r[COL_BL]) if str(r[COL_BL]).strip() else "(sin BL)"}</div>'
@@ -1734,10 +1763,21 @@ def grafico_paises(df: pd.DataFrame, key: str):
                 rerun_fragmento()
 
 
+def _envolver_etiqueta(texto: str) -> str:
+    """Corta una etiqueta larga en dos líneas balanceadas por palabras (no por
+    el primer espacio, que para 'Recepción y declaración de la mercancía'
+    dejaba una primera línea de una palabra y una segunda carguísima)."""
+    if len(texto) <= 16:
+        return texto
+    palabras = texto.split(" ")
+    medio = (len(palabras) + 1) // 2
+    return " ".join(palabras[:medio]) + "<br>" + " ".join(palabras[medio:])
+
+
 def grafico_flujo_puerto(etapa_actual: str, key: str):
-    """Diagrama de las 5 etapas del proceso en puerto (solo carga marítima):
+    """Diagrama de las etapas del proceso en puerto (solo carga marítima):
     hecho en verde, la etapa actual en ámbar, lo que falta en gris. etapa_actual
-    puede venir vacía (llegada aún sin confirmar)."""
+    puede venir vacía (recepción aún sin confirmar)."""
     idx_actual = INDICE_ETAPA.get(etapa_actual, -1)
     n = len(ETAPAS_PUERTO)
     xs = list(range(n))
@@ -1766,15 +1806,15 @@ def grafico_flujo_puerto(etapa_actual: str, key: str):
         hovertext=ETAPAS_PUERTO, hovertemplate="%{hovertext}<extra></extra>",
     ))
     anotaciones = [
-        dict(x=xs[i], y=-0.55, text=etapa.replace(" ", "<br>", 1), showarrow=False,
+        dict(x=xs[i], y=-0.55, text=_envolver_etiqueta(etapa), showarrow=False,
              font=dict(size=10, color="#111827" if i == idx_actual else "#6B7280"), align="center")
         for i, etapa in enumerate(ETAPAS_PUERTO)
     ]
     fig.update_layout(
-        margin=dict(t=10, b=10, l=20, r=20), height=140,
+        margin=dict(t=10, b=10, l=20, r=20), height=150,
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         xaxis=dict(visible=False, range=[-0.4, n - 0.6]),
-        yaxis=dict(visible=False, range=[-1.1, 0.5]),
+        yaxis=dict(visible=False, range=[-1.2, 0.5]),
         annotations=anotaciones,
     )
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key=f"flujo_{key}")
@@ -2174,7 +2214,17 @@ def _ficha_embarque(fila):
     if es_maritimo and etapa_puerto:
         campos.append(("Etapa en puerto", etapa_puerto))
         if str(fila.get(COL_FECHA_LLEGADA_PUERTO, "")).strip():
-            campos.append(("Llegada a puerto confirmada", formato_eta(fila[COL_FECHA_LLEGADA_PUERTO])))
+            campos.append(("Recepción y declaración", formato_eta(fila[COL_FECHA_LLEGADA_PUERTO])))
+        if str(fila.get(COL_FECHA_SOLICITUD_PAGO, "")).strip():
+            campos.append(("Solicitud de pago enviada", formato_eta(fila[COL_FECHA_SOLICITUD_PAGO])))
+        dias_pago = fila.get("DiasPuertoPago")
+        if es_numero(dias_pago):
+            d = int(dias_pago)
+            etiqueta_pago = "Tardó en pagarse" if str(fila.get(COL_FECHA_PAGO, "")).strip() \
+                else "Lleva sin pagarse"
+            campos.append((etiqueta_pago, f"{d} día{'s' if d != 1 else ''}"))
+        if str(fila.get(COL_FECHA_PAGO, "")).strip():
+            campos.append(("Pago realizado", formato_eta(fila[COL_FECHA_PAGO])))
         if str(fila.get(COL_FECHA_DESPACHO, "")).strip():
             campos.append(("Despachado el", formato_eta(fila[COL_FECHA_DESPACHO])))
             dias_almacen = fila.get("DiasDespachoAlmacen")
@@ -2231,6 +2281,11 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
         st.markdown("**Flujo de puerto**")
         if etapa_actual:
             grafico_flujo_puerto(etapa_actual, f"acciones_{tab_key}")
+            dias_pago = fila.get("DiasPuertoPago")
+            if es_numero(dias_pago):
+                etiqueta_pago = "tardó en pagarse" if str(fila.get(COL_FECHA_PAGO, "")).strip() \
+                    else "lleva sin pagarse"
+                st.caption(f"{int(dias_pago)} día(s) {etiqueta_pago} (desde recepción y declaración).")
             dias_almacen = fila.get("DiasDespachoAlmacen")
             if es_numero(dias_almacen):
                 st.caption(f"{int(dias_almacen)} día(s) desde que se marcó despachado.")

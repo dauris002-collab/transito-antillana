@@ -401,6 +401,8 @@ html { -webkit-text-size-adjust: 100%; }
 .contador.ojo { background:#FEF3C7; color:#92400E; font-weight:700; }
 .contador.mal { background:#FEE2E2; color:#991B1B; font-weight:800;
                 box-shadow:inset 0 0 0 1px #FCA5A5; }
+.contador.cerrado.ojo { background:#FFFBEB; box-shadow:inset 0 0 0 1px #FCD34D; font-weight:600; }
+.contador.cerrado.mal { background:#FFF; box-shadow:inset 0 0 0 1px #FCA5A5; font-weight:700; }
 
 /* ---------- Lista de embarques: UN solo markup ----------
    Desktop: grid de 7 columnas (se ve como tabla).
@@ -2137,13 +2139,26 @@ def marca(clase: str) -> str:
     return "⚠ " if "mal" in clase else ("● " if "ojo" in clase else "")
 
 
-def _clase_contador(dias, limite) -> str:
+def _clase_contador(dias, limite, cerrado: bool = False) -> str:
     """Gris dentro del plazo, ámbar apenas lo pasa, rojo cuando ya se fue de las
     manos. Dos niveles y no uno para que el rojo signifique algo: si todo lo
-    vencido sale rojo, en dos semanas nadie lo mira."""
+    vencido sale rojo, en dos semanas nadie lo mira.
+
+    `cerrado` es para la etapa que ya ocurrió (el pago ya se hizo): conserva el
+    color pero con borde en vez de relleno. Que el atraso se vuelva gris al
+    marcar "pagado" borraría de la pantalla la única prueba de que Finanzas
+    tardó 16 días, que es justo el dato con el que se reclama."""
     if not es_numero(dias) or not limite or dias <= limite:
         return "contador"
-    return "contador mal" if dias > limite * 2 else "contador ojo"
+    nivel = "mal" if dias > limite * 2 else "ojo"
+    return f"contador {nivel} cerrado" if cerrado else f"contador {nivel}"
+
+
+def _chip(clase: str, etiqueta: str, dias) -> str:
+    """Todos los contadores con el mismo formato 'Etiqueta: N días'. Antes cada
+    uno tenía su redacción ('16 días tardó en pagarse') y en fila se leían como
+    frases sueltas en vez de como una ficha de indicadores."""
+    return f'<span class="{clase}">{marca(clase)}{etiqueta}: {texto_dias(dias)}</span>' 
 
 
 def html_contadores(fila) -> str:
@@ -2152,29 +2167,25 @@ def html_contadores(fila) -> str:
     sla = sla_etapas()
     transito = fila.get("DiasTransito")
     if es_numero(transito):
-        etiqueta = "tardó en llegar" if fila.get("F_Puerto") else "lleva en tránsito"
-        piezas.append(f'<span class="contador">{texto_dias(transito)} {etiqueta}</span>')
+        etiqueta = "Duración del tránsito" if fila.get("F_Puerto") else "En tránsito"
+        piezas.append(_chip("contador", etiqueta, transito))
     dias_puerto = fila.get("DiasEnPuerto")
     if es_numero(dias_puerto) and not fila.get("F_Almacen"):
         # El tiempo total en puerto abarca las cuatro etapas, así que se compara
         # contra la suma de sus plazos, no contra el de una sola.
         clase = _clase_contador(dias_puerto, sum(v for k, v in sla.items()
                                                  if k in SLA_ETAPA_DEFECTO))
-        piezas.append(f'<span class="{clase}">{marca(clase)}{texto_dias(dias_puerto)} '
-                      f'en {lugar_de(fila.get("Categoria", ""))}</span>')
+        piezas.append(_chip(clase, f'En {lugar_de(fila.get("Categoria", ""))}', dias_puerto))
     solicitud = fila.get("DiasSolicitudPago")
     if es_numero(solicitud):
         pagado = bool(fila.get("F_Pago"))
-        etiqueta = "tardó en pagarse" if pagado else "esperando pago"
-        # Si ya se pagó, el dato es histórico y no hay nada que empujar: queda
-        # gris. El rojo es para lo que todavía se puede destrabar hoy.
-        clase = "contador" if pagado else _clase_contador(
-            solicitud, sla["Solicitud de pago a finanzas"])
-        piezas.append(f'<span class="{clase}">{marca(clase)}{texto_dias(solicitud)} {etiqueta}</span>')
+        etiqueta = "Duración del pago" if pagado else "Esperando pago"
+        clase = _clase_contador(solicitud, sla["Solicitud de pago a finanzas"], cerrado=pagado)
+        piezas.append(_chip(clase, etiqueta, solicitud))
     espera = fila.get("DiasPagoDespacho")
     if es_numero(espera) and not fila.get("F_Almacen"):
         clase = _clase_contador(espera, sla["Pago realizado"])
-        piezas.append(f'<span class="{clase}">{marca(clase)}{texto_dias(espera)} pagado sin retirar</span>')
+        piezas.append(_chip(clase, "Pagado sin retirar", espera))
     return "".join(piezas)
 
 
@@ -2349,7 +2360,7 @@ def _ficha_embarque(fila):
     if fila.get("F_Salida"):
         campos.append(("Fecha de salida", formato_eta(fila["F_Salida"])))
     if es_numero(fila.get("DiasTransito")):
-        etiqueta = "Tardó en llegar" if fila.get("F_Puerto") else "Lleva en tránsito"
+        etiqueta = "Duración del tránsito" if fila.get("F_Puerto") else "En tránsito"
         campos.append((etiqueta, texto_dias(fila["DiasTransito"])))
 
     etapa = str(fila.get("EtapaActual", "")).strip()
@@ -2368,12 +2379,13 @@ def _ficha_embarque(fila):
             if fecha:
                 campos.append((rotulos[nombre_etapa], formato_eta(fecha)))
         if es_numero(fila.get("DiasEnPuerto")) and not fila.get("F_Almacen"):
-            campos.append(("Días en puerto", texto_dias(fila["DiasEnPuerto"])))
+            campos.append((f"En {lugar_de(fila.get('Categoria', ''))}",
+                           texto_dias(fila["DiasEnPuerto"])))
         if es_numero(fila.get("DiasSolicitudPago")):
-            etiqueta = "Tardó en pagarse" if fila.get("F_Pago") else "Lleva sin pagarse"
+            etiqueta = "Duración del pago" if fila.get("F_Pago") else "Esperando pago"
             campos.append((etiqueta, texto_dias(fila["DiasSolicitudPago"])))
         if es_numero(fila.get("DiasPagoDespacho")) and not fila.get("F_Almacen"):
-            campos.append(("Esperando despacho", texto_dias(fila["DiasPagoDespacho"])))
+            campos.append(("Pagado sin retirar", texto_dias(fila["DiasPagoDespacho"])))
     if str(fila.get("Alerta", "") or "").strip():
         campos.append(("⚠ Atención", fila["Alerta"]))
 
@@ -2763,7 +2775,12 @@ def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
         "Pago realizado": [formato_eta(f) if f else "" for f in df["F_Pago"]],
         "Días en tránsito": df["DiasTransito"],
         "Días en puerto": df["DiasEnPuerto"],
-        "Días desde solicitud de pago": df["DiasSolicitudPago"],
+        "Días de solicitud a pago": df["DiasSolicitudPago"],
+        # Columna pensada para el reclamo, no para la pantalla: permite filtrar
+        # en Excel cuántos pagos se pasaron del plazo y por cuánto.
+        "Pago fuera de plazo": [
+            "Sí" if (es_numero(d) and d > sla_etapas()["Solicitud de pago a finanzas"]) else "No"
+            for d in df["DiasSolicitudPago"]],
         "Días pagado sin retirar": df["DiasPagoDespacho"],
         "Alerta operativa": df["Alerta"],
     })

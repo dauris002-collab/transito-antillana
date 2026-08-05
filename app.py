@@ -1,4 +1,3 @@
-```python
 """
 Antillana Comercial · Visibilidad de embarques en tránsito
 ===========================================================
@@ -4112,4 +4111,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```

@@ -224,6 +224,18 @@ SLA_ETAPA_DEFECTO = {
     "Pago realizado": 3,
 }
 SLA_RETRASO_DEFECTO = 7   # días de retraso sin actualizar el ETA antes de avisar
+# Atraso en puerto y su costo. Son DOS umbrales distintos y confundirlos falsea
+# el número: UMBRAL_ATRASO_PUERTO es a partir de cuándo TÚ consideras que un
+# embarque está atrasado (criterio interno), y DIAS_LIBRES es a partir de cuándo
+# la naviera o la terminal EMPIEZAN A COBRAR (criterio del proveedor, viene en el
+# contrato). El conteo de atrasados usa el primero; el costo usa el segundo.
+UMBRAL_ATRASO_PUERTO_DEFECTO = 7
+DIAS_LIBRES_DEFECTO = 0
+# En 0 el bloque de costo NO se muestra. A propósito: una tarifa inventada
+# produce un número que parece exacto y es ficción, y esto se le enseña al
+# presidente. Se llena desde Secrets con tarifas de facturas reales.
+COSTO_DIA_DEFECTO = 0.0
+MONEDA_DEFECTO = "US$"
 TEXTO_ALERTA_ETAPA = {
     "Llegada a puerto": "en {lugar} sin declarar",
     "Recepción y declaración": "declarado y sin solicitar el pago",
@@ -357,6 +369,19 @@ html { -webkit-text-size-adjust: 100%; }
              color:rgba(255,255,255,0.92); margin-bottom:6px; }
 .kpi-value { font-size:2.0rem; font-weight:800; line-height:1; color:#fff; }
 .kpi-sub { font-size:0.70rem; color:rgba(255,255,255,0.88); margin-top:6px; }
+
+/* ---------- Atraso acumulado en puerto y su costo ---------- */
+.atraso { display:flex; flex-wrap:wrap; gap:18px 28px; align-items:flex-start;
+          background:#FFFBEB; box-shadow:inset 0 0 0 1px #FCD34D;
+          border-radius:10px; padding:14px 16px; margin:6px 0 10px; }
+.atraso.grave { background:#FEF2F2; box-shadow:inset 0 0 0 1px #FCA5A5; }
+.atbloque { min-width:150px; }
+.atnum { font-size:1.55rem; font-weight:700; line-height:1.15; color:#92400E; }
+.atraso.grave .atnum { color:#991B1B; }
+.atnum.atapagado { color:#9CA3AF; }
+.atlbl { font-size:.78rem; color:#4B5563; margin-top:2px; }
+.atpie { flex-basis:100%; font-size:.78rem; color:#4B5563;
+         border-top:1px solid rgba(0,0,0,.08); padding-top:8px; }
 
 /* ---------- Chips de resumen por etapa (reemplazan 5 st.metric en fila) ---------- */
 .chips { display:flex; flex-wrap:wrap; gap:8px; margin:4px 0 10px 0; }
@@ -617,6 +642,143 @@ def esc(valor) -> str:
 def texto_dias(n) -> str:
     d = int(n)
     return f"{d} día" if d == 1 else f"{d} días"
+
+
+@st.cache_resource
+def costos_puerto() -> dict:
+    """Parámetros del costo de atraso en puerto. Se ajustan desde Secrets:
+
+        [costo_puerto]
+        umbral = 7
+        moneda = "US$"
+        dias_libres = 5
+        costo_dia = 0
+
+        [costo_puerto.costo_dia_por_categoria]
+        Equipos = 150
+        "Carga Suelta" = 60
+
+        [costo_puerto.dias_libres_por_categoria]
+        Aéreos = 2
+
+    Mientras costo_dia sea 0 en todo, la app cuenta los atrasados pero no
+    muestra ninguna cifra de dinero."""
+    cfg = {}
+    try:
+        cfg = st.secrets.get("costo_puerto", None) or {}
+    except Exception:
+        cfg = {}
+
+    def _num(valor, defecto):
+        try:
+            return float(valor)
+        except (TypeError, ValueError):
+            return defecto
+
+    return {
+        "umbral": int(_num(cfg.get("umbral"), UMBRAL_ATRASO_PUERTO_DEFECTO)),
+        "moneda": str(cfg.get("moneda") or MONEDA_DEFECTO),
+        "dias_libres": _num(cfg.get("dias_libres"), DIAS_LIBRES_DEFECTO),
+        "costo_dia": _num(cfg.get("costo_dia"), COSTO_DIA_DEFECTO),
+        "costo_por_cat": dict(cfg.get("costo_dia_por_categoria", {}) or {}),
+        "libres_por_cat": dict(cfg.get("dias_libres_por_categoria", {}) or {}),
+    }
+
+
+def resumen_atraso_puerto(df) -> dict:
+    """Cuenta lo atrasado en puerto y estima lo que cuesta.
+
+    Dos conteos distintos a propósito:
+      · `dias_excedidos`  = días por encima del umbral interno. Es el atraso.
+      · `dias_facturables` = días por encima de los días libres del proveedor.
+        Es lo que se paga. Casi nunca son el mismo número.
+
+    El costo es una ESTIMACIÓN a tarifa plana por día. No sustituye la factura:
+    ignora los tramos escalonados que cobran casi todas las navieras (los
+    primeros días a una tarifa y los siguientes más caros), no distingue entre
+    demoraje de la línea y almacenaje de la terminal, y no sabe si el embarque
+    ocupa uno o varios contenedores."""
+    cfg = costos_puerto()
+    vacio = {"n": 0, "dias_excedidos": 0, "dias_facturables": 0.0,
+             "costo": 0.0, "costo_promedio": 0.0, "umbral": cfg["umbral"],
+             "moneda": cfg["moneda"], "hay_tarifa": False, "peor": None}
+    if df is None or df.empty or "DiasEnPuerto" not in df.columns:
+        return vacio
+
+    n = dias_exc = 0
+    facturables = costo = 0.0
+    peor = None
+    for _, fila in df.iterrows():
+        dias = fila.get("DiasEnPuerto")
+        # Solo lo que sigue en puerto: si ya se recibió en almacén, el contador
+        # está congelado y ese atraso pertenece al histórico, no a lo pendiente.
+        if not es_numero(dias) or fila.get("F_Almacen") or dias <= cfg["umbral"]:
+            continue
+        cat = fila.get("Categoria", "")
+        libres = float(cfg["libres_por_cat"].get(cat, cfg["dias_libres"]))
+        tarifa = float(cfg["costo_por_cat"].get(cat, cfg["costo_dia"]))
+        n += 1
+        dias_exc += int(dias) - cfg["umbral"]
+        dias_fact = max(0.0, float(dias) - libres)
+        facturables += dias_fact
+        costo += dias_fact * tarifa
+        if peor is None or dias > peor[1]:
+            peor = (str(fila.get("BL", "") or ""), int(dias))
+
+    hay_tarifa = costo > 0
+    return {
+        "n": n,
+        "dias_excedidos": dias_exc,
+        "dias_facturables": facturables,
+        "costo": costo,
+        "costo_promedio": (costo / n) if (n and hay_tarifa) else 0.0,
+        "umbral": cfg["umbral"],
+        "moneda": cfg["moneda"],
+        "hay_tarifa": hay_tarifa,
+        "peor": peor,
+    }
+
+
+def _monto(valor: float, moneda: str) -> str:
+    return f"{moneda}{valor:,.0f}"
+
+
+def html_atraso_puerto(df) -> str:
+    """Bloque de atraso acumulado en puerto. Si no hay nada atrasado no dibuja
+    nada: un cero permanente en pantalla se vuelve invisible en una semana."""
+    r = resumen_atraso_puerto(df)
+    if not r["n"]:
+        return ""
+    grave = r["n"] > 0 and r["dias_excedidos"] > r["umbral"] * r["n"]
+    piezas = [f'<div class="atraso{" grave" if grave else ""}">']
+    piezas.append(
+        f'<div class="atbloque"><div class="atnum">{r["n"]}</div>'
+        f'<div class="atlbl">{"embarque atrasado" if r["n"] == 1 else "embarques atrasados"}'
+        f' (+{r["umbral"]} días en puerto)</div></div>'
+    )
+    piezas.append(
+        f'<div class="atbloque"><div class="atnum">{r["dias_excedidos"]}</div>'
+        f'<div class="atlbl">días acumulados por encima del plazo</div></div>'
+    )
+    if r["hay_tarifa"]:
+        piezas.append(
+            f'<div class="atbloque"><div class="atnum">{_monto(r["costo"], r["moneda"])}</div>'
+            f'<div class="atlbl">costo estimado del atraso · '
+            f'{_monto(r["costo_promedio"], r["moneda"])} promedio por embarque</div></div>'
+        )
+    else:
+        piezas.append(
+            '<div class="atbloque"><div class="atnum atapagado">—</div>'
+            '<div class="atlbl">costo sin calcular: falta la tarifa por día '
+            'en Secrets</div></div>'
+        )
+    if r["peor"] and r["peor"][0]:
+        piezas.append(
+            f'<div class="atpie">El más atrasado: <b>{esc(r["peor"][0])}</b>, '
+            f'{texto_dias(r["peor"][1])} en puerto.</div>'
+        )
+    piezas.append("</div>")
+    return "".join(piezas)
 
 
 @st.cache_resource
@@ -2979,6 +3141,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     if not en_proceso.empty:
         st.markdown("**En proceso en puerto**")
         st.markdown(html_chips(en_proceso["EtapaActual"].value_counts().to_dict()), unsafe_allow_html=True)
+        st.markdown(html_atraso_puerto(en_proceso), unsafe_allow_html=True)
         _panel_en_proceso(en_proceso, rol, contexto=tab_key)
 
     st.divider()
@@ -3163,6 +3326,7 @@ def mostrar_dashboard(datos: dict):
     if seleccion == VISTA_EN_PROCESO_PUERTO:
         st.markdown(html_chips(en_proceso_df["EtapaActual"].value_counts().to_dict()),
                     unsafe_allow_html=True)
+        st.markdown(html_atraso_puerto(en_proceso_df), unsafe_allow_html=True)
         _panel_alertas(en_proceso_df)
         st.divider()
         _panel_en_proceso(en_proceso_df, rol, contexto=VISTA_EN_PROCESO_PUERTO)

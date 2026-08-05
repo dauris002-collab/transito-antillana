@@ -1224,7 +1224,9 @@ def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
         return False, f"No se encontró el BL '{bl}' en '{categoria}'."
 
     columnas_fecha = list(COLUMNA_FECHA_ETAPA.values())
-    headers = _asegurar_columnas(ws, [*columnas_fecha, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    headers = _asegurar_columnas(
+        ws, [*columnas_fecha, COL_ESTATUS_LLEGADA, COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
+    )
     indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
     actuales = ws.row_values(fila)
     actuales += [""] * (len(headers) - len(actuales))
@@ -1234,6 +1236,11 @@ def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
         {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
         {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
     ]
+    # Si venía marcado "Retrasado" (respondió "No" a la pregunta de llegada),
+    # confirmar cualquier etapa del flujo significa que ya llegó — se limpia
+    # la marca para que no se quede "Retrasado" para siempre en EstadoTexto.
+    if _norm(combinado.get(COL_ESTATUS_LLEGADA, "")) == _norm(VALOR_RETRASADO):
+        peticiones.append({"range": rowcol_to_a1(fila, indices[_norm(COL_ESTATUS_LLEGADA)]), "values": [[""]]})
     columna_fecha = COLUMNA_FECHA_ETAPA[nueva_etapa]
     if not str(combinado.get(columna_fecha, "")).strip():
         peticiones.append({"range": rowcol_to_a1(fila, indices[_norm(columna_fecha)]),
@@ -2144,14 +2151,22 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
 
     conteo = df["EstadoTexto"].value_counts().to_dict()
     proximos_n = conteo.get(EST_PROXIMO, 0)
-    en_puerto_n = conteo.get(EST_PUERTO, 0)
+    # "Por confirmar llegada" debe contar solo lo que de verdad falta por
+    # responder — no todo lo que tiene el ETA vencido. Un embarque con ETA
+    # vencido que YA se confirmó (ya tiene una etapa en el flujo) no está
+    # pendiente de nada; antes este número no distinguía eso y no calzaba con
+    # lo que mostraba el panel de confirmación de abajo.
+    etapa_col = df.get("EtapaActual", pd.Series([""] * len(df), index=df.index)).astype(str).str.strip()
+    en_puerto_n = int(((df["EstadoTexto"] == EST_PUERTO) & (etapa_col == "")).sum())
     retrasados_n = conteo.get(EST_RETRASADO, 0)
     sin_fecha_n = conteo.get(EST_SIN_FECHA, 0)
 
     valores = [v for v in df.get("ValorNum", []) if es_numero(v)]
     valor_total = sum(valores) if valores else None
-    valor_puerto = sum(v for v, e in zip(df.get("ValorNum", []), df["EstadoTexto"])
-                       if es_numero(v) and e == EST_PUERTO) if valores else None
+    # Mismo criterio que en_puerto_n: solo lo que sigue sin confirmar, no todo
+    # lo que alguna vez tuvo el ETA vencido.
+    valor_puerto = sum(v for v, e, et in zip(df.get("ValorNum", []), df["EstadoTexto"], etapa_col)
+                       if es_numero(v) and e == EST_PUERTO and et == "") if valores else None
 
     # -------------------- KPIs --------------------
     kpis = [

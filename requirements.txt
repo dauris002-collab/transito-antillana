@@ -1,6 +1,17 @@
-streamlit>=1.49
-gspread>=6.0
-google-auth>=2.28
-pandas>=2.0
-plotly>=5.20
-openpyxl>=3.1
+# Antillana · Visibilidad de embarques en tránsito
+# Versiones fijadas a propósito: Streamlit Community Cloud reconstruye el entorno
+# en cada redespliegue y toma la última versión disponible si no se fija. Esta app
+# usa APIs recientes (width="stretch", st.container(key=...), st.fragment,
+# st.segmented_control); un cambio incompatible arriba tumbaría la app en
+# producción sin que nadie haya tocado el código. Sube estos números a mano,
+# cuando puedas probar el resultado.
+streamlit==1.61.0
+gspread==6.2.1
+google-auth==2.56.2
+# Probado en este entorno con pandas 3.0.2; se fija 2.2.3 porque es la rama
+# estable que Streamlit Cloud resuelve sin sorpresas. Las funciones de pandas que
+# usa la app (crosstab, reindex, concat, value_counts, str.contains) se comportan
+# igual en ambas. Si prefieres 3.x, cámbialo y prueba antes de anunciar la app.
+pandas==2.2.3
+plotly==6.9.0
+openpyxl==3.1.5

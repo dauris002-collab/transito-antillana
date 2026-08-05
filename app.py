@@ -404,6 +404,7 @@ html { -webkit-text-size-adjust: 100%; }
                 box-shadow:inset 0 0 0 1px #FCA5A5; }
 .contador.cerrado.ojo { background:#FFFBEB; box-shadow:inset 0 0 0 1px #FCD34D; font-weight:600; }
 .contador.cerrado.mal { background:#FFF; box-shadow:inset 0 0 0 1px #FCA5A5; font-weight:700; }
+.contador.bien { background:#DCFCE7; color:#166534; font-weight:600; }
 
 /* ---------- Lista de embarques: UN solo markup ----------
    Desktop: grid de 7 columnas (se ve como tabla).
@@ -2159,7 +2160,13 @@ def html_chips(conteos: dict, resaltar: str = "") -> str:
 
 
 def marca(clase: str) -> str:
-    return "⚠ " if "mal" in clase else ("● " if "ojo" in clase else "")
+    if "mal" in clase:
+        return "⚠ "
+    if "ojo" in clase:
+        return "● "
+    # El ✓ acompaña al verde por la misma razón que el ⚠ acompaña al rojo: esto
+    # se ve en celular y se imprime, y el color solo no alcanza.
+    return "✓ " if "bien" in clase else ""
 
 
 def _clase_contador(dias, limite, cerrado: bool = False) -> str:
@@ -2170,9 +2177,16 @@ def _clase_contador(dias, limite, cerrado: bool = False) -> str:
     `cerrado` es para la etapa que ya ocurrió (el pago ya se hizo): conserva el
     color pero con borde en vez de relleno. Que el atraso se vuelva gris al
     marcar "pagado" borraría de la pantalla la única prueba de que Finanzas
-    tardó 16 días, que es justo el dato con el que se reclama."""
-    if not es_numero(dias) or not limite or dias <= limite:
+    tardó 16 días, que es justo el dato con el que se reclama.
+
+    Una etapa cerrada DENTRO del plazo sale en verde: ahí ya hay un veredicto
+    ("esto salió bien") y el gris no lo dice. Mientras la etapa sigue abierta se
+    queda en gris, porque todavía no hay nada que juzgar. Sin plazo definido —el
+    tránsito— tampoco hay veredicto posible, así que se queda en gris."""
+    if not es_numero(dias) or not limite:
         return "contador"
+    if dias <= limite:
+        return "contador bien" if cerrado else "contador"
     nivel = "mal" if dias > limite * 2 else "ojo"
     return f"contador {nivel} cerrado" if cerrado else f"contador {nivel}"
 

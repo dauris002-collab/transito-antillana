@@ -236,7 +236,7 @@ TEXTO_ALERTA_ETAPA = {
 # Cambia esta sola línea si el criterio del negocio es el otro.
 BASE_FECHA_RECIBIDO = "llegada"
 
-VISTA_EN_PROCESO_PUERTO = "En proceso (puerto)"
+VISTA_EN_PROCESO_PUERTO = "Puerto/Aeropuerto · Estatus"
 RECIBIDO_SHEET = "Recibido (Mes)"
 LOG_SHEET = "Log"
 
@@ -398,7 +398,9 @@ html { -webkit-text-size-adjust: 100%; }
 .flujo-desc { color:#6B7280; font-size:0.86rem; }
 .contador { display:inline-block; font-size:0.76rem; color:#4B5563; background:#F3F4F6;
             border-radius:6px; padding:2px 8px; margin:2px 6px 2px 0; }
-.contador.mal { background:#FEF3C7; color:#92400E; font-weight:700; }
+.contador.ojo { background:#FEF3C7; color:#92400E; font-weight:700; }
+.contador.mal { background:#FEE2E2; color:#991B1B; font-weight:800;
+                box-shadow:inset 0 0 0 1px #FCA5A5; }
 
 /* ---------- Lista de embarques: UN solo markup ----------
    Desktop: grid de 7 columnas (se ve como tabla).
@@ -2131,8 +2133,21 @@ def html_chips(conteos: dict, resaltar: str = "") -> str:
     return "".join(piezas)
 
 
+def marca(clase: str) -> str:
+    return "⚠ " if "mal" in clase else ("● " if "ojo" in clase else "")
+
+
+def _clase_contador(dias, limite) -> str:
+    """Gris dentro del plazo, ámbar apenas lo pasa, rojo cuando ya se fue de las
+    manos. Dos niveles y no uno para que el rojo signifique algo: si todo lo
+    vencido sale rojo, en dos semanas nadie lo mira."""
+    if not es_numero(dias) or not limite or dias <= limite:
+        return "contador"
+    return "contador mal" if dias > limite * 2 else "contador ojo"
+
+
 def html_contadores(fila) -> str:
-    """Los tres contadores operativos de un embarque, en línea."""
+    """Los contadores operativos de un embarque, en línea."""
     piezas = []
     sla = sla_etapas()
     transito = fila.get("DiasTransito")
@@ -2141,18 +2156,25 @@ def html_contadores(fila) -> str:
         piezas.append(f'<span class="contador">{texto_dias(transito)} {etiqueta}</span>')
     dias_puerto = fila.get("DiasEnPuerto")
     if es_numero(dias_puerto) and not fila.get("F_Almacen"):
-        piezas.append(f'<span class="contador">{texto_dias(dias_puerto)} '
+        # El tiempo total en puerto abarca las cuatro etapas, así que se compara
+        # contra la suma de sus plazos, no contra el de una sola.
+        clase = _clase_contador(dias_puerto, sum(v for k, v in sla.items()
+                                                 if k in SLA_ETAPA_DEFECTO))
+        piezas.append(f'<span class="{clase}">{marca(clase)}{texto_dias(dias_puerto)} '
                       f'en {lugar_de(fila.get("Categoria", ""))}</span>')
     solicitud = fila.get("DiasSolicitudPago")
     if es_numero(solicitud):
         pagado = bool(fila.get("F_Pago"))
         etiqueta = "tardó en pagarse" if pagado else "esperando pago"
-        clase = "contador" if pagado or solicitud <= sla["Solicitud de pago a finanzas"] else "contador mal"
-        piezas.append(f'<span class="{clase}">{texto_dias(solicitud)} {etiqueta}</span>')
+        # Si ya se pagó, el dato es histórico y no hay nada que empujar: queda
+        # gris. El rojo es para lo que todavía se puede destrabar hoy.
+        clase = "contador" if pagado else _clase_contador(
+            solicitud, sla["Solicitud de pago a finanzas"])
+        piezas.append(f'<span class="{clase}">{marca(clase)}{texto_dias(solicitud)} {etiqueta}</span>')
     espera = fila.get("DiasPagoDespacho")
     if es_numero(espera) and not fila.get("F_Almacen"):
-        clase = "contador" if espera <= sla["Pago realizado"] else "contador mal"
-        piezas.append(f'<span class="{clase}">{texto_dias(espera)} pagado sin retirar</span>')
+        clase = _clase_contador(espera, sla["Pago realizado"])
+        piezas.append(f'<span class="{clase}">{marca(clase)}{texto_dias(espera)} pagado sin retirar</span>')
     return "".join(piezas)
 
 
@@ -3803,6 +3825,64 @@ def _herramienta_salud(df: pd.DataFrame, historico: pd.DataFrame):
             st.caption(nota)
 
 
+def respaldo_completo() -> tuple:
+    """Copia cruda de TODAS las pestañas del Sheet en un solo .xlsx: valores tal
+    cual están, sin enriquecer, sin filtrar y sin reordenar columnas — para que
+    sirva para restaurar, no solo para analizar.
+
+    Se lee con get_all_values() y no con la caché de la app a propósito: un
+    respaldo tiene que reflejar el Sheet de este momento, no lo que la pantalla
+    tenía cargado hace cinco minutos. Cuesta una llamada por pestaña, por eso va
+    detrás de un botón y no en cada rerun."""
+    try:
+        hojas = _con_reintento(lambda: get_spreadsheet().worksheets())
+    except Exception as e:  # noqa: BLE001
+        return None, f"No se pudo leer el Google Sheet: {e}", 0
+    buffer = io.BytesIO()
+    filas_totales = 0
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for hoja in hojas:
+            try:
+                valores = _con_reintento(lambda h=hoja: h.get_all_values())
+            except Exception as e:  # noqa: BLE001
+                return None, f"Falló la lectura de la pestaña '{hoja.title}': {e}", 0
+            # Sin header: la fila 1 se guarda como una fila más, así el respaldo
+            # es idéntico al original aunque alguien haya cambiado un encabezado.
+            marco = pd.DataFrame(valores) if valores else pd.DataFrame()
+            filas_totales += max(len(valores) - 1, 0)
+            nombre = "".join(c for c in hoja.title if c.isalnum() or c in " _-")[:31] or "Hoja"
+            marco.to_excel(writer, sheet_name=nombre, index=False, header=False)
+    return buffer.getvalue(), "", filas_totales
+
+
+def _herramienta_respaldo():
+    st.markdown("**Respaldo**")
+    st.caption("Copia cruda de todas las pestañas, tal como están en este momento. "
+               "Guárdala fuera de Google Drive: un respaldo dentro de la misma cuenta "
+               "no protege contra perder la cuenta.")
+    if st.button("Generar respaldo del Sheet completo"):
+        with st.spinner("Leyendo todas las pestañas…"):
+            contenido, error, filas = respaldo_completo()
+        if error:
+            st.error(error)
+        else:
+            st.session_state["respaldo_bytes"] = contenido
+            st.session_state["respaldo_nombre"] = (
+                f"Respaldo_Embarques_{ahora_rd().strftime('%Y-%m-%d_%H%M')}.xlsx")
+            st.session_state["respaldo_filas"] = filas
+    if st.session_state.get("respaldo_bytes"):
+        st.download_button(
+            f"⬇ Descargar {st.session_state['respaldo_nombre']} "
+            f"({st.session_state.get('respaldo_filas', 0)} filas)",
+            data=st.session_state["respaldo_bytes"],
+            file_name=st.session_state["respaldo_nombre"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        st.caption("El respaldo automático cada 10 minutos no lo hace esta app: lo hace el "
+                   "script de Google Apps Script instalado en el propio Sheet, que corre "
+                   "aunque nadie tenga la app abierta.")
+
+
 def herramientas(datos: dict):
     st.subheader("Herramientas")
     df = datos["activos"]
@@ -3814,6 +3894,8 @@ def herramientas(datos: dict):
     _herramienta_fechas(df)
     st.divider()
     _herramienta_salud(df, datos["historico"])
+    st.divider()
+    _herramienta_respaldo()
     st.divider()
 
     st.markdown("**Bitácora**")

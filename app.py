@@ -151,6 +151,7 @@ COLUMNAS_INTERNAS = {
     "ValorNum", "Buscar", "EtapaActual", "EtapaIdx", "Alerta", "AlertaDias",
     "DiasTransito", "DiasSolicitudPago", "DiasPagoDespacho", "DiasEnPuerto", "DiasEnEtapa",
     "F_Salida", "F_Puerto", "F_Declaracion", "F_Solicitud", "F_Pago", "F_Almacen",
+    "BLRepetido", "FlujoRaro",
     COL_DIAS_PUERTO,
 }
 
@@ -1770,6 +1771,16 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     df["EtapaActual"] = [_etapa_de_fechas(f) for f in fechas_por_fila]
     df["EtapaIdx"] = [INDICE_ETAPA.get(e, -1) for e in df["EtapaActual"]]
 
+    # Dos avisos que antes solo salían en Herramientas y que cuestan tiempo real:
+    # editar el embarque equivocado porque dos filas comparten BL, y confiar en
+    # contadores calculados sobre fechas que van al revés.
+    bls_norm = df[COL_BL].astype(str).str.strip().str.upper()
+    veces = bls_norm.value_counts().to_dict()
+    df["BLRepetido"] = [bool(b) and veces.get(b, 0) > 1 for b in bls_norm]
+    df["FlujoRaro"] = [
+        _validar_orden_flujo(dict(zip(ETAPAS_PUERTO, t))) for t in fechas_por_fila
+    ]
+
     # Contador 1: salida -> llegada a puerto. Congelado en cuanto llegó, para que
     # el número diga "cuánto tardó" y no "cuánto lleva sin llegar" una vez llegó.
     df["DiasTransito"] = [
@@ -2226,6 +2237,9 @@ def render_lista(df: pd.DataFrame):
                            f'{esc(etiqueta_etapa(etapa, r.get("Categoria", "")))}</span>')
         alerta = str(r.get("Alerta", "") or "").strip()
         badge_alerta = f'<span class="badge" style="background:{COLOR_ALERTA};">⚠ {esc(alerta)}</span>' if alerta else ""
+        if r.get("BLRepetido"):
+            badge_alerta += ('<span class="badge" style="background:#7C3AED;" '
+                             'title="Este BL aparece en más de una fila">⧉ BL repetido</span>')
         partes.append(
             f'<div class="fila" style="border-left-color:{color};">'
             f'<div class="c-bl" data-l="BL">{esc(r[COL_BL]) if str(r[COL_BL]).strip() else "(sin BL)"}'
@@ -2600,14 +2614,24 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
         es_aerea = categoria == CATEGORIA_AEREA
         clave = clave_fila(contexto, categoria, bl or "sin_bl", fila.get("FilaSheet", ""))
         alerta = str(fila.get("Alerta", "") or "").strip()
+        # Con dos filas del mismo BL es fácil trabajar sobre la equivocada y creer
+        # que la app "no guardó". El número de fila del Sheet lo desambigua.
+        marca_dup = (f'<span class="badge" style="background:#7C3AED;">⧉ BL repetido · '
+                     f'fila {esc(fila.get("FilaSheet", "?"))}</span>'
+                     if fila.get("BLRepetido") else "")
+        raro = str(fila.get("FlujoRaro", "") or "").strip()
 
         st.markdown(
-            f'<div class="flujo-cabeza"><span class="flujo-bl">{esc(bl) if bl else "(sin BL)"}</span>'
+            f'<div class="flujo-cabeza"><span class="flujo-bl">{esc(bl) if bl else "(sin BL)"} '
+            f'{marca_dup}</span>'
             f'<span class="flujo-desc">{esc(fila[COL_DESC])} · {esc(categoria)}</span></div>'
             + html_flujo(fechas_flujo_de_fila(fila), etapa, es_aerea=es_aerea)
             + html_contadores(fila)
             + (f'<div class="alerta-fila" style="color:#B45309;font-weight:600;">⚠ {esc(alerta)}</div>'
-               if alerta else ""),
+               if alerta else "")
+            + (f'<div class="alerta-fila" style="color:#991B1B;font-weight:600;">⚠ Fechas fuera de '
+               f'orden: {esc(raro)} Los contadores de este embarque no son confiables.</div>'
+               if raro else ""),
             unsafe_allow_html=True,
         )
 

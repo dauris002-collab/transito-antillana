@@ -750,16 +750,28 @@ def _asegurar_columnas(ws, nombres: list) -> list:
     return headers + faltan
 
 
-def _buscar_fila_por_bl(ws, bl: str):
-    """Número de fila (1-indexado) del BL dentro de esa pestaña, o None."""
+def _buscar_fila_por_bl(ws, bl: str, fila_preferida: int | None = None):
+    """Número de fila (1-indexado) del BL dentro de esa pestaña, o None.
+    Si se pasa fila_preferida (la FilaSheet de la vista) y esa fila contiene el
+    BL buscado, se usa directamente. Esto evita operar sobre la primera
+    coincidencia cuando existen embarques parciales con el mismo BL (caso real
+    en los datos). Si la fila preferida no calza, cae al find clásico."""
     if ws is None:
         return None
     headers = _headers(ws.title)
     idx = next((i for i, h in enumerate(headers) if _norm(h) == _norm(COL_BL)), None)
     if idx is None:
         return None
+    bl_norm = str(bl).strip()
+    if fila_preferida is not None and fila_preferida >= 2:
+        try:
+            valores_fila = ws.row_values(fila_preferida)
+            if len(valores_fila) > idx and str(valores_fila[idx]).strip() == bl_norm:
+                return fila_preferida
+        except Exception:
+            pass
     try:
-        celda = ws.find(str(bl).strip(), in_column=idx + 1)
+        celda = ws.find(bl_norm, in_column=idx + 1)
     except Exception:
         # gspread 5 lanza CellNotFound; gspread 6 devuelve None. Cubrimos ambos.
         return None
@@ -1153,13 +1165,14 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str):
 
 
 @_con_manejo_apierror
-def actualizar_embarque(bl_original: str, categoria: str, datos: dict):
+def actualizar_embarque(bl_original: str, categoria: str, datos: dict, fila_preferida: int | None = None):
     """Edición de un embarque ya cargado. Lee la fila actual para no pisar
-    columnas que la app no gestiona, y reescribe la fila completa de una vez."""
+    columnas que la app no gestiona, y reescribe la fila completa de una vez.
+    fila_preferida evita operar sobre el primer BL cuando hay parciales."""
     ws = get_worksheet(categoria)
     if ws is None:
         return False, f"No existe la pestaña '{categoria}'."
-    fila = _buscar_fila_por_bl(ws, bl_original)
+    fila = _buscar_fila_por_bl(ws, bl_original, fila_preferida)
     if fila is None:
         return False, f"El BL '{bl_original}' ya no está en '{categoria}' — puede que alguien lo movió."
 
@@ -1185,13 +1198,13 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict):
 
 
 @_con_manejo_apierror
-def marcar_estatus_llegada(bl: str, categoria: str, valor: str):
+def marcar_estatus_llegada(bl: str, categoria: str, valor: str, fila_preferida: int | None = None):
     """Escribe (o limpia) la respuesta a '¿ya llegó?'. valor="" borra la marca,
     valor="Retrasado" deja constancia de que se verificó que NO llegó."""
     ws = get_worksheet(categoria)
     if ws is None:
         return False, f"No existe la pestaña '{categoria}'."
-    fila = _buscar_fila_por_bl(ws, bl)
+    fila = _buscar_fila_por_bl(ws, bl, fila_preferida)
     if fila is None:
         return False, f"No se encontró el BL '{bl}' en '{categoria}'."
 
@@ -1207,7 +1220,7 @@ def marcar_estatus_llegada(bl: str, categoria: str, valor: str):
 
 
 @_con_manejo_apierror
-def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
+def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str, fila_preferida: int | None = None):
     """Fija la fecha de la etapa elegida (hoy, si no tenía) sin pisar una que
     ya estaba puesta. Si se elige una etapa ANTERIOR a la que ya está activa
     (corrección / retroceso), vacía las fechas de las etapas posteriores —
@@ -1219,7 +1232,7 @@ def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
     ws = get_worksheet(categoria)
     if ws is None:
         return False, f"No existe la pestaña '{categoria}'."
-    fila = _buscar_fila_por_bl(ws, bl)
+    fila = _buscar_fila_por_bl(ws, bl, fila_preferida)
     if fila is None:
         return False, f"No se encontró el BL '{bl}' en '{categoria}'."
 
@@ -1256,11 +1269,11 @@ def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
 
 
 @_con_manejo_apierror
-def eliminar_embarque(bl: str, categoria: str):
+def eliminar_embarque(bl: str, categoria: str, fila_preferida: int | None = None):
     ws = get_worksheet(categoria)
     if ws is None:
         return False, f"No existe la pestaña '{categoria}'."
-    fila = _buscar_fila_por_bl(ws, bl)
+    fila = _buscar_fila_por_bl(ws, bl, fila_preferida)
     if fila is None:
         return False, f"No se encontró el BL '{bl}' en '{categoria}'."
     ws.delete_rows(fila)
@@ -1268,11 +1281,11 @@ def eliminar_embarque(bl: str, categoria: str):
 
 
 @_con_manejo_apierror
-def marcar_como_recibido(bl: str, categoria: str):
+def marcar_como_recibido(bl: str, categoria: str, fila_preferida: int | None = None):
     """Archiva el embarque en 'Recibido (Mes)' y lo saca del tablero activo.
-    La fecha de recibido es el ETA del embarque, no el día del clic: el mes que
-    cuenta es aquel en que la mercancía llegó, no aquel en que alguien se acordó
-    de confirmarlo en la app.
+    La fecha de recibido prioriza la Fecha_Llegada_Puerto confirmada (siempre
+    existe por el candado) sobre el ETA estimado. Así el mes refleja cuándo
+    llegó de verdad la mercancía, no la estimación ni el día del clic.
 
     Candado: no archiva si faltan fechas de las 4 etapas previas (Llegada,
     Declaración, Solicitud de pago, Pago) — ya no se autocompletan solas. Hay
@@ -1281,7 +1294,7 @@ def marcar_como_recibido(bl: str, categoria: str):
     if ws_origen is None:
         return False, f"No existe la pestaña '{categoria}'."
 
-    fila = _buscar_fila_por_bl(ws_origen, bl)
+    fila = _buscar_fila_por_bl(ws_origen, bl, fila_preferida)
     if fila is None:
         return False, f"No se encontró el BL '{bl}' en '{categoria}' — puede que ya se haya movido o editado."
 
@@ -1302,12 +1315,19 @@ def marcar_como_recibido(bl: str, categoria: str):
         )
 
     eta_crudo = str(datos_norm.get(_norm(COL_ETA), "")).strip()
-    fecha_llegada = parsear_fecha(eta_crudo)
-    if fecha_llegada is None:
+    fecha_eta = parsear_fecha(eta_crudo)
+    if fecha_eta is None:
         return False, (
             f"El BL '{bl}' no tiene un ETA interpretable ('{eta_crudo or 'vacío'}'), así que no se "
             "puede archivar sin saber a qué mes pertenece. Corrígelo en Herramientas → Normalizar fechas."
         )
+
+    # Priorizar la fecha real de llegada confirmada en el flujo sobre el ETA.
+    # El candado garantiza que Fecha_Llegada_Puerto está llena; si por alguna
+    # razón no, cae al ETA para no bloquear.
+    fecha_llegada_real = parsear_fecha(
+        str(datos_norm.get(_norm(COL_FECHA_LLEGADA_PUERTO), "")).strip()
+    ) or fecha_eta
 
     ws_destino = get_worksheet(RECIBIDO_SHEET)
     if ws_destino is None:
@@ -1323,8 +1343,8 @@ def marcar_como_recibido(bl: str, categoria: str):
         COL_MODELO: datos_norm.get(_norm(COL_MODELO), ""),
         COL_CANT: datos_norm.get(_norm(COL_CANT), ""),
         COL_PAIS: datos_norm.get(_norm(COL_PAIS), ""),
-        COL_ETA: fecha_llegada.isoformat(),
-        "Fecha_Recibido": fecha_llegada.isoformat(),
+        COL_ETA: fecha_eta.isoformat(),
+        "Fecha_Recibido": fecha_llegada_real.isoformat(),
         "Categoria_Origen": categoria,
         "Registrado_Por": usuario_actual(),
         COL_ACTUALIZACION: marca_ahora(),
@@ -1350,13 +1370,16 @@ def marcar_como_recibido(bl: str, categoria: str):
 
 
 @_con_manejo_apierror
-def quitar_de_recibido(bl: str, categoria_manual: str | None = None):
-    """Reversa de 'Marcar como Recibido': devuelve el embarque a su categoría."""
+def quitar_de_recibido(bl: str, categoria_manual: str | None = None, fila_preferida: int | None = None):
+    """Reversa de 'Marcar como Recibido': devuelve el embarque a su categoría.
+    Restaura también el progreso de etapas (excepto la de almacén, que se
+    deshace con la reversa), Fecha_Salida, OC/EE y Estatus_Llegada para no
+    perder el trabajo operativo ya registrado."""
     ws_recibido = get_worksheet(RECIBIDO_SHEET)
     if ws_recibido is None:
         return False, f"No existe la pestaña '{RECIBIDO_SHEET}'."
 
-    fila = _buscar_fila_por_bl(ws_recibido, bl)
+    fila = _buscar_fila_por_bl(ws_recibido, bl, fila_preferida)
     if fila is None:
         return False, f"No se encontró el BL '{bl}' en '{RECIBIDO_SHEET}'."
 
@@ -1369,17 +1392,26 @@ def quitar_de_recibido(bl: str, categoria_manual: str | None = None):
     if categoria not in CATEGORIAS:
         return False, f"'{categoria or 'vacía'}' no es una categoría válida. Elige una del menú antes de confirmar."
 
-    ok, mensaje = append_row(
-        {
-            COL_BL: datos_norm.get(_norm(COL_BL), bl),
-            COL_DESC: datos_norm.get(_norm(COL_DESC), ""),
-            COL_MODELO: datos_norm.get(_norm(COL_MODELO), ""),
-            COL_CANT: datos_norm.get(_norm(COL_CANT), ""),
-            COL_PAIS: datos_norm.get(_norm(COL_PAIS), ""),
-            COL_ETA: datos_norm.get(_norm(COL_ETA), ""),
-        },
-        categoria,
-    )
+    datos_devolver = {
+        COL_BL: datos_norm.get(_norm(COL_BL), bl),
+        COL_DESC: datos_norm.get(_norm(COL_DESC), ""),
+        COL_MODELO: datos_norm.get(_norm(COL_MODELO), ""),
+        COL_CANT: datos_norm.get(_norm(COL_CANT), ""),
+        COL_PAIS: datos_norm.get(_norm(COL_PAIS), ""),
+        COL_ETA: datos_norm.get(_norm(COL_ETA), ""),
+    }
+    # Restaurar progreso operativo y campos de categoría. Se excluye
+    # Fecha_Despacho/Almacén a propósito: la reversa deshace esa última etapa
+    # para que el embarque quede en la etapa previa (Pago realizado) y no
+    # aparezca ya como "recibido en almacén" dentro de los activos.
+    for col in (COL_FECHA_SALIDA, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_DECLARACION,
+                COL_FECHA_SOLICITUD_PAGO, COL_FECHA_PAGO, COL_OC, COL_EE,
+                COL_ESTATUS_LLEGADA):
+        val = str(datos_norm.get(_norm(col), "")).strip()
+        if val:
+            datos_devolver[col] = val
+
+    ok, mensaje = append_row(datos_devolver, categoria)
     if not ok:
         return False, mensaje or f"No se pudo escribir de vuelta en '{categoria}'."
 
@@ -2055,7 +2087,8 @@ def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str, contexto: str):
                                        key=f"etapa_{clave}", label_visibility="collapsed")
             a2.write("")
             if a2.button("Guardar", key=f"guardar_{clave}", width="stretch"):
-                ok, mensaje = avanzar_estado_puerto(bl, categoria, nueva_etapa)
+                ok, mensaje = avanzar_estado_puerto(bl, categoria, nueva_etapa,
+                                                    fila_preferida=int(fila.get("FilaSheet") or 0) or None)
                 if ok:
                     accion = "Avance en puerto" if INDICE_ETAPA.get(nueva_etapa, 0) >= idx_default \
                         else "Retroceso en puerto"
@@ -2069,7 +2102,8 @@ def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str, contexto: str):
             # etapas previas tengan fecha y devuelve un mensaje claro con lo
             # que falta si no — el candado vive ahí, no aquí.
             if st.button("Marcar como recibido", key=f"recibido_{clave}", type="primary", width="stretch"):
-                ok, mensaje = marcar_como_recibido(bl, categoria)
+                ok, mensaje = marcar_como_recibido(bl, categoria,
+                                                   fila_preferida=int(fila.get("FilaSheet") or 0) or None)
                 if ok:
                     registrar_log("Recibido", bl, categoria, f"ETA {fila[COL_ETA]}")
                     invalidar_caches()
@@ -2394,7 +2428,8 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
             # al flujo de 5 etapas (declaración, pago, almacén) y el archivo
             # final ('Marcar como recibido') se hace desde 'Acciones' una vez
             # completadas las etapas previas.
-            ok, mensaje = avanzar_estado_puerto(bl, categoria, ETAPAS_PUERTO[0])
+            ok, mensaje = avanzar_estado_puerto(bl, categoria, ETAPAS_PUERTO[0],
+                                                fila_preferida=int(r.get("FilaSheet") or 0) or None)
             accion_log = "Llegada al aeropuerto confirmada" if es_aerea_fila else "Llegada a puerto confirmada"
             if ok:
                 registrar_log(accion_log, bl, categoria, f"ETA {r[COL_ETA]}")
@@ -2408,7 +2443,8 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
             c3.caption("Actualiza el ETA en Editar")
         else:
             if c3.button("No, está retrasado", key=f"no_llego_{clave}", width="stretch"):
-                ok, mensaje = marcar_estatus_llegada(bl, categoria, VALOR_RETRASADO)
+                ok, mensaje = marcar_estatus_llegada(bl, categoria, VALOR_RETRASADO,
+                                                    fila_preferida=int(r.get("FilaSheet") or 0) or None)
                 if ok:
                     registrar_log("Marcado como retrasado", bl, categoria, f"ETA {r[COL_ETA]}")
                     invalidar_caches()
@@ -2577,7 +2613,8 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
                                        key=f"etapa_{clave_bl}", label_visibility="collapsed")
             a2.write("")
             if a2.button("Guardar etapa", key=f"guardar_etapa_{clave_bl}", width="stretch"):
-                ok, mensaje = avanzar_estado_puerto(bl, categoria, nueva_etapa)
+                ok, mensaje = avanzar_estado_puerto(bl, categoria, nueva_etapa,
+                                                    fila_preferida=int(fila.get("FilaSheet") or 0) or None)
                 if ok:
                     registrar_log("Avance en puerto", bl, categoria, nueva_etapa)
                     invalidar_caches()
@@ -2595,7 +2632,8 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
     # autocompletado que rellene fechas que no ocurrieron de verdad.
     c1, c2, c3 = st.columns(3)
     if c1.button("Marcar como recibido", key=f"rec_{tab_key}", type="primary", width="stretch"):
-        ok, mensaje = marcar_como_recibido(bl, categoria)
+        ok, mensaje = marcar_como_recibido(bl, categoria,
+                                           fila_preferida=int(fila.get("FilaSheet") or 0) or None)
         if ok:
             registrar_log("Recibido", bl, categoria, f"ETA {fila[COL_ETA]}")
             invalidar_caches()
@@ -2605,21 +2643,22 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
 
     if c2.button("Editar", key=f"edit_{tab_key}", width="stretch"):
         st.session_state["editar_bl"] = bl
+        st.session_state["editar_fila"] = int(fila.get("FilaSheet") or 0) or None
         st.session_state["seccion"] = "Editar"
         st.rerun()
 
     if c3.button("Eliminar", key=f"del_{tab_key}", width="stretch"):
-        st.session_state[f"confirmar_del_{tab_key}"] = (bl, categoria)
+        st.session_state[f"confirmar_del_{tab_key}"] = (bl, categoria, int(fila.get("FilaSheet") or 0) or None)
         rerun_fragmento()
 
     pendiente = st.session_state.get(f"confirmar_del_{tab_key}")
     if pendiente:
-        bl_pend, cat_pend = pendiente
+        bl_pend, cat_pend, fila_pend = pendiente if len(pendiente) == 3 else (*pendiente, None)
         st.warning(f"¿Eliminar definitivamente el BL {bl_pend}? No se puede deshacer. "
                    "Si el embarque llegó, usa 'Marcar como recibido' para conservarlo en el histórico.")
         d1, d2, _ = st.columns([1, 1, 3])
         if d1.button("Sí, eliminar", key=f"si_del_{tab_key}", type="primary"):
-            ok, mensaje = eliminar_embarque(bl_pend, cat_pend)
+            ok, mensaje = eliminar_embarque(bl_pend, cat_pend, fila_preferida=fila_pend)
             st.session_state.pop(f"confirmar_del_{tab_key}", None)
             if ok:
                 registrar_log("Eliminado", bl_pend, cat_pend)
@@ -2720,11 +2759,16 @@ def form_editar(datos: dict):
     opciones = _etiquetas_desambiguadas(con_bl, largo_desc=40)
     indice_default = 0
     preseleccion = st.session_state.pop("editar_bl", None)
+    preseleccion_fila = st.session_state.pop("editar_fila", None)
     if preseleccion:
         for i, r in con_bl.iterrows():
             if str(r[COL_BL]).strip() == preseleccion:
-                indice_default = int(i)
-                break
+                # Preferir la fila exacta si se viene desde Acciones (parciales)
+                if preseleccion_fila is not None and int(r.get("FilaSheet") or 0) == preseleccion_fila:
+                    indice_default = int(i)
+                    break
+                if indice_default == 0:  # primera coincidencia como fallback
+                    indice_default = int(i)
 
     elegido = st.selectbox("Embarque a editar", opciones, index=indice_default, key="sel_editar")
     fila = con_bl.iloc[opciones.index(elegido)]
@@ -2764,7 +2808,10 @@ def form_editar(datos: dict):
     if con_oc_ee:
         cambios[COL_OC] = oc.strip()
         cambios[COL_EE] = ee.strip()
-    ok, mensaje = actualizar_embarque(str(fila[COL_BL]).strip(), categoria, cambios)
+    ok, mensaje = actualizar_embarque(
+        str(fila[COL_BL]).strip(), categoria, cambios,
+        fila_preferida=int(fila.get("FilaSheet") or 0) or None
+    )
     if ok:
         detalles = []
         if str(fila[COL_ETA]).strip() != eta.isoformat():
@@ -3099,7 +3146,10 @@ def mostrar_historico(datos: dict, rol: str):
             categoria = st.selectbox("Categoría de destino", CATEGORIAS, key="cat_revertir")
 
         if st.button("Quitar de recibido y devolver", key="btn_revertir", type="primary"):
-            ok, mensaje = quitar_de_recibido(bl, categoria_manual=categoria)
+            ok, mensaje = quitar_de_recibido(
+                bl, categoria_manual=categoria,
+                fila_preferida=int(fila.get("FilaSheet") or 0) or None
+            )
             if ok:
                 registrar_log("Reversa de recibido", bl, categoria)
                 invalidar_caches()

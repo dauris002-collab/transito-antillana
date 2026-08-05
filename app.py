@@ -1792,11 +1792,23 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
         (pg - sol).days if (sol and pg) else ((hoy - sol).days if sol else None)
         for sol, pg in zip(solicitudes, pagos)
     ]
-    # Contador 3: pago realizado -> hoy, mientras espera despacho.
-    df["DiasPagoDespacho"] = [(hoy - pg).days if pg else None for pg in pagos]
-    # Días en puerto: desde la llegada física, sin importar la etapa. Es lo que
-    # la columna "Dias en puerto" del Sheet nunca llegó a tener.
-    df["DiasEnPuerto"] = [(hoy - p).days if p else None for p in puertos]
+    # Contador 3: pago realizado -> retiro del almacén. Se congela al recibirse,
+    # igual que los dos anteriores; mientras no se retire, corre contra hoy.
+    # Antes solo corría contra hoy, así que al archivar seguía creciendo y por eso
+    # la pantalla lo escondía: el dato de cuánto se tardó en retirar tras pagar
+    # —el que se le reclama a almacén— nunca llegaba a existir.
+    df["DiasPagoDespacho"] = [
+        (al - pg).days if (pg and al) else ((hoy - pg).days if pg else None)
+        for pg, al in zip(pagos, almacenes)
+    ]
+    # Días en puerto: desde la llegada física hasta el retiro, sin importar la
+    # etapa. Es lo que la columna "Dias en puerto" del Sheet nunca llegó a tener.
+    # Congelado al recibirse: ahí deja de ser "cuánto lleva" y pasa a ser el
+    # ciclo total de despacho de ese embarque.
+    df["DiasEnPuerto"] = [
+        (al - p).days if (p and al) else ((hoy - p).days if p else None)
+        for p, al in zip(puertos, almacenes)
+    ]
 
     dias_etapa, alertas, alerta_dias = [], [], []
     cats = df["Categoria"] if "Categoria" in df.columns else [""] * len(df)
@@ -2176,17 +2188,22 @@ def html_contadores(fila) -> str:
     """Los contadores operativos de un embarque, en línea."""
     piezas = []
     sla = sla_etapas()
+    retirado = bool(fila.get("F_Almacen"))
     transito = fila.get("DiasTransito")
     if es_numero(transito):
         etiqueta = "Duración del tránsito" if fila.get("F_Puerto") else "En tránsito"
         piezas.append(_chip("contador", etiqueta, transito))
     dias_puerto = fila.get("DiasEnPuerto")
-    if es_numero(dias_puerto) and not fila.get("F_Almacen"):
+    if es_numero(dias_puerto):
         # El tiempo total en puerto abarca las cuatro etapas, así que se compara
-        # contra la suma de sus plazos, no contra el de una sola.
+        # contra la suma de sus plazos, no contra el de una sola. Ya retirado no
+        # se esconde: se congela y queda en modo cerrado, que es la prueba de
+        # cuánto costó ese despacho.
+        lugar = lugar_de(fila.get("Categoria", ""))
+        etiqueta = f"Duración en {lugar}" if retirado else f"En {lugar}"
         clase = _clase_contador(dias_puerto, sum(v for k, v in sla.items()
-                                                 if k in SLA_ETAPA_DEFECTO))
-        piezas.append(_chip(clase, f'En {lugar_de(fila.get("Categoria", ""))}', dias_puerto))
+                                                 if k in SLA_ETAPA_DEFECTO), cerrado=retirado)
+        piezas.append(_chip(clase, etiqueta, dias_puerto))
     solicitud = fila.get("DiasSolicitudPago")
     if es_numero(solicitud):
         pagado = bool(fila.get("F_Pago"))
@@ -2194,9 +2211,10 @@ def html_contadores(fila) -> str:
         clase = _clase_contador(solicitud, sla["Solicitud de pago a finanzas"], cerrado=pagado)
         piezas.append(_chip(clase, etiqueta, solicitud))
     espera = fila.get("DiasPagoDespacho")
-    if es_numero(espera) and not fila.get("F_Almacen"):
-        clase = _clase_contador(espera, sla["Pago realizado"])
-        piezas.append(_chip(clase, "Pagado sin retirar", espera))
+    if es_numero(espera):
+        etiqueta = "Del pago al retiro" if retirado else "Pagado sin retirar"
+        clase = _clase_contador(espera, sla["Pago realizado"], cerrado=retirado)
+        piezas.append(_chip(clase, etiqueta, espera))
     return "".join(piezas)
 
 
@@ -2392,14 +2410,17 @@ def _ficha_embarque(fila):
         for nombre_etapa, fecha in fechas.items():
             if fecha:
                 campos.append((rotulos[nombre_etapa], formato_eta(fecha)))
-        if es_numero(fila.get("DiasEnPuerto")) and not fila.get("F_Almacen"):
-            campos.append((f"En {lugar_de(fila.get('Categoria', ''))}",
+        retirado = bool(fila.get("F_Almacen"))
+        if es_numero(fila.get("DiasEnPuerto")):
+            lugar = lugar_de(fila.get("Categoria", ""))
+            campos.append((f"Duración en {lugar}" if retirado else f"En {lugar}",
                            texto_dias(fila["DiasEnPuerto"])))
         if es_numero(fila.get("DiasSolicitudPago")):
             etiqueta = "Duración del pago" if fila.get("F_Pago") else "Esperando pago"
             campos.append((etiqueta, texto_dias(fila["DiasSolicitudPago"])))
-        if es_numero(fila.get("DiasPagoDespacho")) and not fila.get("F_Almacen"):
-            campos.append(("Pagado sin retirar", texto_dias(fila["DiasPagoDespacho"])))
+        if es_numero(fila.get("DiasPagoDespacho")):
+            campos.append(("Del pago al retiro" if retirado else "Pagado sin retirar",
+                           texto_dias(fila["DiasPagoDespacho"])))
     if str(fila.get("Alerta", "") or "").strip():
         campos.append(("⚠ Atención", fila["Alerta"]))
 
@@ -2805,7 +2826,7 @@ def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
         "Pago fuera de plazo": [
             "Sí" if (es_numero(d) and d > sla_etapas()["Solicitud de pago a finanzas"]) else "No"
             for d in df["DiasSolicitudPago"]],
-        "Días pagado sin retirar": df["DiasPagoDespacho"],
+        "Días de pago a retiro": df["DiasPagoDespacho"],
         "Alerta operativa": df["Alerta"],
     })
     for extra in columnas_extra(df):

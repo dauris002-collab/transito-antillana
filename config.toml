@@ -1,23 +1,18 @@
-# Va en .streamlit/config.toml, dentro del repo (mismo nivel que app.py).
-# Si ya tienes este archivo, fusiona las claves en vez de reemplazarlo entero.
-
+# Copiar como .streamlit/config.toml en la raíz del repo.
 [theme]
 base = "light"
-# Azul corporativo del tablero. Sin esto, el botón "Entrar" y todos los botones
-# primarios salen en el rojo por defecto de Streamlit, que no pega con nada del
-# resto de la interfaz.
 primaryColor = "#2E86DE"
 backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F9FAFB"
+secondaryBackgroundColor = "#F5F7FA"
 textColor = "#111827"
-font = "sans serif"
 
 [client]
-# Oculta la barra con "Fork" y el ícono de GitHub que aparece arriba a la derecha
-# por ser un repo público. Es cosmético: el repo sigue siendo público, pero el
-# presidente no ve un botón que invita a clonar la herramienta interna.
+# Los errores con traceback no le dicen nada al presidente ni a los compañeros:
+# la app ya convierte los fallos de Google Sheets en mensajes en español.
+showErrorDetails = "none"
 toolbarMode = "minimal"
-showErrorDetails = false
 
-[browser]
-gatherUsageStats = false
+[server]
+# El Sheet es la fuente de verdad; no hay archivos que subir salvo la carga masiva.
+maxUploadSize = 10
+enableXsrfProtection = true

@@ -97,6 +97,13 @@ COL_FECHA_PAGO = "Fecha_Pago"                        # Finanzas confirma que ya 
 # real (Generadores y Carga Suelta) — "despachado" y "recibido en almacén" son
 # la misma acción, así que no hizo falta crear una columna nueva.
 COL_FECHA_ALMACEN = "Fecha_Despacho"                 # entrada a almacén = "Marcar como recibido"
+# OC (orden de compra) y EE (entrega entrante): propias de Aéreos y Carga
+# Suelta, tal como vienen en el formulario/Sheet real de esas dos categorías.
+# Antes la app las mostraba solo como "campo extra" genérico; ahora son
+# campos de primera clase: aparecen en Agregar, Editar y la ficha.
+COL_OC = "OC"
+COL_EE = "EE"
+CATEGORIAS_CON_OC_EE = ["Aéreos", "Carga Suelta"]
 
 # Columnas opcionales: si existen en el Sheet, la app las usa; si no, ni se
 # mencionan. Así se pueden agregar Orden_Compra, Cliente, Puerto_Destino o
@@ -108,7 +115,8 @@ REQUIRED_COLUMNS = [COL_BL, COL_DESC, COL_MODELO, COL_CANT, COL_PAIS, COL_ETA]
 ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
                                   COL_ESTATUS_LLEGADA, COL_FECHA_SALIDA,
                                   COL_FECHA_LLEGADA_PUERTO, COL_FECHA_DECLARACION,
-                                  COL_FECHA_SOLICITUD_PAGO, COL_FECHA_PAGO, COL_FECHA_ALMACEN]
+                                  COL_FECHA_SOLICITUD_PAGO, COL_FECHA_PAGO, COL_FECHA_ALMACEN,
+                                  COL_OC, COL_EE]
 # Columnas que la app calcula o gestiona internamente y que no se muestran como
 # "campos extra" del embarque.
 COLUMNAS_INTERNAS = {"Categoria", "FilaSheet", "EstadoTexto", "DiasRel", "ETAFecha",
@@ -1106,9 +1114,10 @@ def append_row(datos: dict, categoria: str):
     datos = dict(datos)
     datos[COL_ACTUALIZACION] = marca_ahora()
     datos[COL_ACTUALIZADO_POR] = usuario_actual()
-    columnas_a_asegurar = [COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
-    if str(datos.get(COL_FECHA_SALIDA, "")).strip():
-        columnas_a_asegurar.append(COL_FECHA_SALIDA)
+    # Cualquier campo opcional con valor real (Fecha_Salida, OC, EE...) se
+    # asegura como columna — no solo Fecha_Salida a mano — así un campo nuevo
+    # que se agregue más adelante no necesita tocar esta función.
+    columnas_a_asegurar = [c for c, v in datos.items() if str(v).strip()]
     headers = _asegurar_columnas(ws, columnas_a_asegurar)
     ws.append_row(_fila_desde_dict(headers, datos), value_input_option="RAW")
     return True, ""
@@ -1120,12 +1129,19 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str):
     if ws is None:
         return False, f"No existe la pestaña '{categoria}' en el Google Sheet."
     trae_salida = COL_FECHA_SALIDA in df.columns and df[COL_FECHA_SALIDA].astype(str).str.strip().ne("").any()
+    trae_oc = COL_OC in df.columns and df[COL_OC].astype(str).str.strip().ne("").any()
+    trae_ee = COL_EE in df.columns and df[COL_EE].astype(str).str.strip().ne("").any()
     columnas_a_asegurar = [COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
     if trae_salida:
         columnas_a_asegurar.append(COL_FECHA_SALIDA)
+    if trae_oc:
+        columnas_a_asegurar.append(COL_OC)
+    if trae_ee:
+        columnas_a_asegurar.append(COL_EE)
     headers = _asegurar_columnas(ws, columnas_a_asegurar)
     sello, autor = marca_ahora(), usuario_actual()
-    columnas_fila = REQUIRED_COLUMNS + ([COL_FECHA_SALIDA] if trae_salida else [])
+    columnas_fila = REQUIRED_COLUMNS + ([COL_FECHA_SALIDA] if trae_salida else []) \
+        + ([COL_OC] if trae_oc else []) + ([COL_EE] if trae_ee else [])
     filas = []
     for _, r in df.iterrows():
         datos = {c: r.get(c, "") for c in columnas_fila}
@@ -1147,9 +1163,9 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict):
     if fila is None:
         return False, f"El BL '{bl_original}' ya no está en '{categoria}' — puede que alguien lo movió."
 
-    columnas_a_asegurar = [COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
-    if COL_FECHA_SALIDA in datos:
-        columnas_a_asegurar.append(COL_FECHA_SALIDA)
+    # Cualquier campo del formulario de edición (Fecha_Salida, OC, EE...) se
+    # asegura como columna, en vez de listar cada uno a mano.
+    columnas_a_asegurar = [COL_ACTUALIZACION, COL_ACTUALIZADO_POR, *datos.keys()]
     headers = _asegurar_columnas(ws, columnas_a_asegurar)
     actuales = ws.row_values(fila)
     actuales += [""] * (len(headers) - len(actuales))
@@ -2439,6 +2455,11 @@ def _ficha_embarque(fila):
         ("ETA", formato_eta(fila[COL_ETA])),
         ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"])),
     ]
+    if fila["Categoria"] in CATEGORIAS_CON_OC_EE:
+        if str(fila.get(COL_OC, "")).strip():
+            campos.append(("OC", fila[COL_OC]))
+        if str(fila.get(COL_EE, "")).strip():
+            campos.append(("EE", fila[COL_EE]))
     if str(fila.get(COL_FECHA_SALIDA, "")).strip():
         campos.append(("Fecha de salida", formato_eta(fila[COL_FECHA_SALIDA])))
     dias_transito = fila.get("DiasTransito")
@@ -2607,6 +2628,11 @@ def _bls_existentes(datos: dict) -> set:
 
 def form_alta_manual(datos: dict):
     st.subheader("Agregar embarque")
+    # La Categoría vive FUERA del form: así, al elegir Aéreos o Carga Suelta,
+    # la app puede mostrar los campos OC/EE de una vez (dentro de un st.form
+    # los demás widgets no reaccionan hasta el submit).
+    categoria = st.selectbox("Categoría", CATEGORIAS, key="alta_categoria")
+    con_oc_ee = categoria in CATEGORIAS_CON_OC_EE
     with st.form("form_embarque", clear_on_submit=True):
         c1, c2 = st.columns(2)
         bl = c1.text_input("BL *")
@@ -2617,7 +2643,10 @@ def form_alta_manual(datos: dict):
         c5, c6 = st.columns(2)
         pais = c5.text_input("País de origen")
         eta = c6.date_input("Llegada a puerto (ETA)", value=hoy_rd(), format="DD/MM/YYYY")
-        categoria = st.selectbox("Categoría", CATEGORIAS)
+        if con_oc_ee:
+            c7, c8 = st.columns(2)
+            oc = c7.text_input("OC")
+            ee = c8.text_input("EE")
         salida = st.date_input("Fecha de salida (opcional)", value=None, format="DD/MM/YYYY",
                                help="Si no la sabes, déjala vacía y agrégala después desde 'Editar'.")
         enviado = st.form_submit_button("Guardar embarque", type="primary")
@@ -2642,6 +2671,11 @@ def form_alta_manual(datos: dict):
     }
     if salida:
         datos_nuevos[COL_FECHA_SALIDA] = salida.isoformat()
+    if con_oc_ee:
+        if oc.strip():
+            datos_nuevos[COL_OC] = oc.strip()
+        if ee.strip():
+            datos_nuevos[COL_EE] = ee.strip()
 
     ok, mensaje = append_row(datos_nuevos, categoria)
     if ok:
@@ -2683,6 +2717,7 @@ def form_editar(datos: dict):
     eta_actual = parsear_fecha(fila[COL_ETA]) or hoy_rd()
     salida_actual = parsear_fecha(fila.get(COL_FECHA_SALIDA, ""))
 
+    con_oc_ee = categoria in CATEGORIAS_CON_OC_EE
     with st.form("form_editar"):
         c1, c2 = st.columns(2)
         descripcion = c1.text_input("Descripción", value=str(fila[COL_DESC]))
@@ -2693,6 +2728,10 @@ def form_editar(datos: dict):
         c5, c6 = st.columns(2)
         eta = c5.date_input("Llegada a puerto (ETA)", value=eta_actual, format="DD/MM/YYYY")
         salida = c6.date_input("Fecha de salida", value=salida_actual, format="DD/MM/YYYY")
+        if con_oc_ee:
+            c7, c8 = st.columns(2)
+            oc = c7.text_input("OC", value=str(fila.get(COL_OC, "")))
+            ee = c8.text_input("EE", value=str(fila.get(COL_EE, "")))
         st.caption(f"ETA actual en el Sheet: {fila[COL_ETA] or '(vacío)'}")
         guardar = st.form_submit_button("Guardar cambios", type="primary")
 
@@ -2707,6 +2746,9 @@ def form_editar(datos: dict):
         COL_ETA: eta.isoformat(),
         COL_FECHA_SALIDA: salida.isoformat() if salida else "",
     }
+    if con_oc_ee:
+        cambios[COL_OC] = oc.strip()
+        cambios[COL_EE] = ee.strip()
     ok, mensaje = actualizar_embarque(str(fila[COL_BL]).strip(), categoria, cambios)
     if ok:
         detalles = []
@@ -2751,9 +2793,12 @@ def form_carga_masiva(datos: dict):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     categoria = st.selectbox("Categoría de destino (todo el archivo se carga aquí)", CATEGORIAS)
+    con_oc_ee = categoria in CATEGORIAS_CON_OC_EE
+    columnas_opcionales = [COL_FECHA_SALIDA] + ([COL_OC, COL_EE] if con_oc_ee else [])
+    extra_txt = f", '{COL_OC}' y '{COL_EE}'" if con_oc_ee else ""
     st.caption("Columnas obligatorias: " + ", ".join(REQUIRED_COLUMNS) +
-               f". '{COL_FECHA_SALIDA}' es opcional. El ETA puede venir en cualquier formato "
-               "reconocible; se guarda como AAAA-MM-DD.")
+               f". '{COL_FECHA_SALIDA}'{extra_txt} son opcionales. El ETA puede venir en cualquier "
+               "formato reconocible; se guarda como AAAA-MM-DD.")
 
     archivo = st.file_uploader("Archivo .xlsx", type=["xlsx"])
     if archivo is None:
@@ -2766,7 +2811,7 @@ def form_carga_masiva(datos: dict):
         return
 
     mapa = {}
-    for canon in REQUIRED_COLUMNS + [COL_FECHA_SALIDA]:
+    for canon in REQUIRED_COLUMNS + columnas_opcionales:
         for real in nuevo.columns:
             if _norm(real) == _norm(canon):
                 mapa[real] = canon
@@ -2778,8 +2823,7 @@ def form_carga_masiva(datos: dict):
         st.error(f"Faltan columnas obligatorias: {', '.join(faltantes)}. Usa la plantilla.")
         return
 
-    trae_salida = COL_FECHA_SALIDA in nuevo.columns
-    columnas_a_usar = REQUIRED_COLUMNS + ([COL_FECHA_SALIDA] if trae_salida else [])
+    columnas_a_usar = REQUIRED_COLUMNS + [c for c in columnas_opcionales if c in nuevo.columns]
     nuevo = nuevo[columnas_a_usar].dropna(how="all").copy()
     nuevo = nuevo[nuevo[COL_BL].astype(str).str.strip().ne("") | nuevo[COL_DESC].astype(str).str.strip().ne("")]
 
@@ -2797,7 +2841,7 @@ def form_carga_masiva(datos: dict):
         return
     nuevo[COL_ETA] = normalizadas
 
-    if trae_salida:
+    if COL_FECHA_SALIDA in nuevo.columns:
         # Opcional: si viene ilegible, se deja en blanco en vez de bloquear la
         # carga completa por una columna que no es obligatoria.
         nuevo[COL_FECHA_SALIDA] = [

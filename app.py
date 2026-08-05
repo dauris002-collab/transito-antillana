@@ -3743,6 +3743,29 @@ def _herramienta_salud(df: pd.DataFrame, historico: pd.DataFrame):
                               ", ".join(str(b) for b in vacios[COL_BL].head(10)),
                               "Campo vacío en el Sheet."))
 
+    # OC y EE son la referencia con la que Compras y Finanzas rastrean la carga
+    # aérea y suelta. Sin ellas, el embarque aparece en el tablero pero nadie lo
+    # puede amarrar a una orden: es el vacío más caro de los que salen aquí.
+    con_oc_ee = df[df["Categoria"].isin(CATEGORIAS_CON_OC_EE)]
+    if not con_oc_ee.empty:
+        def _vacio(valor):
+            texto = str(valor or "").strip().upper()
+            return texto in ("", "N/A", "NA", "NAN", "NONE", "-", "—")
+        sin_ref = con_oc_ee[[_vacio(o) and _vacio(e)
+                             for o, e in zip(con_oc_ee.get(COL_OC, ""), con_oc_ee.get(COL_EE, ""))]]
+        if not sin_ref.empty:
+            por_cat = sin_ref["Categoria"].value_counts().to_dict()
+            problemas.append(
+                (f"{len(sin_ref)} embarque(s) de Aéreos/Carga Suelta sin OC ni EE",
+                 ", ".join(f"{r[COL_BL] or '(sin BL)'} ({r['Categoria']} fila {r['FilaSheet']})"
+                           for _, r in sin_ref.head(12).iterrows())
+                 + " · Total por categoría: "
+                 + ", ".join(f"{c}: {n}" for c, n in por_cat.items()),
+                 "La app sí lee esas columnas: están vacías en el Sheet. Suelen faltar en las "
+                 "filas cargadas a mano o importadas sin las columnas OC/EE. Complétalas desde "
+                 "'Editar' o vuelve a importar el lote incluyendo ambas columnas.")
+            )
+
     salida_mala = df[[bool(s and e and s > e) for s, e in zip(df["F_Salida"], df["ETAFecha"])]]
     if not salida_mala.empty:
         problemas.append((f"{len(salida_mala)} embarque(s) con fecha de salida posterior al ETA",

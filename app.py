@@ -1,40 +1,6 @@
-"""
-Antillana Comercial · Visibilidad de embarques en tránsito
-===========================================================
-
-Cambios estructurales frente a la versión anterior (resumen para mantenimiento):
-
-1.  Encabezados tolerantes a acentos/mayúsculas/espacios. Antes, el Sheet decía
-    "Fecha_Actualización" (con tilde) y el código escribía "Fecha_Actualizacion":
-    la columna nunca se llenaba y nadie se enteraba. Ahora todo el mapeo
-    columna<->dato pasa por _norm(), así que el acento deja de importar.
-2.  UNA sola llamada a la API de Google por refresco (values_batch_get) en vez de
-    5-10. El cuello de cuota estaba ahí y en _asegurar_columna, que leía la fila
-    de encabezados una vez por columna.
-3.  Fechas: parser único que entiende ISO, dd/mm, dd-mm, mes en texto español y
-    seriales de Excel/Sheets. Todo lo que la app escribe sale en ISO (AAAA-MM-DD)
-    con value_input_option="RAW", que es el único formato que no depende del
-    locale del archivo. Hay una herramienta de admin para normalizar lo viejo.
-4.  Orden cronológico real (por fecha parseada) y prioridad operativa: primero lo
-    atrasado, después lo inminente, después lo lejano.
-5.  Auditoría: cada alta, edición, recepción, reversa y borrado queda registrada
-    en la pestaña "Log" con usuario, fecha/hora RD y detalle.
-6.  Escapado HTML de todo valor que venga del Sheet (una descripción con "<"
-    rompía el render).
-7.  Un solo bloque de HTML para la lista, que el CSS convierte en tabla (desktop)
-    o tarjetas (celular). Antes se renderizaban las dos y el celular descargaba
-    ambas.
-8.  Fecha_Salida (opcional, todas las categorías) + flujo detallado de 5 etapas
-    para TODAS las categorías ("Llegada a puerto/aeropuerto" -> "Recepción y
-    declaración" -> "Solicitud de pago a finanzas" -> "Pago realizado" ->
-    "Recibido en almacén"). Sin columna de texto Estado_Puerto: cada etapa ES
-    una columna de fecha (ver COLUMNA_FECHA_ETAPA), y la etapa activa se
-    calcula sola como la última fecha llena (ver etapa_de_fechas). Elegir una
-    etapa anterior en Acciones vacía las fechas posteriores (retroceso /
-    corrección). Candado: "Marcar como recibido" rechaza el archivo si faltan
-    fechas de las 4 etapas previas — no hay autocompletado. El botón "¿Llegó a
-    Puerto/Aeropuerto?" ya no archiva directo: confirma solo la primera etapa.
-"""
+# ===========================================================================
+# ANTILLANA COMERCIAL · VISIBILIDAD DE EMBARQUES EN TRÁNSITO (OPTIMIZADO)
+# ===========================================================================
 
 from __future__ import annotations
 
@@ -52,6 +18,7 @@ from zoneinfo import ZoneInfo
 import gspread
 import gspread.exceptions
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
 from google.oauth2.service_account import Credentials
@@ -75,39 +42,19 @@ COL_CANT = "Cantidad"
 COL_PAIS = "Pais_Origen"
 COL_ETA = "Llegada a Puerto (ETA)"
 COL_DIAS_PUERTO = "Dias en puerto"
-COL_ACTUALIZACION = "Fecha_Actualizacion"  # el Sheet lo tiene con tilde; _norm lo resuelve
-COL_ACTUALIZADO_POR = "Actualizado_Por"    # la app la crea sola la primera vez que escribe
-COL_ESTATUS_LLEGADA = "Estatus_Llegada"    # vacío = sin confirmar; "Retrasado" = se verificó que NO llegó
-# Fecha de salida del origen: opcional, la trae quien la conoce (booking del
-# forwarder/naviera). Alimenta el Contador 1 (salida -> puerto). Aplica a
-# cualquier categoría, no solo a las marítimas.
+COL_ACTUALIZACION = "Fecha_Actualizacion"
+COL_ACTUALIZADO_POR = "Actualizado_Por"
+COL_ESTATUS_LLEGADA = "Estatus_Llegada"
 COL_FECHA_SALIDA = "Fecha_Salida"
-# Flujo detallado de 5 etapas, para TODAS las categorías. Ya no hay una columna
-# de texto "Estado_Puerto": la etapa activa se calcula sola como la última de
-# estas 5 fechas que esté llena (ver etapa_actual_de_fechas). Vacío en las 5 =
-# todavía no se confirmó la llegada, aunque el ETA ya haya vencido. Elegir una
-# etapa ANTERIOR desde el panel de Acciones vacía las fechas posteriores (es la
-# forma de corregir/retroceder); nunca se autocompletan fechas que faltan al
-# archivar — hay que llenarlas antes de poder "Marcar como recibido".
-COL_FECHA_LLEGADA_PUERTO = "Fecha_Llegada_Puerto"    # llegada física a puerto/aeropuerto
-COL_FECHA_DECLARACION = "Fecha_Declaracion"          # inicia la recepción y declaración
-COL_FECHA_SOLICITUD_PAGO = "Fecha_Solicitud_Pago"    # cuándo se le pidió el pago a Finanzas
-COL_FECHA_PAGO = "Fecha_Pago"                        # Finanzas confirma que ya pagó
-# Reutiliza la columna "Fecha_Despacho" que ya existía sin usar en el Sheet
-# real (Generadores y Carga Suelta) — "despachado" y "recibido en almacén" son
-# la misma acción, así que no hizo falta crear una columna nueva.
-COL_FECHA_ALMACEN = "Fecha_Despacho"                 # entrada a almacén = "Marcar como recibido"
-# OC (orden de compra) y EE (entrega entrante): propias de Aéreos y Carga
-# Suelta, tal como vienen en el formulario/Sheet real de esas dos categorías.
-# Antes la app las mostraba solo como "campo extra" genérico; ahora son
-# campos de primera clase: aparecen en Agregar, Editar y la ficha.
+COL_FECHA_LLEGADA_PUERTO = "Fecha_Llegada_Puerto"
+COL_FECHA_DECLARACION = "Fecha_Declaracion"
+COL_FECHA_SOLICITUD_PAGO = "Fecha_Solicitud_Pago"
+COL_FECHA_PAGO = "Fecha_Pago"
+COL_FECHA_ALMACEN = "Fecha_Despacho"
 COL_OC = "OC"
 COL_EE = "EE"
 CATEGORIAS_CON_OC_EE = ["Aéreos", "Carga Suelta"]
 
-# Columnas opcionales: si existen en el Sheet, la app las usa; si no, ni se
-# mencionan. Así se pueden agregar Orden_Compra, Cliente, Puerto_Destino o
-# Valor_USD desde Google Sheets sin tocar una línea de código.
 NOMBRES_VALOR = {"valor_usd", "valor", "monto", "valor_cif", "monto_usd", "valor us$", "valor us"}
 MAX_FILAS_LECTURA = 20000
 
@@ -117,31 +64,15 @@ ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, COL_ACTUALIZACION, COL_ACTUAL
                                   COL_FECHA_LLEGADA_PUERTO, COL_FECHA_DECLARACION,
                                   COL_FECHA_SOLICITUD_PAGO, COL_FECHA_PAGO, COL_FECHA_ALMACEN,
                                   COL_OC, COL_EE]
-# Columnas que la app calcula o gestiona internamente y que no se muestran como
-# "campos extra" del embarque.
+
 COLUMNAS_INTERNAS = {"Categoria", "FilaSheet", "EstadoTexto", "DiasRel", "ETAFecha",
                      "Prioridad", "OrdenSec", COL_DIAS_PUERTO, "DiasTransito",
-                     "DiasSolicitudPago", "DiasPagoDespacho", "EtapaActual"}
+                     "DiasSolicitudPago", "DiasPagoDespacho", "EtapaActual", "ValorNum"}
 
 CATEGORIAS = ["Equipos", "Generadores", "Aéreos", "Carga Suelta", "Consolidados"]
-# El flujo detallado de 5 etapas aplica a TODAS las categorías, sin importar
-# el modo de llegada. Lo único que cambia con el modo es el rótulo/ícono de la
-# primera etapa: "Llegada a puerto" (🚢) para carga marítima, "Llegada al
-# aeropuerto" (✈️) para Aéreos — ver es_aerea en grafico_flujo_puerto y en la
-# pregunta de confirmación. El resto de las etapas (declaración, solicitud de
-# pago, pago, almacén) es igual para cualquier modo.
 CATEGORIA_AEREA = "Aéreos"
 CATEGORIAS_PUERTO = list(CATEGORIAS)
 
-# 3 contadores operativos:
-#   1) Salida -> Llegada a puerto (Contador de tránsito, se congela ahí)
-#   2) Solicitud de pago -> Pago realizado (Contador de pago)
-#   3) Pago realizado -> hoy (Contador de espera de despacho; corre mientras
-#      siga activo, y deja de verse solo porque el embarque se archiva al
-#      marcarlo como recibido)
-# "Recibido en almacén" (antes "Despachado") SÍ es una etapa formal del
-# diagrama — la última — pero se fija en el mismo clic de "Marcar como
-# recibido", que además archiva el embarque en el histórico.
 ETAPAS_PUERTO = [
     "Llegada a puerto",
     "Recepción y declaración",
@@ -150,11 +81,7 @@ ETAPAS_PUERTO = [
     "Recibido en almacén",
 ]
 INDICE_ETAPA = {e: i for i, e in enumerate(ETAPAS_PUERTO)}
-# Cada etapa es, literalmente, una columna de fecha: vacía = no llegó ahí,
-# llena = la fecha real en que ocurrió. La etapa activa de un embarque es la
-# última de estas columnas que tenga fecha (ver etapa_actual_de_fechas). Ya no
-# existe un campo de texto libre "Estado_Puerto" que pueda quedar con un
-# nombre que no calce con ninguna de las etapas actuales.
+
 COLUMNA_FECHA_ETAPA = {
     "Llegada a puerto": COL_FECHA_LLEGADA_PUERTO,
     "Recepción y declaración": COL_FECHA_DECLARACION,
@@ -165,8 +92,7 @@ COLUMNA_FECHA_ETAPA = {
 COLOR_ETAPA_PENDIENTE = "#E5E7EB"
 COLOR_ETAPA_ACTUAL = "#F0B90B"
 COLOR_ETAPA_HECHA = "#2E7D32"
-# Nombres completos para la ficha y el panel de acciones, donde hay espacio;
-# versión corta solo para el badge de la lista compacta.
+
 ETIQUETA_CORTA_ETAPA = {
     "Llegada a puerto": "Llegada a puerto",
     "Recepción y declaración": "Recepción/declaración",
@@ -174,8 +100,7 @@ ETIQUETA_CORTA_ETAPA = {
     "Pago realizado": "Pago realizado",
     "Recibido en almacén": "Recibido en almacén",
 }
-# Un ícono por etapa en el diagrama: barco al llegar, hoja de documentos al
-# iniciar la declaración — pedido explícito.
+
 ICONO_ETAPA = {
     "Llegada a puerto": "🚢",
     "Recepción y declaración": "📄",
@@ -183,12 +108,8 @@ ICONO_ETAPA = {
     "Pago realizado": "✅",
     "Recibido en almacén": "🏬",
 }
-# Vista adicional en el dashboard (no es una pestaña del Sheet): cruza todas las
-# categorías marítimas y muestra todo lo que ya confirmó llegada a puerto y
-# sigue activo (no archivado). Nace de un pedido explícito de Dauris: ver de un
-# vistazo, sin entrar categoría por categoría, todo lo que está en puerto.
-VISTA_EN_PROCESO_PUERTO = "En proceso (puerto)"
 
+VISTA_EN_PROCESO_PUERTO = "En proceso (puerto)"
 RECIBIDO_SHEET = "Recibido (Mes)"
 LOG_SHEET = "Log"
 
@@ -200,12 +121,12 @@ COLUMNAS_RECIBIDO = [
 ]
 COLUMNAS_LOG = ["Fecha_Hora", "Usuario", "Accion", "BL", "Categoria", "Detalle"]
 
-UMBRAL_PROXIMO = 3          # días para considerar un embarque "Próximo a llegar"
-CACHE_TTL = 45              # segundos de caché de lectura
-LARGO_PIN = 4               # dígitos del PIN; si algún día usas PIN más largos, cámbialo aquí
-VIDA_SESION_MINUTOS = 5     # la sesión se recuerda mientras no pasen 5 minutos sin actividad
+UMBRAL_PROXIMO = 3
+CACHE_TTL = 45
+LARGO_PIN = 4
+VIDA_SESION_MINUTOS = 5
 MAX_INTENTOS_SESION = 5
-MAX_FALLOS_GLOBAL = 25      # freno global: el bloqueo por sesión se evade en incógnito
+MAX_FALLOS_GLOBAL = 25
 VENTANA_FALLOS = 10 * 60
 BLOQUEO_SEGUNDOS = 15 * 60
 SEMANAS_HORIZONTE = 8
@@ -213,10 +134,6 @@ SEMANAS_HORIZONTE = 8
 EST_TRANSITO = "En tránsito"
 EST_PROXIMO = "Próximo a llegar"
 EST_PUERTO = "En Puerto"
-# "En Puerto" y "Retrasado" son cosas distintas y antes se confundían: el ETA
-# vencido solo dice que la fecha pasó, no si la mercancía llegó. Cuando alguien
-# responde "No, no llegó", el embarque pasa a Retrasado y deja de contarse como
-# mercancía esperando confirmación en puerto.
 EST_RETRASADO = "Retrasado"
 EST_SIN_FECHA = "Sin fecha válida"
 VALOR_RETRASADO = "Retrasado"
@@ -231,7 +148,7 @@ STATUS_COLOR = {
 }
 COLOR_TOTAL = "#17A2B8"
 COLOR_RECIBIDAS_MES = "#2E7D32"
-# Orden operativo: lo que exige acción primero.
+
 STATUS_ORDER = [EST_RETRASADO, EST_PUERTO, EST_PROXIMO, EST_TRANSITO, EST_SIN_FECHA]
 PRIORIDAD_ESTADO = {EST_RETRASADO: 0, EST_PUERTO: 1, EST_PROXIMO: 2, EST_TRANSITO: 3, EST_SIN_FECHA: 4}
 PALETA_PAISES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"]
@@ -251,216 +168,73 @@ for _n, _nombre in MESES_ES.items():
 
 CUSTOM_CSS = """
 <style>
-:root {
-    --ant-azul: #0C447C;
-    --ant-borde: #E5E7EB;
-    --ant-texto: #111827;
-    --ant-suave: #6B7280;
-}
-/* El menú de secciones es el primer elemento de la página: sin este aire, en
-   algunas resoluciones queda medio escondido bajo la barra fija de Streamlit. */
+:root { --ant-azul: #0C447C; --ant-borde: #E5E7EB; --ant-texto: #111827; --ant-suave: #6B7280; }
 .block-container { padding-top: 4.2rem; }
-
-.nav-rotulo { font-size:0.70rem; text-transform:uppercase; letter-spacing:0.08em;
-              color:#9CA3AF; font-weight:700; margin:0 0 4px 2px; }
-
-/* Panel de confirmación de llegadas */
-.conf-titulo { font-size:0.78rem; text-transform:uppercase; letter-spacing:0.06em;
-               font-weight:800; color:#92400E; background:#FEF7E6;
-               border-left:4px solid #F0B90B; padding:8px 14px; border-radius:8px;
-               margin:6px 0 10px 0; }
+.nav-rotulo { font-size:0.70rem; text-transform:uppercase; letter-spacing:0.08em; color:#9CA3AF; font-weight:700; margin:0 0 4px 2px; }
+.conf-titulo { font-size:0.78rem; text-transform:uppercase; letter-spacing:0.06em; font-weight:800; color:#92400E; background:#FEF7E6; border-left:4px solid #F0B90B; padding:8px 14px; border-radius:8px; margin:6px 0 10px 0; }
 .conf-fila { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:6px 2px; }
 .conf-bl { font-weight:700; color:#111827; font-size:0.92rem; }
 .conf-desc { color:#6B7280; font-size:0.85rem; }
-
-/* ---------- Encabezado ---------- */
 .ant-head { text-align:center; margin: 0 0 1.4rem 0; }
-.ant-eyebrow {
-    display:inline-flex; align-items:center; gap:6px;
-    background:#E6F1FB; color:var(--ant-azul);
-    font-size:0.74rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase;
-    padding:5px 16px; border-radius:999px;
-}
-.ant-title {
-    font-size:2.2rem; font-weight:800; margin:0.6rem 0 0.3rem 0; color:var(--ant-texto);
-    letter-spacing:-0.02em;
-}
+.ant-eyebrow { display:inline-flex; align-items:center; gap:6px; background:#E6F1FB; color:var(--ant-azul); font-size:0.74rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; padding:5px 16px; border-radius:999px; }
+.ant-title { font-size:2.2rem; font-weight:800; margin:0.6rem 0 0.3rem 0; color:var(--ant-texto); letter-spacing:-0.02em; }
 .ant-rule { width:52px; height:4px; background:#2E86DE; border-radius:2px; margin:0.2rem auto 0.6rem auto; }
 .ant-sub { font-size:0.95rem; color:var(--ant-suave); }
-.ant-stamp {
-    display:inline-flex; align-items:center; gap:7px;
-    font-size:0.76rem; color:var(--ant-suave); margin-top:0.5rem;
-}
+.ant-stamp { display:inline-flex; align-items:center; gap:7px; font-size:0.76rem; color:var(--ant-suave); margin-top:0.5rem; }
 .ant-dot { width:8px; height:8px; border-radius:50%; background:#22C55E; display:inline-block; }
-
-/* ---------- KPIs ---------- */
-.kpi-card { border-radius:14px; padding:14px 18px; min-height:92px; height:100%;
-            display:flex; flex-direction:column; justify-content:center; align-items:center;
-            text-align:center; box-shadow:0 2px 8px rgba(17,24,39,0.12); }
-.kpi-label {
-    font-size:0.70rem; font-weight:700; text-transform:uppercase; letter-spacing:0.06em;
-    color:rgba(255,255,255,0.92); margin-bottom:6px;
-}
+.kpi-card { border-radius:14px; padding:14px 18px; min-height:92px; height:100%; display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center; box-shadow:0 2px 8px rgba(17,24,39,0.12); }
+.kpi-label { font-size:0.70rem; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:rgba(255,255,255,0.92); margin-bottom:6px; }
 .kpi-value { font-size:2.0rem; font-weight:800; line-height:1; color:#fff; }
 .kpi-sub { font-size:0.70rem; color:rgba(255,255,255,0.88); margin-top:6px; }
-
-/* ---------- Lista de embarques: UN solo markup ----------
-   Desktop: grid de 7 columnas (se ve como tabla).
-   Celular (<=640px): cada fila se convierte en tarjeta y cada celda
-   muestra su etiqueta vía data-l. Sin duplicar el DOM.            */
-.lista { border:1px solid var(--ant-borde); border-radius:12px; overflow:hidden;
-         box-shadow:0 1px 4px rgba(17,24,39,0.06); background:#fff; }
-.fila-head, .fila {
-    display:grid;
-    grid-template-columns: 1.15fr 1.45fr 1.25fr 0.75fr 0.9fr 0.85fr 1.15fr;
-    gap:10px; align-items:center;
-}
-.fila-head {
-    padding:10px 18px; font-size:0.67rem; text-transform:uppercase; letter-spacing:0.05em;
-    color:#9CA3AF; background:#F9FAFB; border-bottom:1px solid var(--ant-borde);
-}
-.fila {
-    padding:12px 18px; font-size:0.87rem; background:#fff;
-    border-bottom:1px solid #F3F4F6; border-left:4px solid #6B7280;
-}
+.lista { border:1px solid var(--ant-borde); border-radius:12px; overflow:hidden; box-shadow:0 1px 4px rgba(17,24,39,0.06); background:#fff; }
+.fila-head, .fila { display:grid; grid-template-columns: 1.15fr 1.45fr 1.25fr 0.75fr 0.9fr 0.85fr 1.15fr; gap:10px; align-items:center; }
+.fila-head { padding:10px 18px; font-size:0.67rem; text-transform:uppercase; letter-spacing:0.05em; color:#9CA3AF; background:#F9FAFB; border-bottom:1px solid var(--ant-borde); }
+.fila { padding:12px 18px; font-size:0.87rem; background:#fff; border-bottom:1px solid #F3F4F6; border-left:4px solid #6B7280; }
 .fila:last-child { border-bottom:none; }
 .c-bl { font-weight:700; color:var(--ant-texto); word-break:break-all; }
 .c-suave { color:var(--ant-suave); }
-.badge {
-    display:inline-block; padding:3px 11px; border-radius:999px;
-    font-size:0.73rem; font-weight:700; color:#fff; white-space:nowrap;
-}
-/* Ficha completa de un embarque */
+.badge { display:inline-block; padding:3px 11px; border-radius:999px; font-size:0.73rem; font-weight:700; color:#fff; white-space:nowrap; }
 .ficha { border:1px solid var(--ant-borde); border-radius:12px; overflow:hidden; background:#fff; }
-.ficha-fila { display:grid; grid-template-columns: 210px 1fr; gap:12px;
-              padding:9px 16px; border-bottom:1px solid #F3F4F6; font-size:0.9rem; }
+.ficha-fila { display:grid; grid-template-columns: 210px 1fr; gap:12px; padding:9px 16px; border-bottom:1px solid #F3F4F6; font-size:0.9rem; }
 .ficha-fila:last-child { border-bottom:none; }
-.ficha-k { color:#9CA3AF; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em;
-           font-weight:700; padding-top:2px; }
+.ficha-k { color:#9CA3AF; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em; font-weight:700; padding-top:2px; }
 .ficha-v { color:#1F2937; font-weight:600; word-break:break-word; }
 @media (max-width: 640px) { .ficha-fila { grid-template-columns:1fr; gap:2px; } }
-
-.ant-logo { max-height:58px; margin-bottom:0.5rem; }
-
-/* ---------- Selector de sección / categoría ----------
-   Streamlit pinta el segmento activo con su color primario, que por defecto es
-   rojo y con texto rojo sobre blanco casi no se lee. Se fuerza aquí en el CSS y
-   no solo en config.toml para que el aspecto no dependa de que ese archivo esté
-   bien puesto en el repo. */
-div[data-testid="stButtonGroup"] button {
-    border-radius:8px !important;
-    border:1px solid var(--ant-borde) !important;
-    color:#4B5563 !important;
-    font-weight:600 !important;
-}
+div[data-testid="stButtonGroup"] button { border-radius:8px !important; border:1px solid var(--ant-borde) !important; color:#4B5563 !important; font-weight:600 !important; }
 div[data-testid="stButtonGroup"] button:hover { background:#F3F7FC !important; color:#0C447C !important; }
-div[data-testid="stButtonGroup"] button[aria-checked="true"],
-div[data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"],
-div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"],
-div[data-testid="stButtonGroup"] button[aria-selected="true"] {
-    background:#DCEBFA !important;
-    color:#0C447C !important;
-    border:1px solid #2E86DE !important;
-    box-shadow:none !important;
-}
-div[data-testid="stButtonGroup"] button[aria-checked="true"] p,
-div[data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"] p,
-div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"] p { color:#0C447C !important; }
-
-/* Botones primarios (Entrar, Guardar, Confirmar): azul del tablero, no el rojo
-   por defecto. Los KPI tienen su propia regla y no se ven afectados. */
-button[kind="primary"], button[data-testid="stBaseButton-primary"],
-button[data-testid="stBaseButton-primaryFormSubmit"] {
-    background:#2E86DE !important;
-    border-color:#2E86DE !important;
-    color:#ffffff !important;
-}
-button[kind="primary"]:hover, button[data-testid="stBaseButton-primary"]:hover,
-button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
-    background:#256FB8 !important; border-color:#256FB8 !important; color:#fff !important;
-}
-
-/* Impresión: una hoja limpia para llevar a reunión. Se van los gráficos, los
-   botones, la barra lateral y los filtros; queda el encabezado y la lista. */
-@media print {
-    [data-testid="stSidebar"], [data-testid="stToolbar"], [data-testid="stHeader"],
-    .stButton, .stDownloadButton, [data-testid="stExpander"], .solo-pantalla,
-    [data-testid="stTextInput"], [data-testid="stSelectbox"], [data-testid="stAlert"] {
-        display:none !important;
-    }
-    .block-container { padding:0 !important; max-width:100% !important; }
-    .lista { border:1px solid #999; box-shadow:none; }
-    .fila { break-inside:avoid; }
-    .badge { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-    .kpi-card { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-}
-
+div[data-testid="stButtonGroup"] button[aria-checked="true"], div[data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"], div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"], div[data-testid="stButtonGroup"] button[aria-selected="true"] { background:#DCEBFA !important; color:#0C447C !important; border:1px solid #2E86DE !important; box-shadow:none !important; }
+div[data-testid="stButtonGroup"] button[aria-checked="true"] p, div[data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"] p, div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"] p { color:#0C447C !important; }
+button[kind="primary"], button[data-testid="stBaseButton-primary"], button[data-testid="stBaseButton-primaryFormSubmit"] { background:#2E86DE !important; border-color:#2E86DE !important; color:#ffffff !important; }
+button[kind="primary"]:hover, button[data-testid="stBaseButton-primary"]:hover, button[data-testid="stBaseButton-primaryFormSubmit"]:hover { background:#256FB8 !important; border-color:#256FB8 !important; color:#fff !important; }
+@media print { [data-testid="stSidebar"], [data-testid="stToolbar"], [data-testid="stHeader"], .stButton, .stDownloadButton, [data-testid="stExpander"], .solo-pantalla, [data-testid="stTextInput"], [data-testid="stSelectbox"], [data-testid="stAlert"] { display:none !important; } .block-container { padding:0 !important; max-width:100% !important; } .lista { border:1px solid #999; box-shadow:none; } .fila { break-inside:avoid; } .badge { -webkit-print-color-adjust:exact; print-color-adjust:exact; } .kpi-card { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
 .vacio { padding:26px 18px; text-align:center; color:var(--ant-suave); font-size:0.9rem; background:#fff; }
-
-@media (max-width: 640px) {
-    .fila-head { display:none; }
-    .lista { border:none; box-shadow:none; background:transparent; }
-    .fila {
-        display:block; border:1px solid var(--ant-borde); border-left-width:5px;
-        border-radius:12px; margin-bottom:10px; padding:13px 16px;
-        box-shadow:0 1px 4px rgba(17,24,39,0.06);
-    }
-    .fila > div { padding:2px 0; }
-    .fila > div[data-l]:not(.c-bl):not(.c-badge)::before {
-        content: attr(data-l) ": ";
-        font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#9CA3AF;
-        font-weight:700;
-    }
-    .c-bl { font-size:1.0rem; margin-bottom:2px; }
-    .ant-title { font-size:1.6rem; }
-    .kpi-value { font-size:1.55rem; }
-}
+@media (max-width: 640px) { .fila-head { display:none; } .lista { border:none; box-shadow:none; background:transparent; } .fila { display:block; border:1px solid var(--ant-borde); border-left-width:5px; border-radius:12px; margin-bottom:10px; padding:13px 16px; box-shadow:0 1px 4px rgba(17,24,39,0.06); } .fila > div { padding:2px 0; } .fila > div[data-l]:not(.c-bl):not(.c-badge)::before { content: attr(data-l) ": "; font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#9CA3AF; font-weight:700; } .c-bl { font-size:1.0rem; margin-bottom:2px; } .ant-title { font-size:1.6rem; } .kpi-value { font-size:1.55rem; } }
 </style>
 """
-
 
 # ---------------------------------------------------------------------------
 # UTILIDADES
 # ---------------------------------------------------------------------------
 def hoy_rd() -> date:
-    """Fecha de HOY en hora de Santo Domingo (UTC-4). Streamlit Cloud corre en UTC:
-    con date.today() directo, en las últimas horas del día (y sobre todo el último
-    día del mes) el servidor ya 'cree' que es el día siguiente aunque en RD no lo sea."""
     return datetime.now(ZONA_RD).date()
-
 
 def ahora_rd() -> datetime:
     return datetime.now(ZONA_RD)
 
-
 def _norm(texto) -> str:
-    """Normaliza un nombre de columna/pestaña: sin acentos, sin dobles espacios,
-    sin distinguir mayúsculas. Es lo que evita que 'Fecha_Actualización' y
-    'Fecha_Actualizacion' se traten como columnas distintas."""
     s = " ".join(str(texto).split()).strip()
     s = unicodedata.normalize("NFKD", s)
     s = "".join(c for c in s if not unicodedata.combining(c))
     return s.casefold()
 
-
 def _slug_css(texto) -> str:
-    """Convierte un nombre visible ('Aéreos', 'Carga Suelta') en un identificador
-    ASCII apto para usarse como clase CSS: 'aereos', 'carga_suelta'."""
     base = _norm(texto)
     limpio = "".join(c if c.isalnum() else "_" for c in base)
     while "__" in limpio:
         limpio = limpio.replace("__", "_")
     return limpio.strip("_") or "x"
 
-
 def _etiquetas_desambiguadas(df: pd.DataFrame, con_categoria: bool = True, largo_desc: int = 38) -> list:
-    """Etiquetas 'BL · descripción [· categoría]' para selectbox. Los BLs se
-    repiten en los datos reales (embarques parciales del mismo BL, confirmado
-    en Recibido) — sin desambiguar, dos filas podían generar la MISMA
-    etiqueta, y elegir la segunda en la lista en realidad seleccionaba la
-    primera (o, en paneles que renderizan un widget por fila, hacía chocar
-    las claves y tumbaba la página). Cuando una etiqueta se repite, se le
-    agrega el número de fila del Sheet, que sí es único."""
     base = []
     for _, r in df.iterrows():
         desc = str(r[COL_DESC])[:largo_desc] or "sin descripción"
@@ -472,19 +246,17 @@ def _etiquetas_desambiguadas(df: pd.DataFrame, con_categoria: bool = True, largo
         for etq, (_, r) in zip(base, df.iterrows())
     ]
 
-
 def esc(valor) -> str:
-    """Escapa cualquier valor que venga del Sheet antes de meterlo en HTML."""
-    texto = "" if valor is None else str(valor).strip()
+    # Optimización: filtrado riguroso de NaN pandas para evitar salida literal "nan" en frontend
+    if pd.isna(valor) or valor is None:
+        return "—"
+    texto = str(valor).strip()
     return html.escape(texto) if texto else "—"
 
 
 # --- Fechas -----------------------------------------------------------------
 EPOCH_SHEETS = date(1899, 12, 30)
 
-# Nombres de mes que el parser reconoce. Se guardan normalizados (sin acentos,
-# minúsculas), en español e inglés, completos y abreviados, porque los correos de
-# navieras y proveedores llegan en los dos idiomas.
 _MESES_EN = ["january", "february", "march", "april", "may", "june",
              "july", "august", "september", "october", "november", "december"]
 _MESES_TEXTO = {}
@@ -498,14 +270,10 @@ _MESES_TEXTO.update({"setiembre": 9, "set": 9, "sept": 9, "sep": 9, "ene": 1, "a
 
 _SEPARADORES = re.compile(r"[\s/\\\-\.,;_|]+")
 _ORDINALES = re.compile(r"^(\d+)(ro|er|ero|do|to|mo|vo|no|st|nd|rd|th)$")
-# Palabras que la gente intercala y que no aportan nada: "6 DE julio DEL 2026".
 _RELLENO = {"de", "del", "dia", "el", "la", "los", "las", "ano", "a", "al", "of", "the"}
 
 
 def _tokenizar_fecha(texto: str) -> list:
-    """Parte cualquier forma de escribir una fecha en tres piezas.
-    Tolera separadores mezclados, palabras de relleno y ordinales:
-    '02-05-2026', '6 de julio 2026', 'julio 28 del 2026', '1ro de mayo/2026'."""
     base = _norm(texto).split(" 00:00:00")[0]
     tokens = []
     for pieza in _SEPARADORES.split(base):
@@ -515,22 +283,15 @@ def _tokenizar_fecha(texto: str) -> list:
             tokens.append(pieza)
     return tokens
 
-
 def _normalizar_anio(n: int) -> int:
-    """Año de dos dígitos -> siglo razonable. '26' es 2026, no 26 d.C."""
     if n >= 100:
         return n
     return 2000 + n if n < 80 else 1900 + n
 
-
 def _interpretar_tokens(tokens: list, dia_primero: bool = True):
-    """Devuelve (dia, mes, anio, ambigua) o None.
-    'ambigua' es True solo cuando día y mes son ambos <= 12 y están escritos en
-    número, que es el único caso donde el orden realmente no se puede deducir."""
     if len(tokens) != 3:
         return None
 
-    # Caso 1: uno de los tres es un nombre de mes -> no hay ambigüedad posible.
     for i, t in enumerate(tokens):
         mes = _MESES_TEXTO.get(t) or _MESES_TEXTO.get(t[:3]) if not t.isdigit() else None
         if mes:
@@ -546,13 +307,11 @@ def _interpretar_tokens(tokens: list, dia_primero: bool = True):
 
     if not all(t.isdigit() for t in tokens):
         return None
+    
     a, b, c = (int(t) for t in tokens)
-
-    # Caso 2: año al frente (2026-08-25, 2026/8/25).
     if len(tokens[0]) == 4:
         return c, b, a, False
 
-    # Caso 3: año al final. Si uno de los dos primeros pasa de 12, ese es el día.
     anio = _normalizar_anio(c)
     if a > 12 and b <= 12:
         return a, b, anio, False
@@ -562,7 +321,6 @@ def _interpretar_tokens(tokens: list, dia_primero: bool = True):
         dia, mes = (a, b) if dia_primero else (b, a)
         return dia, mes, anio, True
     return None
-
 
 def _fecha_de_tokens(tokens: list, dia_primero: bool = True):
     resultado = _interpretar_tokens(tokens, dia_primero)
@@ -574,16 +332,8 @@ def _fecha_de_tokens(tokens: list, dia_primero: bool = True):
     except ValueError:
         return None
 
-
 def parsear_fecha(valor):
-    """Convierte a date lo que sea que venga del Sheet, del Excel o tecleado a mano.
-    Entiende date/datetime, ISO (2026-08-25), compacto (20260825), dd/mm/aaaa,
-    dd-mm-aa, aaaa/mm/dd, mes en texto en cualquier posición y en español o
-    inglés ('6 de julio 2026', 'julio 28 del 2026', '28-Jul-26', 'July 28, 2026')
-    y seriales numéricos de Sheets/Excel (46181).
-    Ante un número puro ambiguo (02-05-2026) asume día/mes, la convención local.
-    Devuelve None solo si de verdad no hay forma de interpretarlo."""
-    if valor is None:
+    if valor is None or pd.isna(valor):
         return None
     if isinstance(valor, datetime):
         return valor.date()
@@ -599,7 +349,6 @@ def parsear_fecha(valor):
     if not texto:
         return None
 
-    # ISO exacto: el formato en que la app escribe siempre.
     try:
         return datetime.strptime(texto[:10], "%Y-%m-%d").date()
     except ValueError:
@@ -608,7 +357,7 @@ def parsear_fecha(valor):
     solo_digitos = texto.replace(",", "").replace(" ", "")
     if solo_digitos.replace(".", "", 1).isdigit():
         entero = solo_digitos.split(".")[0]
-        if len(entero) == 8:  # 20260825
+        if len(entero) == 8: 
             try:
                 return datetime.strptime(entero, "%Y%m%d").date()
             except ValueError:
@@ -617,32 +366,21 @@ def parsear_fecha(valor):
             numero = int(float(solo_digitos))
         except (ValueError, OverflowError):
             return None
-        # Rango de seriales plausibles de Sheets/Excel (aprox. 1954 a 2119).
         if 20000 <= numero <= 80000:
             return EPOCH_SHEETS + timedelta(days=numero)
         return None
 
     return _fecha_de_tokens(_tokenizar_fecha(texto), dia_primero=True)
 
-
 def formato_eta(valor) -> str:
-    """Cómo se muestra un ETA en pantalla: '25 ago 2026'. Si no se pudo parsear,
-    devuelve el texto crudo para que se vea que ese dato está sucio."""
     f = parsear_fecha(valor)
     if f is None:
-        crudo = str(valor).strip()
+        crudo = str(valor).strip() if pd.notna(valor) else ""
         return crudo if crudo else "—"
     return f"{f.day:02d} {MESES_ES_CORTO[f.month]} {f.year}"
 
-
 def analizar_eta(valor) -> dict:
-    """Diagnóstico de un ETA para la herramienta de normalización.
-    - 'iso': ya está en AAAA-MM-DD, no hay nada que hacer.
-    - 'ambigua': número puro tipo 02-05-2026 donde día y mes son ambos <= 12; el
-      valor real depende de quién lo escribió, así que se pregunta.
-    - 'convertible': se entiende sin ambigüedad pero no está en ISO.
-    - 'ilegible': no hay forma de interpretarlo."""
-    crudo = "" if valor is None else str(valor).strip()
+    crudo = "" if valor is None or pd.isna(valor) else str(valor).strip()
     if not crudo:
         return {"tipo": "vacia", "crudo": crudo, "dm": None, "md": None}
 
@@ -680,23 +418,16 @@ def get_spreadsheet():
     client = gspread.authorize(creds)
     return client.open_by_key(st.secrets["SHEET_ID"])
 
-
 @st.cache_resource
 def _indice_hojas() -> dict:
-    """Mapa nombre-normalizado -> Worksheet, con UNA sola llamada de metadata.
-    Antes, cada get_worksheet() disparaba una llamada a la API; con 6 pestañas y
-    varios reruns por clic, eso solo era la cuota que se iba en aire."""
     return {_norm(h.title): h for h in get_spreadsheet().worksheets()}
-
 
 def get_worksheet(nombre: str):
     return _indice_hojas().get(_norm(nombre))
 
-
 def _refrescar_estructura():
     _indice_hojas.clear()
     _headers.clear()
-
 
 @st.cache_data(ttl=60, show_spinner=False)
 def _headers(titulo_hoja: str) -> list:
@@ -705,18 +436,11 @@ def _headers(titulo_hoja: str) -> list:
         return []
     return ws.row_values(1)
 
-
 def marca_ahora() -> str:
-    """Sello que se estampa en Fecha_Actualizacion cada vez que alguien carga o
-    modifica información. Lleva hora, no solo fecha, porque es lo que el tablero
-    muestra como 'información actualizada'."""
     return ahora_rd().strftime("%Y-%m-%d %H:%M")
 
-
 def parsear_marca(valor):
-    """Lee un sello de Fecha_Actualizacion como datetime. Acepta los registros
-    viejos que solo tienen fecha (se asumen a medianoche)."""
-    texto = "" if valor is None else str(valor).strip()
+    texto = "" if pd.isna(valor) else str(valor).strip()
     if not texto:
         return None
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
@@ -727,17 +451,11 @@ def parsear_marca(valor):
     f = parsear_fecha(texto)
     return datetime(f.year, f.month, f.day) if f else None
 
-
 def _fila_desde_dict(headers: list, datos: dict) -> list:
-    """Arma la fila respetando el orden REAL de columnas de la pestaña y
-    tolerando diferencias de acento/mayúsculas en los encabezados."""
     normalizado = {_norm(k): v for k, v in datos.items()}
     return [normalizado.get(_norm(h), "") for h in headers]
 
-
 def _asegurar_columnas(ws, nombres: list) -> list:
-    """Agrega de una sola vez las columnas que falten (una llamada, no una por
-    columna como antes). Devuelve la lista final de encabezados."""
     headers = _headers(ws.title)
     existentes = {_norm(h) for h in headers}
     faltan = [n for n in nombres if _norm(n) not in existentes]
@@ -749,9 +467,7 @@ def _asegurar_columnas(ws, nombres: list) -> list:
     _headers.clear()
     return headers + faltan
 
-
 def _buscar_fila_por_bl(ws, bl: str):
-    """Número de fila (1-indexado) del BL dentro de esa pestaña, o None."""
     if ws is None:
         return None
     headers = _headers(ws.title)
@@ -761,27 +477,16 @@ def _buscar_fila_por_bl(ws, bl: str):
     try:
         celda = ws.find(str(bl).strip(), in_column=idx + 1)
     except Exception:
-        # gspread 5 lanza CellNotFound; gspread 6 devuelve None. Cubrimos ambos.
         return None
     return celda.row if celda else None
 
-
 def _df_desde_valores(valores: list, columnas_canonicas: list) -> pd.DataFrame:
-    """Convierte la matriz cruda de una pestaña en DataFrame.
-    Las columnas conocidas se renombran al nombre canónico (resolviendo acentos y
-    mayúsculas); las demás se conservan tal cual venían, para que agregar una
-    columna nueva en Google Sheets (Orden_Compra, Cliente, Valor_USD...) baste
-    para que la app la reconozca sin cambiar código."""
     if not valores or not valores[0]:
         return pd.DataFrame(columns=columnas_canonicas)
     headers_reales = [str(h) for h in valores[0]]
     ancho = len(headers_reales)
-    # Las filas pueden venir más cortas (celdas vacías al final) o más largas
-    # (alguien escribió a la derecha del último encabezado): se ajustan al ancho.
     filas = [(list(f) + [""] * ancho)[:ancho] for f in valores[1:]]
 
-    # Encabezados vacíos o repetidos: se les pone un nombre único para que pandas
-    # no reviente y para que se vean en el detalle como lo que son, columnas sueltas.
     vistos, limpios = {}, []
     for i, h in enumerate(headers_reales):
         nombre = h.strip() or f"Columna {i + 1}"
@@ -807,11 +512,8 @@ def _df_desde_valores(valores: list, columnas_canonicas: list) -> pd.DataFrame:
             df[c] = ""
     return df
 
-
 NO_ESPECIFICADO = "Sin especificar"
-# Equivalencias de país. Solo las que son inequívocamente el mismo lugar escrito
-# de otra forma o en otro idioma; nada de agrupaciones regionales, que ya serían
-# criterio de negocio. El nombre a la derecha es el que se muestra.
+
 _ALIAS_PAISES_CRUDO = {
     "Estados Unidos": ["usa", "us", "u.s.a", "u.s.a.", "u.s.", "eeuu", "ee.uu", "ee.uu.", "eu",
                        "united states", "united states of america", "estados unidos de america",
@@ -843,14 +545,9 @@ for _canon, _formas in _ALIAS_PAISES_CRUDO.items():
         ALIAS_PAISES[_norm(_f)] = _canon
 _VACIOS_PAIS = {"", "n/a", "na", "n.a.", "-", "--", "s/d", "nd", "no aplica", "pendiente", "?"}
 
-
 def unificar_paises(serie: pd.Series) -> pd.Series:
-    """'China', 'CHINA' y 'china ' son el mismo país y no deben salir como tres
-    barras distintas en el gráfico ni como tres opciones del filtro. Se agrupan
-    por nombre normalizado y se muestra la grafía más usada del propio Sheet, sin
-    inventar equivalencias: 'USA' y 'Estados Unidos' siguen separados porque
-    unificarlos es una decisión de negocio, no de formato."""
-    valores = [str(v or "").strip() for v in serie]
+    # Optimización: evasión de strings "nan" cuando el DF tiene valores nulos
+    valores = [str(v).strip() if pd.notna(v) else "" for v in serie]
     grupos = {}
     for v in valores:
         clave = _norm(v)
@@ -858,8 +555,7 @@ def unificar_paises(serie: pd.Series) -> pd.Series:
             continue
         grupos.setdefault(clave, {})
         grupos[clave][v] = grupos[clave].get(v, 0) + 1
-    # Para lo que no está en la tabla de equivalencias, se usa la grafía más
-    # frecuente del propio Sheet en lugar de imponer un formato.
+        
     canonico = {c: max(op.items(), key=lambda kv: (kv[1], -len(kv[0])))[0] for c, op in grupos.items()}
 
     def resolver(v):
@@ -870,50 +566,46 @@ def unificar_paises(serie: pd.Series) -> pd.Series:
 
     return pd.Series([resolver(v) for v in valores], index=serie.index)
 
-
 def columnas_extra(df: pd.DataFrame) -> list:
-    """Columnas que el usuario agregó en el Sheet y que la app no gestiona."""
     conocidas = set(ALL_COLUMNS) | COLUMNAS_INTERNAS | {"Fecha_Recibido", "Categoria_Origen", "Registrado_Por"}
     return [c for c in df.columns if c not in conocidas]
 
-
 def columna_de_valor(df: pd.DataFrame):
-    """Detecta si el Sheet trae una columna de valor monetario, sin obligar a que
-    se llame de una forma concreta."""
     for c in df.columns:
         if _norm(c) in NOMBRES_VALOR:
             return c
     return None
 
-
 def es_numero(v) -> bool:
-    """NaN es truthy en Python, así que 'if valor' NO sirve para descartar celdas
-    vacías de una columna numérica de pandas."""
     return v is not None and pd.notna(v)
 
-
 def a_numero(valor):
-    """'US$ 145,300.50' -> 145300.5. Devuelve None si no hay número."""
-    texto = str(valor or "").strip()
+    # Optimización robusta para parseo monetario eliminando ambigüedades con n comas
+    if pd.isna(valor):
+        return None
+    texto = str(valor).strip()
     if not texto:
         return None
-    limpio = re.sub(r"[^0-9,.\-]", "", texto)
+    limpio = re.sub(r"[^\d,.\-]", "", texto)
     if not limpio:
         return None
-    # Si hay coma y punto, el último separador que aparece es el decimal.
+    
     if "," in limpio and "." in limpio:
         if limpio.rfind(",") > limpio.rfind("."):
             limpio = limpio.replace(".", "").replace(",", ".")
         else:
             limpio = limpio.replace(",", "")
     elif "," in limpio:
-        entero, _, decimales = limpio.rpartition(",")
-        limpio = f"{entero.replace(',', '')}.{decimales}" if len(decimales) in (1, 2) else limpio.replace(",", "")
+        partes = limpio.split(",")
+        if len(partes[-1]) != 3:
+            limpio = limpio.replace(",", ".")
+        else:
+            limpio = limpio.replace(",", "")
+            
     try:
         return float(limpio)
     except ValueError:
         return None
-
 
 def formato_dinero(monto: float) -> str:
     if monto >= 1_000_000:
@@ -922,11 +614,8 @@ def formato_dinero(monto: float) -> str:
         return f"US$ {monto / 1_000:,.0f} K"
     return f"US$ {monto:,.0f}"
 
-
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def cargar_todo() -> dict:
-    """UNA sola llamada a la API trae las 5 pestañas de categoría + el histórico.
-    Devuelve {'activos': df, 'historico': df, 'hora': datetime, 'error': str|None}."""
     try:
         ss = get_spreadsheet()
         indice = _indice_hojas()
@@ -939,7 +628,7 @@ def cargar_todo() -> dict:
             "error": f"No se pudo conectar con el Google Sheet: {e}",
         }
 
-    objetivos = []  # (etiqueta, titulo_real)
+    objetivos = []
     for cat in CATEGORIAS:
         ws = indice.get(_norm(cat))
         if ws is not None:
@@ -974,9 +663,6 @@ def cargar_todo() -> dict:
 
     for (etiqueta, _titulo), bloque in zip(objetivos, bloques):
         valores = bloque.get("values", [])
-        # Si una pestaña llega justo al tope del rango pedido, es muy probable que
-        # haya filas más abajo que la app no está viendo. Truncar en silencio es
-        # peor que cualquier error visible: se toman decisiones con datos a medias.
         if len(valores) >= MAX_FILAS_LECTURA:
             avisos.append(
                 f"La pestaña '{etiqueta}' llegó al tope de {MAX_FILAS_LECTURA:,} filas que la app lee. "
@@ -985,15 +671,10 @@ def cargar_todo() -> dict:
             )
         if etiqueta == RECIBIDO_SHEET:
             historico = _df_desde_valores(valores, COLUMNAS_RECIBIDO)
-            # Igual que en los activos: permite desambiguar cuando dos filas
-            # del histórico comparten BL (embarques parciales), algo que sí
-            # pasa en los datos reales.
             historico["FilaSheet"] = range(2, len(historico) + 2)
             continue
         df_cat = _df_desde_valores(valores, ALL_COLUMNS)
         df_cat["Categoria"] = etiqueta
-        # Fila real = índice + 2 (encabezado + base 1). Se guarda antes de filtrar
-        # para poder señalar la fila exacta en el Sheet cuando algo esté sucio.
         df_cat["FilaSheet"] = range(2, len(df_cat) + 2)
         frames.append(df_cat)
 
@@ -1001,8 +682,6 @@ def cargar_todo() -> dict:
         activos = pd.concat(frames, ignore_index=True)
         for c in (COL_BL, COL_DESC):
             activos[c] = activos[c].astype(str).str.strip()
-        # Se descartan solo filas realmente vacías (ni BL ni Descripción): notas
-        # sueltas en una celda o filas en blanco dentro del rango usado.
         activos = activos[(activos[COL_BL] != "") | (activos[COL_DESC] != "")]
         activos = activos.reset_index(drop=True)
         activos[COL_PAIS] = unificar_paises(activos[COL_PAIS])
@@ -1012,17 +691,12 @@ def cargar_todo() -> dict:
     if not historico.empty:
         historico = historico[historico[COL_BL].astype(str).str.strip() != ""].reset_index(drop=True)
 
-    # "Última carga" = la marca más reciente escrita por alguien al agregar,
-    # editar, cargar en masa o archivar un embarque. Es distinto de "última
-    # lectura", que es cuándo la app fue a buscar los datos: al presidente le
-    # importa cuándo se movió la información, no cuándo él abrió la página.
     marcas = []
     for cuadro in (activos, historico):
         if not cuadro.empty and COL_ACTUALIZACION in cuadro.columns:
             marcas += [m for m in (parsear_marca(v) for v in cuadro[COL_ACTUALIZACION]) if m]
     ultima_carga = max(marcas) if marcas else None
 
-    # Quién hizo esa última carga, para que el sello no sea solo una hora.
     ultima_persona = ""
     if ultima_carga is not None:
         for cuadro in (activos, historico):
@@ -1044,45 +718,32 @@ def cargar_todo() -> dict:
             "ultima_carga": ultima_carga, "ultima_persona": ultima_persona,
             "avisos": avisos, "error": None}
 
-
 def invalidar_caches():
     cargar_todo.clear()
 
 
 # --- Escrituras -------------------------------------------------------------
 def _con_manejo_apierror(func):
-    """Convierte un APIError de gspread (cuota, permisos) en (False, mensaje)
-    legible en vez de tumbar la página con un traceback."""
     def envoltura(*args, **kwargs):
         try:
             return func(*args, **kwargs)
         except gspread.exceptions.APIError as e:
             return False, f"Google Sheets rechazó la operación ({e}). Espera unos segundos e intenta de nuevo."
-        except Exception as e:  # noqa: BLE001 - último cortafuegos antes de la UI
+        except Exception as e:
             return False, f"Error inesperado: {e}"
     envoltura.__name__ = func.__name__
     return envoltura
 
-
 def rerun_fragmento():
-    """st.rerun(scope="fragment") solo es válido cuando el rerun lo disparó un
-    widget que vive dentro del fragmento. Si se llama en un rerun de página
-    completa, Streamlit lanza StreamlitAPIException. Esta envoltura cae al rerun
-    normal en ese caso. (RerunException hereda de BaseException, así que el
-    except Exception no se traga el rerun bueno.)"""
     try:
         st.rerun(scope="fragment")
     except Exception:
         st.rerun()
 
-
 def usuario_actual() -> str:
     return st.session_state.get("usuario", "desconocido")
 
-
 def registrar_log(accion: str, bl: str = "", categoria: str = "", detalle: str = ""):
-    """Bitácora de quién hizo qué. Nunca debe romper la operación principal:
-    si el log falla, la acción ya se ejecutó y eso es lo que importa."""
     try:
         ws = get_worksheet(LOG_SHEET)
         if ws is None:
@@ -1105,7 +766,6 @@ def registrar_log(accion: str, bl: str = "", categoria: str = "", detalle: str =
     except Exception:
         pass
 
-
 @_con_manejo_apierror
 def append_row(datos: dict, categoria: str):
     ws = get_worksheet(categoria)
@@ -1114,14 +774,10 @@ def append_row(datos: dict, categoria: str):
     datos = dict(datos)
     datos[COL_ACTUALIZACION] = marca_ahora()
     datos[COL_ACTUALIZADO_POR] = usuario_actual()
-    # Cualquier campo opcional con valor real (Fecha_Salida, OC, EE...) se
-    # asegura como columna — no solo Fecha_Salida a mano — así un campo nuevo
-    # que se agregue más adelante no necesita tocar esta función.
     columnas_a_asegurar = [c for c, v in datos.items() if str(v).strip()]
     headers = _asegurar_columnas(ws, columnas_a_asegurar)
     ws.append_row(_fila_desde_dict(headers, datos), value_input_option="RAW")
     return True, ""
-
 
 @_con_manejo_apierror
 def append_rows_bulk(df: pd.DataFrame, categoria: str):
@@ -1132,12 +788,9 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str):
     trae_oc = COL_OC in df.columns and df[COL_OC].astype(str).str.strip().ne("").any()
     trae_ee = COL_EE in df.columns and df[COL_EE].astype(str).str.strip().ne("").any()
     columnas_a_asegurar = [COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
-    if trae_salida:
-        columnas_a_asegurar.append(COL_FECHA_SALIDA)
-    if trae_oc:
-        columnas_a_asegurar.append(COL_OC)
-    if trae_ee:
-        columnas_a_asegurar.append(COL_EE)
+    if trae_salida: columnas_a_asegurar.append(COL_FECHA_SALIDA)
+    if trae_oc: columnas_a_asegurar.append(COL_OC)
+    if trae_ee: columnas_a_asegurar.append(COL_EE)
     headers = _asegurar_columnas(ws, columnas_a_asegurar)
     sello, autor = marca_ahora(), usuario_actual()
     columnas_fila = REQUIRED_COLUMNS + ([COL_FECHA_SALIDA] if trae_salida else []) \
@@ -1151,11 +804,8 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str):
     ws.append_rows(filas, value_input_option="RAW")
     return True, ""
 
-
 @_con_manejo_apierror
 def actualizar_embarque(bl_original: str, categoria: str, datos: dict):
-    """Edición de un embarque ya cargado. Lee la fila actual para no pisar
-    columnas que la app no gestiona, y reescribe la fila completa de una vez."""
     ws = get_worksheet(categoria)
     if ws is None:
         return False, f"No existe la pestaña '{categoria}'."
@@ -1163,8 +813,6 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict):
     if fila is None:
         return False, f"El BL '{bl_original}' ya no está en '{categoria}' — puede que alguien lo movió."
 
-    # Cualquier campo del formulario de edición (Fecha_Salida, OC, EE...) se
-    # asegura como columna, en vez de listar cada uno a mano.
     columnas_a_asegurar = [COL_ACTUALIZACION, COL_ACTUALIZADO_POR, *datos.keys()]
     headers = _asegurar_columnas(ws, columnas_a_asegurar)
     actuales = ws.row_values(fila)
@@ -1173,8 +821,7 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict):
     combinado.update(datos)
     combinado[COL_ACTUALIZACION] = marca_ahora()
     combinado[COL_ACTUALIZADO_POR] = usuario_actual()
-    # Si el ETA se movió a futuro, el embarque vuelve a estar en tránsito y la
-    # marca de "verificado que no llegó" queda obsoleta.
+    
     eta_nuevo = parsear_fecha(datos.get(COL_ETA, combinado.get(COL_ETA, "")))
     if eta_nuevo and eta_nuevo > hoy_rd():
         combinado[COL_ESTATUS_LLEGADA] = ""
@@ -1183,11 +830,8 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict):
     ws.update(range_name=rango, values=[_fila_desde_dict(headers, combinado)], value_input_option="RAW")
     return True, ""
 
-
 @_con_manejo_apierror
 def marcar_estatus_llegada(bl: str, categoria: str, valor: str):
-    """Escribe (o limpia) la respuesta a '¿ya llegó?'. valor="" borra la marca,
-    valor="Retrasado" deja constancia de que se verificó que NO llegó."""
     ws = get_worksheet(categoria)
     if ws is None:
         return False, f"No existe la pestaña '{categoria}'."
@@ -1205,15 +849,8 @@ def marcar_estatus_llegada(bl: str, categoria: str, valor: str):
     ws.batch_update(peticiones, value_input_option="RAW")
     return True, ""
 
-
 @_con_manejo_apierror
 def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
-    """Fija la fecha de la etapa elegida (hoy, si no tenía) sin pisar una que
-    ya estaba puesta. Si se elige una etapa ANTERIOR a la que ya está activa
-    (corrección / retroceso), vacía las fechas de las etapas posteriores —
-    como la etapa activa es siempre 'la última fecha llena', retroceder
-    significa vaciar lo que viene después, nunca escribir un texto de estado
-    aparte."""
     if nueva_etapa not in ETAPAS_PUERTO:
         return False, f"Etapa '{nueva_etapa}' no reconocida."
     ws = get_worksheet(categoria)
@@ -1236,11 +873,9 @@ def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
         {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
         {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
     ]
-    # Si venía marcado "Retrasado" (respondió "No" a la pregunta de llegada),
-    # confirmar cualquier etapa del flujo significa que ya llegó — se limpia
-    # la marca para que no se quede "Retrasado" para siempre en EstadoTexto.
     if _norm(combinado.get(COL_ESTATUS_LLEGADA, "")) == _norm(VALOR_RETRASADO):
         peticiones.append({"range": rowcol_to_a1(fila, indices[_norm(COL_ESTATUS_LLEGADA)]), "values": [[""]]})
+        
     columna_fecha = COLUMNA_FECHA_ETAPA[nueva_etapa]
     if not str(combinado.get(columna_fecha, "")).strip():
         peticiones.append({"range": rowcol_to_a1(fila, indices[_norm(columna_fecha)]),
@@ -1254,7 +889,6 @@ def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str):
     ws.batch_update(peticiones, value_input_option="RAW")
     return True, ""
 
-
 @_con_manejo_apierror
 def eliminar_embarque(bl: str, categoria: str):
     ws = get_worksheet(categoria)
@@ -1266,17 +900,8 @@ def eliminar_embarque(bl: str, categoria: str):
     ws.delete_rows(fila)
     return True, ""
 
-
 @_con_manejo_apierror
 def marcar_como_recibido(bl: str, categoria: str):
-    """Archiva el embarque en 'Recibido (Mes)' y lo saca del tablero activo.
-    La fecha de recibido es el ETA del embarque, no el día del clic: el mes que
-    cuenta es aquel en que la mercancía llegó, no aquel en que alguien se acordó
-    de confirmarlo en la app.
-
-    Candado: no archiva si faltan fechas de las 4 etapas previas (Llegada,
-    Declaración, Solicitud de pago, Pago) — ya no se autocompletan solas. Hay
-    que llenarlas primero en 'Acciones sobre un embarque'."""
     ws_origen = get_worksheet(categoria)
     if ws_origen is None:
         return False, f"No existe la pestaña '{categoria}'."
@@ -1292,7 +917,7 @@ def marcar_como_recibido(bl: str, categoria: str):
     datos_norm = {_norm(k): v for k, v in datos.items()}
 
     faltantes = [
-        etapa for etapa in ETAPAS_PUERTO[:-1]  # todas menos "Recibido en almacén" (esta la fija este mismo clic)
+        etapa for etapa in ETAPAS_PUERTO[:-1] 
         if not str(datos_norm.get(_norm(COLUMNA_FECHA_ETAPA[etapa]), "")).strip()
     ]
     if faltantes:
@@ -1330,16 +955,13 @@ def marcar_como_recibido(bl: str, categoria: str):
         COL_ACTUALIZACION: marca_ahora(),
         COL_ACTUALIZADO_POR: usuario_actual(),
     }
-    # Se conserva el rastro completo del flujo en el histórico — sin esto,
-    # archivar borraba toda la evidencia de por dónde pasó (llegada,
-    # declaración, solicitud de pago, pago, almacén).
+    
     for columna_fecha in (COL_FECHA_LLEGADA_PUERTO, COL_FECHA_DECLARACION,
                           COL_FECHA_SOLICITUD_PAGO, COL_FECHA_PAGO):
         valor = str(datos_norm.get(_norm(columna_fecha), "")).strip()
         if valor:
             registro[columna_fecha] = valor
-    # Última etapa ("Recibido en almacén"): se fija en este mismo clic si no
-    # tenía fecha todavía — nunca se pisa una que ya estaba puesta a mano.
+            
     fecha_almacen_cruda = str(datos_norm.get(_norm(COL_FECHA_ALMACEN), "")).strip()
     fecha_almacen = parsear_fecha(fecha_almacen_cruda) or hoy_rd()
     registro[COL_FECHA_ALMACEN] = fecha_almacen.isoformat()
@@ -1348,10 +970,8 @@ def marcar_como_recibido(bl: str, categoria: str):
     ws_origen.delete_rows(fila)
     return True, ""
 
-
 @_con_manejo_apierror
 def quitar_de_recibido(bl: str, categoria_manual: str | None = None):
-    """Reversa de 'Marcar como Recibido': devuelve el embarque a su categoría."""
     ws_recibido = get_worksheet(RECIBIDO_SHEET)
     if ws_recibido is None:
         return False, f"No existe la pestaña '{RECIBIDO_SHEET}'."
@@ -1386,11 +1006,8 @@ def quitar_de_recibido(bl: str, categoria_manual: str | None = None):
     ws_recibido.delete_rows(fila)
     return True, ""
 
-
 @_con_manejo_apierror
 def normalizar_etas(cambios: list):
-    """cambios = [(categoria, fila_sheet, iso)]. Reescribe los ETA en formato
-    ISO agrupando por pestaña: una llamada por pestaña, no una por celda."""
     if not cambios:
         return True, "Sin cambios."
     por_categoria = {}
@@ -1419,9 +1036,6 @@ def normalizar_etas(cambios: list):
 # LÓGICA DE ESTADO
 # ---------------------------------------------------------------------------
 def estado_embarque(eta_valor, hoy: date = None):
-    """Devuelve (estado, dias_relativos). dias_relativos es el atraso en días si
-    está En Puerto, los días que faltan si está Próximo a llegar, y None si no aplica.
-    'hoy' se recibe por parámetro para no consultar el reloj una vez por fila."""
     eta = parsear_fecha(eta_valor)
     if eta is None:
         return EST_SIN_FECHA, None
@@ -1432,7 +1046,6 @@ def estado_embarque(eta_valor, hoy: date = None):
         return EST_PROXIMO, dias
     return EST_TRANSITO, None
 
-
 def texto_estado(estado: str, dias) -> str:
     if estado == EST_RETRASADO and dias is not None:
         d = int(dias)
@@ -1442,31 +1055,19 @@ def texto_estado(estado: str, dias) -> str:
         return f"En Puerto hace {d} día{'s' if d != 1 else ''}"
     if estado == EST_PROXIMO and dias is not None:
         d = int(dias)
-        if d == 0:
-            return "Llega hoy"
-        if d == 1:
-            return "Llega mañana"
+        if d == 0: return "Llega hoy"
+        if d == 1: return "Llega mañana"
         return f"Llega en {d} días"
     return estado
 
-
 def _etapa_de_fechas(fechas) -> str:
-    """fechas = tupla de 5 valores (date o None) en el mismo orden que
-    ETAPAS_PUERTO. Devuelve el nombre de la última etapa con fecha, o "" si
-    ninguna tiene fecha todavía. Esta es la ÚNICA fuente de verdad de en qué
-    etapa está un embarque — no hay columna de texto separada que pueda
-    desincronizarse de las fechas reales."""
     etapa = ""
     for nombre, fecha in zip(ETAPAS_PUERTO, fechas):
         if fecha:
             etapa = nombre
     return etapa
 
-
 def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
-    """Agrega estado, fecha parseada, valor numérico y clave de orden operativo.
-    Se llama UNA vez por refresco sobre la tabla completa; las vistas por
-    categoría trabajan sobre rebanadas de este resultado en vez de recalcular."""
     df = df.copy()
     if df.empty:
         for c in ("EstadoTexto", "DiasRel", "ETAFecha", "Prioridad", "OrdenSec", "ValorNum",
@@ -1488,27 +1089,13 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     df["DiasRel"] = [c[1] for c in calculado]
     df["Prioridad"] = df["EstadoTexto"].map(PRIORIDAD_ESTADO).fillna(9).astype(int)
 
-    # Contador 1: salida -> llegada a puerto. Si ya se confirmó la llegada, se
-    # congela en (llegada - salida) en vez de seguir creciendo con el reloj de
-    # hoy; así el número queda como "cuánto tardó" y no como "cuánto lleva sin
-    # llegar" una vez que ya llegó.
-    salidas = [parsear_fecha(v) for v in df[COL_FECHA_SALIDA]] if COL_FECHA_SALIDA in df.columns \
-        else [None] * len(df)
-    llegadas_puerto = [parsear_fecha(v) for v in df[COL_FECHA_LLEGADA_PUERTO]] \
-        if COL_FECHA_LLEGADA_PUERTO in df.columns else [None] * len(df)
-    declaraciones = [parsear_fecha(v) for v in df[COL_FECHA_DECLARACION]] \
-        if COL_FECHA_DECLARACION in df.columns else [None] * len(df)
-    solicitudes_pago = [parsear_fecha(v) for v in df[COL_FECHA_SOLICITUD_PAGO]] \
-        if COL_FECHA_SOLICITUD_PAGO in df.columns else [None] * len(df)
-    pagos = [parsear_fecha(v) for v in df[COL_FECHA_PAGO]] if COL_FECHA_PAGO in df.columns \
-        else [None] * len(df)
-    almacenes = [parsear_fecha(v) for v in df[COL_FECHA_ALMACEN]] if COL_FECHA_ALMACEN in df.columns \
-        else [None] * len(df)
+    salidas = [parsear_fecha(v) for v in df.get(COL_FECHA_SALIDA, [None]*len(df))]
+    llegadas_puerto = [parsear_fecha(v) for v in df.get(COL_FECHA_LLEGADA_PUERTO, [None]*len(df))]
+    declaraciones = [parsear_fecha(v) for v in df.get(COL_FECHA_DECLARACION, [None]*len(df))]
+    solicitudes_pago = [parsear_fecha(v) for v in df.get(COL_FECHA_SOLICITUD_PAGO, [None]*len(df))]
+    pagos = [parsear_fecha(v) for v in df.get(COL_FECHA_PAGO, [None]*len(df))]
+    almacenes = [parsear_fecha(v) for v in df.get(COL_FECHA_ALMACEN, [None]*len(df))]
 
-    # La etapa activa NO se guarda en ninguna columna de texto: es, para cada
-    # fila, la última de las 5 fechas (en orden) que esté llena. Así se elimina
-    # de raíz la clase de bug de "etapa guardada que no coincide con ninguna
-    # de las actuales" — una fecha siempre es una fecha, nunca un texto suelto.
     df["EtapaActual"] = [
         _etapa_de_fechas(fechas) for fechas in
         zip(llegadas_puerto, declaraciones, solicitudes_pago, pagos, almacenes)
@@ -1518,44 +1105,30 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
         (ll - sal).days if (sal and ll) else ((hoy - sal).days if sal else None)
         for sal, ll in zip(salidas, llegadas_puerto)
     ]
-    # Contador 2: solicitud de pago -> pago realizado. Se congela al pagar;
-    # mientras no haya pago, sigue el reloj de hoy (cuánto lleva sin pagarse).
     df["DiasSolicitudPago"] = [
         (pg - sol).days if (sol and pg) else ((hoy - sol).days if sol else None)
         for sol, pg in zip(solicitudes_pago, pagos)
     ]
-    # Contador 3: pago realizado -> hoy, mientras espera despacho. No se
-    # congela con una fecha de despacho porque "despachado" ya no es una
-    # etapa: el embarque sale del tablero activo al marcarlo como recibido, y
-    # ahí deja de verse (no hace falta una fecha aparte para detener esto).
     df["DiasPagoDespacho"] = [(hoy - pg).days if pg else None for pg in pagos]
-    # Dentro de "En Puerto", primero el más atrasado; en el resto, el ETA más cercano.
+
     df["OrdenSec"] = [
         -(dias or 0) if estado == EST_PUERTO else (fecha.toordinal() if fecha else 10**9)
         for estado, dias, fecha in zip(df["EstadoTexto"], df["DiasRel"], df["ETAFecha"])
     ]
+    
     col_valor = columna_de_valor(df)
     df["ValorNum"] = [a_numero(v) for v in df[col_valor]] if col_valor else [None] * len(df)
+    
     return df.sort_values(["Prioridad", "OrdenSec"], kind="stable").reset_index(drop=True)
 
-
 def ordenar_vista(df: pd.DataFrame, criterio: str) -> pd.DataFrame:
-    """Ordena la lista según lo que el usuario elija. El orden por defecto es
-    operativo (lo atrasado primero), no alfabético."""
-    if df.empty:
-        return df
-    if criterio == "Urgencia":
-        return df.sort_values(["Prioridad", "OrdenSec"], kind="stable")
-    if criterio == "ETA más próximo":
-        return df.sort_values("OrdenSec", key=lambda s: s.where(s > 0, 10**9), kind="stable")
-    if criterio == "ETA más lejano":
-        return df.sort_values("OrdenSec", ascending=False, kind="stable")
-    if criterio == "BL":
-        return df.sort_values(COL_BL, kind="stable")
-    if criterio == "País":
-        return df.sort_values([COL_PAIS, "Prioridad"], kind="stable")
-    if criterio == "Descripción":
-        return df.sort_values(COL_DESC, kind="stable")
+    if df.empty: return df
+    if criterio == "Urgencia": return df.sort_values(["Prioridad", "OrdenSec"], kind="stable")
+    if criterio == "ETA más próximo": return df.sort_values("OrdenSec", key=lambda s: s.where(s > 0, 10**9), kind="stable")
+    if criterio == "ETA más lejano": return df.sort_values("OrdenSec", ascending=False, kind="stable")
+    if criterio == "BL": return df.sort_values(COL_BL, kind="stable")
+    if criterio == "País": return df.sort_values([COL_PAIS, "Prioridad"], kind="stable")
+    if criterio == "Descripción": return df.sort_values(COL_DESC, kind="stable")
     if criterio == "Valor" and "ValorNum" in df.columns:
         return df.sort_values("ValorNum", ascending=False, na_position="last", kind="stable")
     return df
@@ -1566,24 +1139,14 @@ def ordenar_vista(df: pd.DataFrame, criterio: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 @st.cache_resource
 def _sesiones_activas() -> dict:
-    """Sesiones vivas, compartidas entre todas las conexiones del servidor.
-    Streamlit pierde session_state en cada recarga del navegador (cada F5 abre
-    una sesión nueva), así que para no pedir el PIN otra vez hay que guardar una
-    referencia fuera de la sesión: un token que viaja en la URL y cuyo contenido
-    real vive aquí, del lado del servidor. En la URL solo va el identificador,
-    nunca el rol ni el PIN.
-    Se vacía cuando la app se reinicia o se redespliega: eso obliga a teclear el
-    PIN otra vez, que es el comportamiento correcto."""
     return {}
 
-
 def _purgar_sesiones(ahora: float):
+    # Uso de lista intermedia para no mutar dict iterando
     for token in [t for t, d in _sesiones_activas().items() if d["expira"] < ahora]:
         _sesiones_activas().pop(token, None)
 
-
 def _abrir_sesion(rol: str, nombre: str):
-    """Crea el token de sesión y lo deja en la URL para sobrevivir a las recargas."""
     ahora = time.time()
     _purgar_sesiones(ahora)
     token = token_urlsafe(18)
@@ -1595,17 +1158,13 @@ def _abrir_sesion(rol: str, nombre: str):
     st.session_state.rol = rol
     st.session_state.usuario = nombre
     st.session_state.token = token
-    st.query_params["s"] = token
-
+    if hasattr(st, "query_params"):
+        st.query_params["s"] = token
 
 def restaurar_sesion():
-    """Al abrir la página, intenta reanudar la sesión desde el token de la URL.
-    No hay límite de recargas: mientras no pasen VIDA_SESION_MINUTOS desde la
-    última vez que se abrió la página, se entra directo, y cada recarga vuelve a
-    correr el reloj. Pasado ese tiempo, se pide el PIN otra vez."""
     if "rol" in st.session_state:
         return
-    token = st.query_params.get("s")
+    token = st.query_params.get("s") if hasattr(st, "query_params") else None
     if not token:
         return
 
@@ -1614,35 +1173,24 @@ def restaurar_sesion():
     datos = _sesiones_activas().get(token)
     if not datos or datos["expira"] < ahora:
         _sesiones_activas().pop(token, None)
-        st.query_params.clear()
+        if hasattr(st, "query_params"): st.query_params.clear()
         return
 
-    datos["expira"] = ahora + VIDA_SESION_MINUTOS * 60  # ventana deslizante
+    datos["expira"] = ahora + VIDA_SESION_MINUTOS * 60
     st.session_state.rol = datos["rol"]
     st.session_state.usuario = datos["nombre"]
     st.session_state.token = token
 
-
 def cerrar_sesion():
     _sesiones_activas().pop(st.session_state.get("token", ""), None)
     st.session_state.clear()
-    st.query_params.clear()
-
+    if hasattr(st, "query_params"): st.query_params.clear()
 
 @st.cache_resource
 def _registro_fallos() -> dict:
-    """Contador de fallos COMPARTIDO entre sesiones. El bloqueo por session_state
-    se evade abriendo una pestaña de incógnito; este no."""
     return {"marcas": [], "bloqueo_hasta": 0.0}
 
-
 def _resolver_pin(pin: str):
-    """Devuelve (rol, nombre) o (None, None).
-    Soporta PIN por persona si en secrets existe una tabla [pins]:
-        [pins.1234]
-        nombre = "Dauris"
-        rol = "admin"
-    Si no existe, cae al esquema anterior de ADMIN_PIN / VIEWER_PIN."""
     try:
         tabla = st.secrets.get("pins", None)
     except Exception:
@@ -1657,7 +1205,6 @@ def _resolver_pin(pin: str):
     if pin and pin == st.secrets.get("VIEWER_PIN", None):
         return "viewer", "Visualización"
     return None, None
-
 
 def login_screen():
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -1686,15 +1233,11 @@ def login_screen():
         return
 
     with centro:
-        # El PIN va dentro de un st.form a propósito: con un text_input suelto +
-        # st.button, presionar Enter solo dispara un rerun y el botón nunca queda
-        # "pulsado", así que había que hacer clic obligatoriamente. Dentro de un
-        # formulario, Enter equivale a pulsar el submit.
         with st.form("form_login", clear_on_submit=True, border=False):
             pin = st.text_input("PIN", type="password", max_chars=LARGO_PIN,
                                 label_visibility="collapsed",
                                 placeholder=f"PIN {LARGO_PIN} dígitos")
-            entrar = st.form_submit_button("Entrar", type="primary", width="stretch")
+            entrar = st.form_submit_button("Entrar", type="primary", use_container_width=True)
 
     if not entrar:
         return
@@ -1707,7 +1250,7 @@ def login_screen():
         st.rerun()
         return
 
-    time.sleep(1.0)  # freno artificial contra fuerza bruta
+    time.sleep(1.0)
     st.session_state.intentos += 1
     registro["marcas"].append(ahora)
     restantes = MAX_INTENTOS_SESION - st.session_state.intentos
@@ -1732,16 +1275,12 @@ def login_screen():
 # ---------------------------------------------------------------------------
 @st.cache_data(show_spinner=False)
 def _logo_base64() -> str:
-    """Si existe assets/logo.png (o .jpg) en el repo, se muestra en el encabezado.
-    Si no, no pasa nada: la app sigue con el ícono vectorial. No invento un logo
-    ni lo traigo de internet."""
     for nombre in ("assets/logo.png", "assets/logo.jpg", "assets/logo.jpeg", "logo.png"):
         ruta = Path(nombre)
         if ruta.exists():
             tipo = "jpeg" if ruta.suffix.lower() in (".jpg", ".jpeg") else "png"
             return f"data:image/{tipo};base64," + base64.b64encode(ruta.read_bytes()).decode()
     return ""
-
 
 def encabezado(datos: dict):
     anio = hoy_rd().year
@@ -1768,7 +1307,6 @@ def encabezado(datos: dict):
         unsafe_allow_html=True,
     )
 
-
 def tarjeta_kpi(label: str, valor, color: str, sub: str = "") -> str:
     extra = f'<div class="kpi-sub">{esc(sub)}</div>' if sub else ""
     return (
@@ -1777,9 +1315,7 @@ def tarjeta_kpi(label: str, valor, color: str, sub: str = "") -> str:
         f'<div class="kpi-value">{valor}</div>{extra}</div>'
     )
 
-
 def render_lista(df: pd.DataFrame):
-    """Un solo bloque HTML: tabla en desktop, tarjetas en celular (lo decide el CSS)."""
     if df.empty:
         st.markdown('<div class="lista"><div class="vacio">No hay embarques que coincidan con el filtro.</div></div>',
                     unsafe_allow_html=True)
@@ -1810,11 +1346,7 @@ def render_lista(df: pd.DataFrame):
     partes.append("</div>")
     st.markdown("".join(partes), unsafe_allow_html=True)
 
-
 def grafico_linea_tiempo(df: pd.DataFrame, key: str):
-    """Qué viene encima, semana por semana. Responde la pregunta que un gerente
-    hace de verdad ('¿qué me llega en las próximas semanas?'), que la dona por
-    estado no respondía porque repetía exactamente lo que ya dicen los KPIs."""
     hoy = hoy_rd()
     inicio_semana = hoy - timedelta(days=hoy.weekday())
     etiquetas, valores, colores = [], [], []
@@ -1866,8 +1398,7 @@ def grafico_linea_tiempo(df: pd.DataFrame, key: str):
         yaxis=dict(showgrid=True, gridcolor="#F3F4F6", showticklabels=False, title=""),
         bargap=0.35,
     )
-    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key=f"tl_{key}")
-
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=f"tl_{key}")
 
 def grafico_paises(df: pd.DataFrame, key: str):
     serie = df[COL_PAIS].replace("", NO_ESPECIFICADO).value_counts().sort_values()
@@ -1888,39 +1419,27 @@ def grafico_paises(df: pd.DataFrame, key: str):
         yaxis=dict(showgrid=False),
     )
     seleccion = st.plotly_chart(
-        fig, width="stretch", config={"displayModeBar": False},
+        fig, use_container_width=True, config={"displayModeBar": False},
         on_select="rerun", selection_mode="points", key=f"pais_chart_{key}",
     )
     puntos = (seleccion or {}).get("selection", {}).get("points", [])
     if puntos:
         pais = puntos[0].get("y")
         if pais and pais != NO_ESPECIFICADO:
-            # Plotly conserva la selección entre reruns: sin esta firma, el clic se
-            # reaplicaría en cada rerun y anularía cualquier cambio manual posterior.
             firma = f"{key}:{pais}"
             if firma != st.session_state.get(f"firma_pais_{key}"):
                 st.session_state[f"pais_{key}"] = pais
                 st.session_state[f"firma_pais_{key}"] = firma
                 rerun_fragmento()
 
-
 def _envolver_etiqueta(texto: str) -> str:
-    """Corta una etiqueta larga en dos líneas balanceadas por palabras (no por
-    el primer espacio, que para 'Recepción y declaración de la mercancía'
-    dejaba una primera línea de una palabra y una segunda carguísima)."""
     if len(texto) <= 16:
         return texto
     palabras = texto.split(" ")
     medio = (len(palabras) + 1) // 2
     return " ".join(palabras[:medio]) + "<br>" + " ".join(palabras[medio:])
 
-
 def grafico_flujo_puerto(etapa_actual: str, key: str, es_aerea: bool = False):
-    """Diagrama de las etapas del proceso (puerto o aeropuerto según el modo):
-    hecho en verde, la etapa actual en ámbar, lo que falta en gris. etapa_actual
-    puede venir vacía (recepción aún sin confirmar). El dato guardado ('Llegada
-    a puerto') es el mismo para mar y aire; es_aerea solo cambia el rótulo y el
-    ícono que se muestran para esa primera etapa."""
     idx_actual = INDICE_ETAPA.get(etapa_actual, -1)
     n = len(ETAPAS_PUERTO)
     xs = list(range(n))
@@ -1933,12 +1452,9 @@ def grafico_flujo_puerto(etapa_actual: str, key: str, es_aerea: bool = False):
 
     colores_punto, colores_linea = [], []
     for i in range(n):
-        if i < idx_actual:
-            colores_punto.append(COLOR_ETAPA_HECHA)
-        elif i == idx_actual:
-            colores_punto.append(COLOR_ETAPA_ACTUAL)
-        else:
-            colores_punto.append(COLOR_ETAPA_PENDIENTE)
+        if i < idx_actual: colores_punto.append(COLOR_ETAPA_HECHA)
+        elif i == idx_actual: colores_punto.append(COLOR_ETAPA_ACTUAL)
+        else: colores_punto.append(COLOR_ETAPA_PENDIENTE)
     for i in range(n - 1):
         colores_linea.append(COLOR_ETAPA_HECHA if i < idx_actual else COLOR_ETAPA_PENDIENTE)
 
@@ -1966,38 +1482,30 @@ def grafico_flujo_puerto(etapa_actual: str, key: str, es_aerea: bool = False):
         yaxis=dict(visible=False, range=[-1.2, 0.5]),
         annotations=anotaciones,
     )
-    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key=f"flujo_{key}")
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=f"flujo_{key}")
 
 
 # ---------------------------------------------------------------------------
 # DASHBOARD
 # ---------------------------------------------------------------------------
 def selector_horizontal(label: str, opciones: list, key: str, default=None, formato=None,
-                        ancho: str = "stretch"):
-    """Segmented control cuando la versión de Streamlit lo trae; radio horizontal
-    si no. Sustituye a st.tabs para las categorías: con tabs, Streamlit ejecuta el
-    cuerpo de TODAS las pestañas en cada rerun aunque el usuario vea una sola, y
-    eso significaba armar seis bloques de KPI, doce gráficos y seis listas para
-    mostrar la sexta parte."""
+                        ancho: str = "use_container_width"):
     formato = formato or (lambda x: str(x))
-    # Si la clave ya tiene valor en session_state, pasar default= además dispara
-    # una advertencia de Streamlit; el estado guardado manda.
     extra = {} if key in st.session_state else {"default": default or opciones[0]}
+    
+    # st.segmented_control soporta label_visibility pero su parámetro ancho se configura implícitamente a veces
+    # width= puede causar conflicto, se suple st.radio equivalente.
     if hasattr(st, "segmented_control"):
         elegido = st.segmented_control(
             label, opciones, key=key, format_func=formato,
-            label_visibility="collapsed", width=ancho, **extra,
+            label_visibility="collapsed", **extra,
         )
     else:
         elegido = st.radio(label, opciones, key=key, horizontal=True,
                            format_func=formato, label_visibility="collapsed")
     return elegido or (default or opciones[0])
 
-
 def _filtro_en_proceso_puerto(df: pd.DataFrame) -> pd.DataFrame:
-    """Cruza todas las categorías (mar y aire): todo lo que ya confirmó
-    llegada a puerto/aeropuerto y sigue activo (no se ha archivado como
-    recibido)."""
     if df.empty or "EtapaActual" not in df.columns:
         return df.iloc[0:0]
     es_maritimo = df["Categoria"].isin(CATEGORIAS_PUERTO)
@@ -2005,36 +1513,20 @@ def _filtro_en_proceso_puerto(df: pd.DataFrame) -> pd.DataFrame:
     en_proceso = es_maritimo & (etapa != "")
     return df[en_proceso]
 
-
 def _resumen_etapas_puerto(df: pd.DataFrame):
-    """Conteo por etapa para la vista cruzada — de un vistazo, cuántos
-    embarques hay en declaración vs. cuántos esperando que Finanzas pague."""
     conteo = df["EtapaActual"].value_counts().to_dict()
     cols = st.columns(len(ETAPAS_PUERTO))
     for col, etapa in zip(cols, ETAPAS_PUERTO):
         col.metric(ETIQUETA_CORTA_ETAPA.get(etapa, etapa), conteo.get(etapa, 0))
 
-
 def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str, contexto: str):
-    """Un diagrama por embarque, siempre visible — no hay que ir a buscarlo en
-    la ficha ni volver a elegir el BL en 'Acciones'. Nace de un problema real:
-    el diagrama se veía una vez al confirmar la llegada y después 'desaparecía'
-    porque solo se mostraba si volvías a seleccionar ese embarque a mano.
-    Admins pueden avanzar o retroceder la etapa aquí mismo.
-
-    contexto identifica DESDE DÓNDE se llama (Todos / una categoría puntual /
-    la pestaña dedicada 'En proceso (puerto)'): el mismo embarque puede
-    aparecer en más de un lugar, y sin esto las claves de sus widgets
-    colisionarían — una selección de etapa sin guardar en una vista se vería
-    reflejada en otra, porque Streamlit ignora el valor por defecto una vez
-    que una clave ya tiene algo en session_state."""
     es_admin = rol == "admin"
     for _, fila in df.sort_values(["Categoria", COL_ETA]).iterrows():
         bl = str(fila[COL_BL]).strip()
         categoria = fila["Categoria"]
         etapa_actual = str(fila.get("EtapaActual", "")).strip()
         clave = (f"{_slug_css(contexto)}_{_slug_css(categoria)}_{_slug_css(bl)}_"
-                f"{_slug_css(str(fila.get('FilaSheet', '')))}")
+                 f"{_slug_css(str(fila.get('FilaSheet', '')))}")
 
         st.markdown(f"**{esc(bl) or '(sin BL)'}** · {esc(fila[COL_DESC])} · {esc(categoria)}")
         grafico_flujo_puerto(etapa_actual, f"proceso_{clave}", es_aerea=(categoria == CATEGORIA_AEREA))
@@ -2054,7 +1546,7 @@ def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str, contexto: str):
             nueva_etapa = a1.selectbox("Etapa", ETAPAS_PUERTO, index=idx_default,
                                        key=f"etapa_{clave}", label_visibility="collapsed")
             a2.write("")
-            if a2.button("Guardar", key=f"guardar_{clave}", width="stretch"):
+            if a2.button("Guardar", key=f"guardar_{clave}", use_container_width=True):
                 ok, mensaje = avanzar_estado_puerto(bl, categoria, nueva_etapa)
                 if ok:
                     accion = "Avance en puerto" if INDICE_ETAPA.get(nueva_etapa, 0) >= idx_default \
@@ -2065,10 +1557,7 @@ def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str, contexto: str):
                 else:
                     st.error(mensaje)
 
-            # Sin autocompletado: marcar_como_recibido ya valida que las 4
-            # etapas previas tengan fecha y devuelve un mensaje claro con lo
-            # que falta si no — el candado vive ahí, no aquí.
-            if st.button("Marcar como recibido", key=f"recibido_{clave}", type="primary", width="stretch"):
+            if st.button("Marcar como recibido", key=f"recibido_{clave}", type="primary", use_container_width=True):
                 ok, mensaje = marcar_como_recibido(bl, categoria)
                 if ok:
                     registrar_log("Recibido", bl, categoria, f"ETA {fila[COL_ETA]}")
@@ -2078,13 +1567,10 @@ def _panel_en_proceso_puerto(df: pd.DataFrame, rol: str, contexto: str):
                     st.error(mensaje)
         st.divider()
 
-
 def mostrar_dashboard(datos: dict):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     encabezado(datos)
 
-    # Los avisos técnicos son instrucciones de trabajo: solo los ve quien puede
-    # ejecutarlas. Al espectador no le sirven y le restan confianza en el dato.
     es_admin = st.session_state.get("rol") == "admin"
     if datos["error"]:
         st.error(datos["error"] if es_admin
@@ -2098,8 +1584,6 @@ def mostrar_dashboard(datos: dict):
         st.info("Todavía no hay embarques cargados.")
         return
 
-    # Enriquecimiento único: estados, fechas y valores se calculan una sola vez
-    # por refresco y las vistas por categoría son rebanadas de este resultado.
     df_todo = enriquecer(df_todo)
     recibidas_mes = contar_recibidas_mes(datos["historico"])
 
@@ -2130,7 +1614,6 @@ def mostrar_dashboard(datos: dict):
         sub = df_todo[df_todo["Categoria"] == seleccion]
         _render_categoria(sub, st.session_state.get("rol", "viewer"), seleccion, recibidas_mes)
 
-
 def contar_recibidas_mes(historico: pd.DataFrame) -> int:
     if historico.empty:
         return 0
@@ -2142,7 +1625,6 @@ def contar_recibidas_mes(historico: pd.DataFrame) -> int:
             total += 1
     return total
 
-
 @st.fragment
 def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: int):
     if df.empty:
@@ -2151,11 +1633,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
 
     conteo = df["EstadoTexto"].value_counts().to_dict()
     proximos_n = conteo.get(EST_PROXIMO, 0)
-    # "Por confirmar llegada" debe contar solo lo que de verdad falta por
-    # responder — no todo lo que tiene el ETA vencido. Un embarque con ETA
-    # vencido que YA se confirmó (ya tiene una etapa en el flujo) no está
-    # pendiente de nada; antes este número no distinguía eso y no calzaba con
-    # lo que mostraba el panel de confirmación de abajo.
     etapa_col = df.get("EtapaActual", pd.Series([""] * len(df), index=df.index)).astype(str).str.strip()
     en_puerto_n = int(((df["EstadoTexto"] == EST_PUERTO) & (etapa_col == "")).sum())
     retrasados_n = conteo.get(EST_RETRASADO, 0)
@@ -2163,8 +1640,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
 
     valores = [v for v in df.get("ValorNum", []) if es_numero(v)]
     valor_total = sum(valores) if valores else None
-    # Mismo criterio que en_puerto_n: solo lo que sigue sin confirmar, no todo
-    # lo que alguna vez tuvo el ETA vencido.
     valor_puerto = sum(v for v, e, et in zip(df.get("ValorNum", []), df["EstadoTexto"], etapa_col)
                        if es_numero(v) and e == EST_PUERTO and et == "") if valores else None
 
@@ -2176,10 +1651,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
         ("Retrasados", retrasados_n, STATUS_COLOR[EST_RETRASADO], EST_RETRASADO, "retrasados"),
         (f"Recibidas en {MESES_ES[hoy_rd().month]}", recibidas_mes, COLOR_RECIBIDAS_MES, "__historico__", "recibidas"),
     ]
-    # OJO con la clave del contenedor: Streamlit la usa TAL CUAL como clase CSS
-    # (st-key-<clave>). Si lleva un espacio ("Carga Suelta") el navegador la parte
-    # en dos clases y el selector no engancha; con acentos ("Aéreos") tampoco es
-    # fiable. Por eso la clave se construye con un slug ASCII.
     clave = _slug_css(tab_key)
     estilos = "".join(
         f".st-key-kpi_{clave}_{slug} button {{"
@@ -2209,14 +1680,13 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     for col, (label, valor, color, filtro, slug) in zip(cols, kpis):
         with col:
             with st.container(key=f"kpi_{clave}_{slug}"):
-                if st.button(f"{label.upper()}\n\n{valor}", key=f"btn_{clave}_{slug}", width="stretch"):
+                if st.button(f"{label.upper()}\n\n{valor}", key=f"btn_{clave}_{slug}", use_container_width=True):
                     if filtro == "__historico__":
                         st.session_state["seccion"] = "Histórico"
                         st.rerun()
                     st.session_state[f"estado_{tab_key}"] = filtro
                     rerun_fragmento()
 
-    # -------------------- Valor en tránsito (solo si el Sheet lo trae) --------------------
     if valor_total:
         v1, v2 = st.columns(2)
         v1.markdown(
@@ -2242,7 +1712,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
 
     st.write("")
 
-    # -------------------- GRÁFICOS --------------------
     with st.container():
         st.markdown('<div class="solo-pantalla">', unsafe_allow_html=True)
         g1, g2 = st.columns([1.5, 1])
@@ -2254,11 +1723,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
             grafico_paises(df, tab_key)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # -------------------- EN PROCESO EN PUERTO --------------------
-    # Mismo filtro que la pestaña dedicada "En proceso (puerto)", pero aquí
-    # aparece directo en la vista donde ya estás (Todos o una categoría
-    # puntual) — pedido explícito: no obligar a navegar a otra pestaña para
-    # ver qué hay en puerto y en qué etapa está cada uno.
     en_proceso_aqui = _filtro_en_proceso_puerto(df)
     if not en_proceso_aqui.empty:
         st.markdown("**En proceso en puerto**")
@@ -2267,7 +1731,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
 
     st.divider()
 
-    # -------------------- FILTROS --------------------
     paises = ["Todos"] + sorted({p for p in df[COL_PAIS] if str(p).strip()})
     estados = ["Todos"] + [e for e in STATUS_ORDER]
     criterios = ["Urgencia", "ETA más próximo", "ETA más lejano", "BL", "País", "Descripción"]
@@ -2285,7 +1748,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     with f5:
         st.write("")
         st.write("")
-        if st.button("Limpiar filtros", key=f"limpiar_{tab_key}", width="stretch"):
+        if st.button("Limpiar filtros", key=f"limpiar_{tab_key}", use_container_width=True):
             for k in (f"busca_{tab_key}", f"pais_{tab_key}", f"estado_{tab_key}", f"orden_{tab_key}"):
                 st.session_state.pop(k, None)
             st.session_state.pop(f"firma_pais_{tab_key}", None)
@@ -2312,7 +1775,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
 
     render_lista(filtrado)
 
-    # -------------------- EXPORTAR Y VER DETALLE --------------------
     e1, e2 = st.columns([1, 2])
     with e1:
         st.download_button(
@@ -2321,7 +1783,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
             file_name=f"embarques_{_slug_css(tab_key)}_{hoy_rd().isoformat()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key=f"dl_vista_{tab_key}",
-            width="stretch",
+            use_container_width=True,
         )
 
     if not filtrado.empty:
@@ -2334,7 +1796,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
                                    label_visibility="collapsed")
             _ficha_embarque(filtrado.iloc[opciones_det.index(elegido)])
 
-    # -------------------- ACCIONES DE ADMIN --------------------
     if rol == "admin":
         st.write("")
         with st.expander("Acciones sobre un embarque", expanded=False):
@@ -2342,17 +1803,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
 
 
 def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
-    """El ETA vencido no dice si la mercancía llegó, solo que la fecha pasó.
-    Este panel hace la pregunta directa —¿llegó a puerto/aeropuerto, sí o no?—
-    y con la respuesta el embarque entra al flujo de 5 etapas (Sí) o se marca
-    como retrasado, contando desde el día en que debía llegar (No). Va a la
-    vista, sin desplegable, porque es lo único de la pantalla que exige acción
-    hoy. Aplica a TODAS las categorías por igual: lo único que cambia según el
-    modo (mar/aire) es si el botón y la etapa dicen 'puerto' o 'aeropuerto'."""
-    # Una vez confirmada la llegada, el embarque pasa al flujo detallado (ver
-    # _panel_acciones) y esta pregunta ya no aplica: preguntar "¿ya llegó?"
-    # indefinidamente sería ruido, porque ETA vencido + EstadoTexto no cambian
-    # mientras avanza por las etapas.
     es_maritimo = df["Categoria"].isin(CATEGORIAS_PUERTO)
     tiene_etapa = df.get("EtapaActual", pd.Series([""] * len(df), index=df.index)) \
         .astype(str).str.strip().ne("")
@@ -2389,11 +1839,7 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
         clave = f"{_slug_css(tab_key)}_{_slug_css(bl)}_{_slug_css(str(r.get('FilaSheet', '')))}"
         es_aerea_fila = categoria == CATEGORIA_AEREA
         etiqueta_boton = "Sí, llegó al aeropuerto" if es_aerea_fila else "Sí, llegó a puerto"
-        if c2.button(etiqueta_boton, key=f"si_llego_{clave}", type="primary", width="stretch"):
-            # No se archiva todavía, sin importar el modo (mar o aire): entra
-            # al flujo de 5 etapas (declaración, pago, almacén) y el archivo
-            # final ('Marcar como recibido') se hace desde 'Acciones' una vez
-            # completadas las etapas previas.
+        if c2.button(etiqueta_boton, key=f"si_llego_{clave}", type="primary", use_container_width=True):
             ok, mensaje = avanzar_estado_puerto(bl, categoria, ETAPAS_PUERTO[0])
             accion_log = "Llegada al aeropuerto confirmada" if es_aerea_fila else "Llegada a puerto confirmada"
             if ok:
@@ -2403,11 +1849,11 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
             else:
                 st.error(mensaje)
         if marcados_como_retrasados:
-            if c3.button("Sigue retrasado", key=f"sigue_{clave}", width="stretch", disabled=True):
+            if c3.button("Sigue retrasado", key=f"sigue_{clave}", use_container_width=True, disabled=True):
                 pass
             c3.caption("Actualiza el ETA en Editar")
         else:
-            if c3.button("No, está retrasado", key=f"no_llego_{clave}", width="stretch"):
+            if c3.button("No, está retrasado", key=f"no_llego_{clave}", use_container_width=True):
                 ok, mensaje = marcar_estatus_llegada(bl, categoria, VALOR_RETRASADO)
                 if ok:
                     registrar_log("Marcado como retrasado", bl, categoria, f"ETA {r[COL_ETA]}")
@@ -2434,8 +1880,6 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
 
 
 def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
-    """La vista tal como se está viendo, lista para Excel: sin columnas internas,
-    con el estado ya redactado y el ETA en formato legible."""
     if df.empty:
         return pd.DataFrame(columns=[COL_BL, "Descripción", "Estado"])
     salida = pd.DataFrame({
@@ -2456,10 +1900,7 @@ def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
         salida["Actualizado por"] = df[COL_ACTUALIZADO_POR]
     return salida.reset_index(drop=True)
 
-
 def _ficha_embarque(fila):
-    """Todos los campos del embarque, incluidas las columnas que alguien haya
-    agregado en el Sheet y que la app no gestiona."""
     campos = [
         ("BL", fila[COL_BL]),
         ("Descripción", fila[COL_DESC]),
@@ -2471,10 +1912,8 @@ def _ficha_embarque(fila):
         ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"])),
     ]
     if fila["Categoria"] in CATEGORIAS_CON_OC_EE:
-        if str(fila.get(COL_OC, "")).strip():
-            campos.append(("OC", fila[COL_OC]))
-        if str(fila.get(COL_EE, "")).strip():
-            campos.append(("EE", fila[COL_EE]))
+        if str(fila.get(COL_OC, "")).strip(): campos.append(("OC", fila[COL_OC]))
+        if str(fila.get(COL_EE, "")).strip(): campos.append(("EE", fila[COL_EE]))
     if str(fila.get(COL_FECHA_SALIDA, "")).strip():
         campos.append(("Fecha de salida", formato_eta(fila[COL_FECHA_SALIDA])))
     dias_transito = fila.get("DiasTransito")
@@ -2532,13 +1971,10 @@ def _ficha_embarque(fila):
         es_aerea_fila = fila["Categoria"] == CATEGORIA_AEREA
         st.caption("Flujo en aeropuerto" if es_aerea_fila else "Flujo en puerto")
         clave = (f"{_slug_css(str(fila['Categoria']))}_{_slug_css(str(fila[COL_BL]))}_"
-                f"{_slug_css(str(fila.get('FilaSheet', '')))}")
+                 f"{_slug_css(str(fila.get('FilaSheet', '')))}")
         grafico_flujo_puerto(etapa_puerto, f"ficha_{clave}", es_aerea=es_aerea_fila)
 
-
 def _panel_acciones(df: pd.DataFrame, tab_key: str):
-    """Un selector y tres botones, en vez de una lista infinita de botones fila
-    por fila (que con 50 embarques hacía la página inusable)."""
     con_bl = df[df[COL_BL].astype(str).str.strip() != ""]
     sin_bl = df[df[COL_BL].astype(str).str.strip() == ""]
 
@@ -2558,6 +1994,7 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
     es_maritimo_sel = categoria in CATEGORIAS_PUERTO
     es_aerea_sel = categoria == CATEGORIA_AEREA
     etapa_actual = str(fila.get("EtapaActual", "")).strip()
+    
     if es_maritimo_sel and (etapa_actual or fila["EstadoTexto"] in (EST_PUERTO, EST_RETRASADO)):
         st.markdown("**Flujo de aeropuerto**" if es_aerea_sel else "**Flujo de puerto**")
         if etapa_actual:
@@ -2576,7 +2013,7 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
             nueva_etapa = a1.selectbox("Etapa", ETAPAS_PUERTO, index=idx_default,
                                        key=f"etapa_{clave_bl}", label_visibility="collapsed")
             a2.write("")
-            if a2.button("Guardar etapa", key=f"guardar_etapa_{clave_bl}", width="stretch"):
+            if a2.button("Guardar etapa", key=f"guardar_etapa_{clave_bl}", use_container_width=True):
                 ok, mensaje = avanzar_estado_puerto(bl, categoria, nueva_etapa)
                 if ok:
                     registrar_log("Avance en puerto", bl, categoria, nueva_etapa)
@@ -2590,11 +2027,8 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
                        "en la sección de confirmación.")
         st.write("")
 
-    # Candado: marcar_como_recibido valida solo que las 4 etapas previas
-    # tengan fecha y devuelve el mensaje con lo que falta si no — ya no hay
-    # autocompletado que rellene fechas que no ocurrieron de verdad.
     c1, c2, c3 = st.columns(3)
-    if c1.button("Marcar como recibido", key=f"rec_{tab_key}", type="primary", width="stretch"):
+    if c1.button("Marcar como recibido", key=f"rec_{tab_key}", type="primary", use_container_width=True):
         ok, mensaje = marcar_como_recibido(bl, categoria)
         if ok:
             registrar_log("Recibido", bl, categoria, f"ETA {fila[COL_ETA]}")
@@ -2603,12 +2037,12 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
         else:
             st.error(mensaje)
 
-    if c2.button("Editar", key=f"edit_{tab_key}", width="stretch"):
+    if c2.button("Editar", key=f"edit_{tab_key}", use_container_width=True):
         st.session_state["editar_bl"] = bl
         st.session_state["seccion"] = "Editar"
         st.rerun()
 
-    if c3.button("Eliminar", key=f"del_{tab_key}", width="stretch"):
+    if c3.button("Eliminar", key=f"del_{tab_key}", use_container_width=True):
         st.session_state[f"confirmar_del_{tab_key}"] = (bl, categoria)
         rerun_fragmento()
 
@@ -2640,12 +2074,8 @@ def _bls_existentes(datos: dict) -> set:
     historicos = set(datos["historico"][COL_BL].astype(str).str.strip()) if not datos["historico"].empty else set()
     return {b for b in activos | historicos if b}
 
-
 def form_alta_manual(datos: dict):
     st.subheader("Agregar embarque")
-    # La Categoría vive FUERA del form: así, al elegir Aéreos o Carga Suelta,
-    # la app puede mostrar los campos OC/EE de una vez (dentro de un st.form
-    # los demás widgets no reaccionan hasta el submit).
     categoria = st.selectbox("Categoría", CATEGORIAS, key="alta_categoria")
     con_oc_ee = categoria in CATEGORIAS_CON_OC_EE
     with st.form("form_embarque", clear_on_submit=True):
@@ -2684,13 +2114,10 @@ def form_alta_manual(datos: dict):
         COL_PAIS: pais.strip(),
         COL_ETA: eta.isoformat(),
     }
-    if salida:
-        datos_nuevos[COL_FECHA_SALIDA] = salida.isoformat()
+    if salida: datos_nuevos[COL_FECHA_SALIDA] = salida.isoformat()
     if con_oc_ee:
-        if oc.strip():
-            datos_nuevos[COL_OC] = oc.strip()
-        if ee.strip():
-            datos_nuevos[COL_EE] = ee.strip()
+        if oc.strip(): datos_nuevos[COL_OC] = oc.strip()
+        if ee.strip(): datos_nuevos[COL_EE] = ee.strip()
 
     ok, mensaje = append_row(datos_nuevos, categoria)
     if ok:
@@ -2798,7 +2225,6 @@ def _plantilla_excel() -> bytes:
         ejemplo.to_excel(writer, index=False, sheet_name="Embarques")
     return buffer.getvalue()
 
-
 def form_carga_masiva(datos: dict):
     st.subheader("Carga masiva desde Excel")
     st.download_button(
@@ -2857,8 +2283,6 @@ def form_carga_masiva(datos: dict):
     nuevo[COL_ETA] = normalizadas
 
     if COL_FECHA_SALIDA in nuevo.columns:
-        # Opcional: si viene ilegible, se deja en blanco en vez de bloquear la
-        # carga completa por una columna que no es obligatoria.
         nuevo[COL_FECHA_SALIDA] = [
             (parsear_fecha(v).isoformat() if parsear_fecha(v) else "") for v in nuevo[COL_FECHA_SALIDA]
         ]
@@ -2881,7 +2305,7 @@ def form_carga_masiva(datos: dict):
         return
 
     st.write(f"Vista previa de {len(nuevos)} embarque(s) que se cargarán en **{categoria}**:")
-    st.dataframe(nuevos, width="stretch", hide_index=True)
+    st.dataframe(nuevos, use_container_width=True, hide_index=True)
 
     if st.button(f"Confirmar carga de {len(nuevos)} embarque(s)", type="primary"):
         ok, mensaje = append_rows_bulk(nuevos, categoria)
@@ -2898,10 +2322,6 @@ def form_carga_masiva(datos: dict):
 # HISTÓRICO
 # ---------------------------------------------------------------------------
 def _preparar_historico(historico: pd.DataFrame) -> pd.DataFrame:
-    """Historico crudo -> DataFrame con fecha parseada, año y mes.
-    Nada se borra nunca de la pestaña 'Recibido (Mes)': cada recepción queda ahí
-    con su fecha, así que en noviembre se puede consultar julio del año pasado
-    igual que el mes en curso."""
     df = historico.copy()
     if df.empty:
         return df
@@ -2917,10 +2337,7 @@ def _preparar_historico(historico: pd.DataFrame) -> pd.DataFrame:
         df["Categoria_Origen"] = "Sin categoría"
     return df.sort_values("FechaParsed").reset_index(drop=True)
 
-
 def _grafico_anual(df_anio: pd.DataFrame, anio: int):
-    """Los 12 meses del año, incluidos los que van en cero: un mes vacío también
-    es información y desaparecerlo del gráfico distorsiona la lectura."""
     conteo = df_anio.groupby("Mes").size().to_dict()
     hoy = hoy_rd()
     etiquetas = [MESES_ES_CORTO[m] for m in range(1, 13)]
@@ -2941,8 +2358,7 @@ def _grafico_anual(df_anio: pd.DataFrame, anio: int):
         xaxis=dict(showgrid=False),
         yaxis=dict(showgrid=True, gridcolor="#F3F4F6", showticklabels=False),
     )
-    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False}, key=f"hist_anual_{anio}")
-
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=f"hist_anual_{anio}")
 
 def mostrar_historico(datos: dict, rol: str):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -2965,7 +2381,6 @@ def mostrar_historico(datos: dict, rol: str):
     descartados = len(crudo) - len(df)
     hoy = hoy_rd()
 
-    # -------------------- Indicadores del momento --------------------
     mes_ant = (hoy.year - 1, 12) if hoy.month == 1 else (hoy.year, hoy.month - 1)
     n_actual = int(((df["Anio"] == hoy.year) & (df["Mes"] == hoy.month)).sum())
     n_anterior = int(((df["Anio"] == mes_ant[0]) & (df["Mes"] == mes_ant[1])).sum())
@@ -2996,7 +2411,6 @@ def mostrar_historico(datos: dict, rol: str):
     st.write("")
     st.divider()
 
-    # -------------------- Año a consultar --------------------
     anios = sorted(df["Anio"].unique(), reverse=True)
     idx_anio = anios.index(hoy.year) if hoy.year in anios else 0
     c_anio, c_info = st.columns([1, 3])
@@ -3011,7 +2425,6 @@ def mostrar_historico(datos: dict, rol: str):
 
     _grafico_anual(df_anio, anio_sel)
 
-    # -------------------- Resumen mes por mes y por categoría --------------------
     resumen = pd.crosstab(df_anio["Mes"], df_anio["Categoria_Origen"])
     resumen = resumen.reindex(range(1, 13), fill_value=0)
     resumen.insert(len(resumen.columns), "Total", resumen.sum(axis=1))
@@ -3020,7 +2433,7 @@ def mostrar_historico(datos: dict, rol: str):
     fila_total = pd.DataFrame([resumen.sum(axis=0)], index=[f"Total {anio_sel}"])
     tabla_resumen = pd.concat([resumen, fila_total])
     st.markdown(f"**Resumen {anio_sel} por mes y categoría**")
-    st.dataframe(tabla_resumen, width="stretch")
+    st.dataframe(tabla_resumen, use_container_width=True)
 
     d1, d2 = st.columns(2)
     d1.download_button(
@@ -3040,7 +2453,6 @@ def mostrar_historico(datos: dict, rol: str):
 
     st.divider()
 
-    # -------------------- Detalle de un mes concreto --------------------
     st.markdown("**Detalle mes por mes**")
     meses_con_datos = sorted(df_anio["Mes"].unique(), reverse=True)
     if not meses_con_datos:
@@ -3071,7 +2483,7 @@ def mostrar_historico(datos: dict, rol: str):
     st.write("")
 
     tabla = _tabla_detalle(filtrado)
-    st.dataframe(tabla, width="stretch", hide_index=True)
+    st.dataframe(tabla, use_container_width=True, hide_index=True)
     st.download_button(
         f"Descargar {etiqueta_mes} en Excel",
         data=_df_a_excel(tabla, etiqueta_mes),
@@ -3107,9 +2519,7 @@ def mostrar_historico(datos: dict, rol: str):
             else:
                 st.error(mensaje)
 
-
 def _tabla_detalle(df: pd.DataFrame) -> pd.DataFrame:
-    """Vista legible del histórico, con la fecha ya formateada en español."""
     if df.empty:
         return pd.DataFrame(columns=["BL", "Descripción", "Modelo/Serie", "Cantidad",
                                      "Origen", "Fecha recibido", "Categoría", "Registrado por"])
@@ -3121,10 +2531,9 @@ def _tabla_detalle(df: pd.DataFrame) -> pd.DataFrame:
         "Origen": df.get(COL_PAIS, ""),
         "Fecha recibido": [f"{f.day:02d} {MESES_ES_CORTO[f.month]} {f.year}" for f in df["FechaParsed"]],
         "Categoría": df.get("Categoria_Origen", ""),
-        "Registrado por": df.get("Registrado_Por", ""),
+        "Registrado por": df.get("Registrado por", df.get("Registrado_Por", "")),
     })
     return salida.reset_index(drop=True)
-
 
 def _df_a_excel(df: pd.DataFrame, hoja: str) -> bytes:
     buffer = io.BytesIO()
@@ -3139,7 +2548,6 @@ def _df_a_excel(df: pd.DataFrame, hoja: str) -> bytes:
 # ---------------------------------------------------------------------------
 def herramientas(datos: dict):
     st.subheader("Herramientas")
-
     st.markdown("**Normalizar fechas de ETA**")
     st.caption(
         "Google Sheets interpreta las fechas según el locale del archivo, así que una celda escrita "
@@ -3200,7 +2608,7 @@ def herramientas(datos: dict):
                 "Se guardará como": (p["dm"] if usar_dm else p["md"]).isoformat(),
                 "Otra lectura posible": (p["md"] if usar_dm else p["dm"]).isoformat(),
             } for p in ambiguas]),
-            width="stretch", hide_index=True,
+            use_container_width=True, hide_index=True,
         )
     else:
         usar_dm = True
@@ -3212,7 +2620,7 @@ def herramientas(datos: dict):
                 "BL": p["bl"], "Categoría": p["categoria"], "Fila": p["fila"],
                 "Valor actual": p["crudo"], "Se guardará como": p["dm"].isoformat(),
             } for p in convertibles]),
-            width="stretch", hide_index=True,
+            use_container_width=True, hide_index=True,
         )
 
     cambios = [(p["categoria"], p["fila"], (p["dm"] if usar_dm else p["md"]).isoformat()) for p in ambiguas]
@@ -3256,9 +2664,6 @@ def main():
     secciones = (["Dashboard", "Agregar", "Editar", "Carga masiva", "Histórico", "Herramientas"]
                  if es_admin else ["Dashboard", "Histórico"])
 
-    # Navegación con estado propio en vez de st.tabs: además de no ejecutar el
-    # cuerpo de todas las secciones en cada rerun, permite saltar por código
-    # (el KPI de recibidas lleva al histórico; "Editar" se abre desde el dashboard).
     destino = st.session_state.pop("seccion", None)
     if destino in secciones:
         st.session_state["seccion_actual"] = destino
@@ -3269,21 +2674,19 @@ def main():
         st.markdown(f"**{st.session_state.get('usuario', 'Usuario')}**")
         st.caption("Administrador" if es_admin else "Solo visualización")
         st.write("")
-        if st.button("Actualizar datos", width="stretch"):
+        if st.button("Actualizar datos", use_container_width=True):
             invalidar_caches()
             st.rerun()
         st.caption(f"Última lectura: {datos['hora'].strftime('%H:%M:%S')}")
         st.caption(f"Sesión recordada {VIDA_SESION_MINUTOS} min al recargar")
         st.write("")
-        if st.button("Cerrar sesión", width="stretch"):
+        if st.button("Cerrar sesión", use_container_width=True):
             cerrar_sesion()
             st.rerun()
 
     if len(secciones) > 1:
-        # ancho="content": estirado a toda la pantalla, con dos o tres opciones,
-        # parecía una barra de color suelta arriba de la página en vez de un menú.
         st.markdown('<div class="nav-rotulo">Sección</div>', unsafe_allow_html=True)
-        seccion = selector_horizontal("Sección", secciones, key="seccion_actual", ancho="content")
+        seccion = selector_horizontal("Sección", secciones, key="seccion_actual", ancho="use_container_width")
     else:
         seccion = secciones[0]
 

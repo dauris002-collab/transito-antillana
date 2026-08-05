@@ -160,6 +160,25 @@ CATEGORIAS = ["Equipos", "Generadores", "Aéreos", "Carga Suelta", "Consolidados
 # a puerto" (🚢) para carga marítima, "Llegada al aeropuerto" (✈️) para Aéreos.
 CATEGORIA_AEREA = "Aéreos"
 
+
+def es_aereo(categoria) -> bool:
+    return str(categoria).strip() == CATEGORIA_AEREA
+
+
+def lugar_de(categoria) -> str:
+    """"aeropuerto" para carga aérea, "puerto" para todo lo demás. Solo cambia
+    textos que ve el usuario: las claves internas (ETAPAS_PUERTO, EST_PUERTO,
+    nombres de columnas del Sheet) siguen diciendo "puerto" para no romper los
+    datos ya guardados ni los filtros."""
+    return "aeropuerto" if es_aereo(categoria) else "puerto"
+
+
+def etiqueta_etapa(etapa: str, categoria="") -> str:
+    """Nombre corto de la etapa, con "aeropuerto" cuando el embarque es aéreo."""
+    if etapa == "Llegada a puerto" and es_aereo(categoria):
+        return "Llegada al aeropuerto"
+    return ETIQUETA_CORTA_ETAPA.get(etapa, etapa)
+
 # 3 contadores operativos:
 #   1) Salida -> Llegada a puerto (tránsito; se congela al confirmar la llegada)
 #   2) Solicitud de pago -> Pago realizado (se congela al pagar)
@@ -205,10 +224,10 @@ SLA_ETAPA_DEFECTO = {
 }
 SLA_RETRASO_DEFECTO = 7   # días de retraso sin actualizar el ETA antes de avisar
 TEXTO_ALERTA_ETAPA = {
-    "Llegada a puerto": "en puerto sin declarar",
+    "Llegada a puerto": "en {lugar} sin declarar",
     "Recepción y declaración": "declarado y sin solicitar el pago",
     "Solicitud de pago a finanzas": "esperando que Finanzas pague",
-    "Pago realizado": "pagado y sin retirar del puerto",
+    "Pago realizado": "pagado y sin retirar del {lugar}",
 }
 
 # Qué fecha manda para decidir a qué mes pertenece un embarque recibido:
@@ -399,6 +418,11 @@ html { -webkit-text-size-adjust: 100%; }
 .fila:last-child { border-bottom:none; }
 .c-bl { font-weight:700; color:var(--ant-texto); word-break:break-all; }
 .c-suave { color:var(--ant-suave); }
+/* OC y EE van debajo del BL y no como columnas propias: solo las usan Aéreos y
+   Carga Suelta, y dos columnas vacías en las demás categorías estropean la
+   tabla en pantalla ancha y la tarjeta en celular. */
+.c-ref { font-weight:500; font-size:0.78rem; color:var(--ant-suave);
+         margin-top:2px; letter-spacing:0.2px; }
 .badge { display:inline-block; padding:3px 11px; border-radius:999px;
          font-size:0.73rem; font-weight:700; color:#fff; white-space:nowrap; }
 .badge.linea { background:#fff !important; color:#4B5563; border:1px solid var(--ant-borde); }
@@ -1665,11 +1689,12 @@ def estado_embarque(eta_valor, hoy: date = None):
     return EST_TRANSITO, None
 
 
-def texto_estado(estado: str, dias) -> str:
+def texto_estado(estado: str, dias, categoria="") -> str:
     if estado == EST_RETRASADO and dias is not None:
         return f"Retrasado {texto_dias(dias)}"
     if estado == EST_PUERTO and dias is not None:
-        return f"En Puerto hace {texto_dias(dias)}"
+        donde = "Aeropuerto" if es_aereo(categoria) else "Puerto"
+        return f"En {donde} hace {texto_dias(dias)}"
     if estado == EST_PROXIMO and dias is not None:
         d = int(dias)
         if d == 0:
@@ -1759,8 +1784,9 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     df["DiasEnPuerto"] = [(hoy - p).days if p else None for p in puertos]
 
     dias_etapa, alertas, alerta_dias = [], [], []
-    for etapa, fechas, estado, dias_rel in zip(df["EtapaActual"], fechas_por_fila,
-                                               df["EstadoTexto"], df["DiasRel"]):
+    cats = df["Categoria"] if "Categoria" in df.columns else [""] * len(df)
+    for etapa, fechas, estado, dias_rel, cat in zip(df["EtapaActual"], fechas_por_fila,
+                                                    df["EstadoTexto"], df["DiasRel"], cats):
         d_etapa = None
         if etapa:
             fecha_etapa = fechas[INDICE_ETAPA[etapa]]
@@ -1771,7 +1797,7 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
         limite = sla.get(etapa)
         if etapa and etapa != ETAPAS_PUERTO[-1] and d_etapa is not None and limite is not None \
                 and d_etapa > limite:
-            base = TEXTO_ALERTA_ETAPA.get(etapa, "detenido")
+            base = TEXTO_ALERTA_ETAPA.get(etapa, "detenido").format(lugar=lugar_de(cat))
             texto = f"{base[0].upper()}{base[1:]} hace {texto_dias(d_etapa)}"
             dias_alerta = d_etapa
         elif not etapa and estado == EST_RETRASADO and dias_rel is not None \
@@ -2115,7 +2141,8 @@ def html_contadores(fila) -> str:
         piezas.append(f'<span class="contador">{texto_dias(transito)} {etiqueta}</span>')
     dias_puerto = fila.get("DiasEnPuerto")
     if es_numero(dias_puerto) and not fila.get("F_Almacen"):
-        piezas.append(f'<span class="contador">{texto_dias(dias_puerto)} en puerto</span>')
+        piezas.append(f'<span class="contador">{texto_dias(dias_puerto)} '
+                      f'en {lugar_de(fila.get("Categoria", ""))}</span>')
     solicitud = fila.get("DiasSolicitudPago")
     if es_numero(solicitud):
         pagado = bool(fila.get("F_Pago"))
@@ -2127,6 +2154,19 @@ def html_contadores(fila) -> str:
         clase = "contador" if espera <= sla["Pago realizado"] else "contador mal"
         piezas.append(f'<span class="{clase}">{texto_dias(espera)} pagado sin retirar</span>')
     return "".join(piezas)
+
+
+def _ref_oc_ee(fila) -> str:
+    """OC y EE son los números con los que el equipo realmente rastrea la carga
+    suelta y la aérea; no verlos en la lista obligaba a abrir cada embarque."""
+    piezas = []
+    for columna in (COL_OC, COL_EE):
+        valor = str(fila.get(columna, "") or "").strip()
+        # "nan" aparece cuando se concatenan categorías cuyas pestañas no tienen
+        # la columna; mostrarlo sería peor que no mostrar nada.
+        if valor and valor.upper() not in ("N/A", "NA", "NAN", "NONE", "-", "—"):
+            piezas.append(f"{columna} {esc(valor)}")
+    return f'<div class="c-ref">{" · ".join(piezas)}</div>' if piezas else ""
 
 
 def render_lista(df: pd.DataFrame):
@@ -2143,17 +2183,20 @@ def render_lista(df: pd.DataFrame):
     ]
     for _, r in df.iterrows():
         color = STATUS_COLOR.get(r["EstadoTexto"], "#6B7280")
-        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"])
+        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], r.get("Categoria", ""))
         etapa = str(r.get("EtapaActual", "")).strip()
         badge_etapa = ""
         if etapa:
-            badge_etapa = (f'<span class="badge linea">{ICONO_ETAPA[etapa]} '
-                           f'{esc(ETIQUETA_CORTA_ETAPA.get(etapa, etapa))}</span>')
+            icono = "✈️" if (etapa == ETAPAS_PUERTO[0] and es_aereo(r.get("Categoria", ""))) \
+                else ICONO_ETAPA[etapa]
+            badge_etapa = (f'<span class="badge linea">{icono} '
+                           f'{esc(etiqueta_etapa(etapa, r.get("Categoria", "")))}</span>')
         alerta = str(r.get("Alerta", "") or "").strip()
         badge_alerta = f'<span class="badge" style="background:{COLOR_ALERTA};">⚠ {esc(alerta)}</span>' if alerta else ""
         partes.append(
             f'<div class="fila" style="border-left-color:{color};">'
-            f'<div class="c-bl" data-l="BL">{esc(r[COL_BL]) if str(r[COL_BL]).strip() else "(sin BL)"}</div>'
+            f'<div class="c-bl" data-l="BL">{esc(r[COL_BL]) if str(r[COL_BL]).strip() else "(sin BL)"}'
+            f'{_ref_oc_ee(r)}</div>'
             f'<div class="c-suave" data-l="Descripción">{esc(r[COL_DESC])}</div>'
             f'<div class="c-suave" data-l="Modelo/Serie">{esc(r[COL_MODELO])}</div>'
             f'<div data-l="Cantidad">{esc(r[COL_CANT])}</div>'
@@ -2274,7 +2317,7 @@ def _ficha_embarque(fila):
         ("País de origen", fila[COL_PAIS]),
         ("Categoría", fila["Categoria"]),
         ("ETA", formato_eta(fila[COL_ETA])),
-        ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"])),
+        ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"], fila["Categoria"])),
     ]
     if fila["Categoria"] in CATEGORIAS_CON_OC_EE:
         if str(fila.get(COL_OC, "")).strip():
@@ -2618,7 +2661,7 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
     def _fila_confirmacion(r, ya_retrasado: bool):
         bl = str(r[COL_BL]).strip()
         categoria = r["Categoria"]
-        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"])
+        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], r.get("Categoria", ""))
         color = STATUS_COLOR.get(r["EstadoTexto"], "#6B7280")
         c1, c2, c3 = st.columns([3.2, 1.3, 1.5])
         c1.markdown(
@@ -2680,12 +2723,15 @@ def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=[COL_BL, "Descripción", "Estado"])
     salida = pd.DataFrame({
         "BL": df[COL_BL],
+        "OC": df[COL_OC] if COL_OC in df.columns else "",
+        "EE": df[COL_EE] if COL_EE in df.columns else "",
         "Descripción": df[COL_DESC],
         "Modelo/Serie": df[COL_MODELO],
         "Cantidad": df[COL_CANT],
         "País de origen": df[COL_PAIS],
         "ETA": [formato_eta(v) for v in df[COL_ETA]],
-        "Estado": [texto_estado(e, d) for e, d in zip(df["EstadoTexto"], df["DiasRel"])],
+        "Estado": [texto_estado(e, d, c) for e, d, c in
+                   zip(df["EstadoTexto"], df["DiasRel"], df["Categoria"])],
         "Etapa": df["EtapaActual"],
         "Categoría": df["Categoria"],
         "Salida": [formato_eta(f) if f else "" for f in df["F_Salida"]],

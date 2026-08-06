@@ -416,6 +416,7 @@ html { -webkit-text-size-adjust: 100%; }
            text-align:right; }
 .attarifa { display:block; font-weight:400; font-size:.68rem; color:#6B7280; }
 .atresto { color:#6B7280; font-style:italic; }
+.atfila.atok .atmonto { color:#4B5563; }
 @media (max-width: 640px) {
   .atraso { gap:12px 16px; padding:12px; }
   .atbloque { min-width:calc(50% - 8px); }
@@ -755,17 +756,24 @@ def costo_dia_fila(fila, cfg=None) -> float:
 
 
 def costo_demora_fila(fila, cfg=None):
-    """Lo gastado por ESE embarque por estar atrasado: días por encima del
-    umbral × su tarifa. Devuelve None si no aplica (no está en puerto, ya se
-    recibió, no pasa del umbral, o no hay tarifa)."""
+    """Lo que lleva causado ESE embarque, contado DESDE LA LLEGADA A PUERTO.
+
+    El contador no arranca en el día 8: el costo se causa desde que la carga
+    toca puerto, y el umbral de 7 días solo define a partir de cuándo lo
+    consideramos atrasado. Son dos cosas distintas y el dinero sigue al primero.
+
+    Devuelve None si no aplica: no ha llegado, ya se recibió en almacén, o no
+    hay tarifa."""
     cfg = cfg or costos_puerto()
     dias = fila.get("DiasEnPuerto")
-    if not es_numero(dias) or _lleno(fila.get("F_Almacen")) or dias <= cfg["umbral"]:
+    if not es_numero(dias) or _lleno(fila.get("F_Almacen")):
         return None
     tarifa = costo_dia_fila(fila, cfg)
     if tarifa <= 0:
         return None
-    return (int(dias) - cfg["umbral"]) * tarifa
+    libres = float(cfg["libres_por_cat"].get(fila.get("Categoria", ""), cfg["dias_libres"]))
+    cobrables = max(0.0, float(dias) - libres)
+    return cobrables * tarifa if cobrables else None
 
 
 def _lleno(v) -> bool:
@@ -784,25 +792,21 @@ def _lleno(v) -> bool:
 
 
 def resumen_atraso_puerto(df) -> dict:
-    """Tres cifras sobre lo que está en puerto ahora mismo, y su costo.
+    """Lo que está en puerto ahora mismo y lo que lleva costado.
 
-    Dos costos distintos a propósito, porque sirven para conversaciones distintas:
-      · `costo_puerto` = todos los días en puerto × tarifa. Es lo que el embarque
-        lleva causado desde que llegó. Sirve para saber cuánto hay parado.
-      · `costo_demora` = solo los días por encima del umbral × tarifa. Es lo
-        atribuible al atraso, o sea lo que se habría ahorrado despachando a
-        tiempo. Es el número que sirve para pedir algo.
-    Presentar solo el primero infla; solo el segundo subestima."""
+    El costo cuenta desde la llegada a puerto, no desde que se pasa del plazo.
+    El umbral de 7 días solo separa lo atrasado de lo que va en tiempo; no mueve
+    el contador de dinero."""
     cfg = costos_puerto()
     vacio = {"n_puerto": 0, "n_atrasados": 0, "n_pendiente_pago": 0,
-             "dias_excedidos": 0, "costo_puerto": 0.0, "costo_demora": 0.0,
+             "dias_excedidos": 0, "costo_total": 0.0, "costo_atrasados": 0.0,
              "costo_promedio": 0.0, "umbral": cfg["umbral"], "moneda": cfg["moneda"],
              "hay_tarifa": False, "detalle": []}
     if df is None or df.empty or "DiasEnPuerto" not in df.columns:
         return vacio
 
     n_puerto = n_atr = n_pago = dias_exc = 0
-    costo_p = costo_d = 0.0
+    costo_total = costo_atr = 0.0
     detalle = []
     for _, fila in df.iterrows():
         dias = fila.get("DiasEnPuerto")
@@ -817,30 +821,32 @@ def resumen_atraso_puerto(df) -> dict:
             n_pago += 1
         cobrables = max(0.0, float(dias) - libres)
         costo_fila = cobrables * tarifa
-        costo_p += costo_fila
-        if dias > cfg["umbral"]:
+        costo_total += costo_fila
+        atrasado = dias > cfg["umbral"]
+        if atrasado:
             n_atr += 1
-            exceso = int(dias) - cfg["umbral"]
-            dias_exc += exceso
-            costo_d += exceso * tarifa
+            dias_exc += int(dias) - cfg["umbral"]
+            costo_atr += costo_fila
+        if costo_fila or atrasado:
             detalle.append({
                 "bl": str(fila.get(COL_BL, "") or ""),
                 "oc": str(fila.get(COL_OC, "") or "").strip(),
                 "cat": cat,
                 "dias": int(dias),
-                "exceso": exceso,
+                "exceso": max(0, int(dias) - cfg["umbral"]),
+                "atrasado": atrasado,
                 "costo": costo_fila,
-                "costo_demora": exceso * tarifa,
                 "tarifa": tarifa,
             })
 
-    detalle.sort(key=lambda d: d["dias"], reverse=True)
+    detalle.sort(key=lambda d: d["costo"], reverse=True)
     return {
         "n_puerto": n_puerto, "n_atrasados": n_atr, "n_pendiente_pago": n_pago,
-        "dias_excedidos": dias_exc, "costo_puerto": costo_p, "costo_demora": costo_d,
-        "costo_promedio": (costo_d / n_atr) if (n_atr and costo_d) else 0.0,
+        "dias_excedidos": dias_exc, "costo_total": costo_total,
+        "costo_atrasados": costo_atr,
+        "costo_promedio": (costo_total / n_puerto) if (n_puerto and costo_total) else 0.0,
         "umbral": cfg["umbral"], "moneda": cfg["moneda"],
-        "hay_tarifa": costo_p > 0, "detalle": detalle,
+        "hay_tarifa": costo_total > 0, "detalle": detalle,
     }
 
 
@@ -866,12 +872,12 @@ def html_atraso_puerto(df) -> str:
     piezas.append(_atbloque(str(r["n_atrasados"]),
                             f'atrasados (+{r["umbral"]} días en puerto)'))
     if r["hay_tarifa"]:
-        piezas.append(_atbloque(_monto(r["costo_puerto"], r["moneda"]),
-                                "causado en puerto desde la llegada"))
+        piezas.append(_atbloque(_monto(r["costo_total"], r["moneda"]),
+                                "acumulado desde la llegada a puerto"))
         piezas.append(_atbloque(
-            _monto(r["costo_demora"], r["moneda"]),
-            f'atribuible al atraso · {_monto(r["costo_promedio"], r["moneda"])} '
-            f'promedio por embarque atrasado'))
+            _monto(r["costo_atrasados"], r["moneda"]),
+            f'de eso, en los atrasados · {_monto(r["costo_promedio"], r["moneda"])} '
+            f'promedio por embarque en puerto'))
     else:
         piezas.append(_atbloque("—", "costo apagado: tarifa en 0 en Secrets", True))
 
@@ -881,18 +887,20 @@ def html_atraso_puerto(df) -> str:
             ref = esc(d["bl"]) or "&mdash;"
             oc = f' <span class="atoc">OC {esc(d["oc"])}</span>' if d["oc"] else \
                  ' <span class="atoc atsin">sin OC</span>'
-            monto = (f'<span class="atmonto">{_monto(d["costo_demora"], r["moneda"])}'
+            monto = (f'<span class="atmonto">{_monto(d["costo"], r["moneda"])}'
                      f'<span class="attarifa">{_monto(d.get("tarifa", 0), r["moneda"])}/día</span>'
                      f'</span>' if r["hay_tarifa"] else "")
+            exceso = (f' · <b>+{d["exceso"]} sobre el plazo</b>' if d["atrasado"] else "")
             filas.append(
-                f'<div class="atfila"><span class="atbl">{ref}</span>{oc}'
-                f'<span class="atdias">{d["dias"]} días · +{d["exceso"]} sobre el plazo</span>'
+                f'<div class="atfila{"" if d["atrasado"] else " atok"}">'
+                f'<span class="atbl">{ref}</span>{oc}'
+                f'<span class="atdias">{d["dias"]} días en puerto{exceso}</span>'
                 f'{monto}</div>'
             )
         resto = len(r["detalle"]) - 10
         if resto > 0:
             filas.append(f'<div class="atfila atresto">y {resto} más</div>')
-        piezas.append('<div class="atdetalle"><div class="atttl">Detalle del atraso '
+        piezas.append('<div class="atdetalle"><div class="atttl">Costo acumulado '
                       'por embarque</div>' + "".join(filas) + "</div>")
     piezas.append("</div>")
     return "".join(piezas)
@@ -2519,14 +2527,17 @@ def html_contadores(fila) -> str:
         etiqueta = "Del pago al retiro" if retirado else "Pagado sin retirar"
         clase = _clase_contador(espera, sla["Pago realizado"], cerrado=retirado)
         piezas.append(_chip(clase, etiqueta, espera))
-    # Lo que lleva gastado ESTE embarque por estar atrasado. Va en rojo siempre:
-    # si hay una cifra aquí es porque ya se pasó del plazo, no hay versión buena.
-    gasto = costo_demora_fila(fila)
+    # Lo que lleva causado ESTE embarque desde que llegó a puerto. En rojo solo
+    # cuando ya se pasó del plazo: antes de eso el gasto es normal, no una alarma.
+    cfg_costo = costos_puerto()
+    gasto = costo_demora_fila(fila, cfg_costo)
     if gasto:
-        cfg = costos_puerto()
+        dias_p = fila.get("DiasEnPuerto")
+        tarde = es_numero(dias_p) and dias_p > cfg_costo["umbral"]
+        clase = "contador mal" if tarde else "contador"
         piezas.append(
-            f'<span class="contador mal">⚠ Demora acumulada: '
-            f'{_monto(gasto, cfg["moneda"])}</span>'
+            f'<span class="{clase}">{marca(clase)}Costo en puerto: '
+            f'{_monto(gasto, cfg_costo["moneda"])}</span>'
         )
     return "".join(piezas)
 
@@ -2732,9 +2743,9 @@ def _ficha_embarque(fila):
         _cfg_costo = costos_puerto()
         _gasto = costo_demora_fila(fila, _cfg_costo)
         if _gasto:
-            campos.append(("Tarifa de demora",
+            campos.append(("Tarifa en puerto",
                            f'{_monto(costo_dia_fila(fila, _cfg_costo), _cfg_costo["moneda"])} por día'))
-            campos.append(("Demora acumulada", _monto(_gasto, _cfg_costo["moneda"])))
+            campos.append(("Costo acumulado en puerto", _monto(_gasto, _cfg_costo["moneda"])))
     if str(fila.get("Alerta", "") or "").strip():
         campos.append(("⚠ Atención", fila["Alerta"]))
 
@@ -3141,8 +3152,8 @@ def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
             "Sí" if (es_numero(d) and d > sla_etapas()["Solicitud de pago a finanzas"]) else "No"
             for d in df["DiasSolicitudPago"]],
         "Días de pago a retiro": df["DiasPagoDespacho"],
-        "Tarifa demora/día": [costo_dia_fila(f) for _, f in df.iterrows()],
-        "Demora acumulada": [costo_demora_fila(f) for _, f in df.iterrows()],
+        "Tarifa en puerto/día": [costo_dia_fila(f) for _, f in df.iterrows()],
+        "Costo acumulado en puerto": [costo_demora_fila(f) for _, f in df.iterrows()],
         "Alerta operativa": df["Alerta"],
     })
     for extra in columnas_extra(df):

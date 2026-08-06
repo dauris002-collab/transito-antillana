@@ -922,7 +922,7 @@ def html_detalle_costo(detalle: list, r: dict, tope: int = 12) -> str:
                      f'<span class="attarifa">{_monto(d["tarifa"], r["moneda"])}/día</span>'
                      f'</span>')
         exceso = (f' · <b>+{d["exceso"]} sobre el plazo</b>' if d["atrasado"] else "")
-        pago = ' <span class="atpago">esperando pago</span>' if d["pendiente_pago"] else ""
+        pago = ' <span class="atpago">Esperando pago de Finanzas</span>' if d["pendiente_pago"] else ""
         filas.append(
             f'<div class="atfila{"" if d["atrasado"] else " atok"}">'
             f'<span class="atbl">{ref}</span>{oc}'
@@ -2564,7 +2564,7 @@ def html_contadores(fila) -> str:
     solicitud = fila.get("DiasSolicitudPago")
     if es_numero(solicitud):
         pagado = bool(fila.get("F_Pago"))
-        etiqueta = "Duración del pago" if pagado else "Esperando pago"
+        etiqueta = "Duración del pago" if pagado else "Esperando pago de Finanzas"
         clase = _clase_contador(solicitud, sla["Solicitud de pago a finanzas"], cerrado=pagado)
         piezas.append(_chip(clase, etiqueta, solicitud))
     espera = fila.get("DiasPagoDespacho")
@@ -2780,7 +2780,7 @@ def _ficha_embarque(fila):
             campos.append((f"Duración en {lugar}" if retirado else f"En {lugar}",
                            texto_dias(fila["DiasEnPuerto"])))
         if es_numero(fila.get("DiasSolicitudPago")):
-            etiqueta = "Duración del pago" if fila.get("F_Pago") else "Esperando pago"
+            etiqueta = "Duración del pago" if fila.get("F_Pago") else "Esperando pago de Finanzas"
             campos.append((etiqueta, texto_dias(fila["DiasSolicitudPago"])))
         if es_numero(fila.get("DiasPagoDespacho")):
             campos.append(("Del pago al retiro" if retirado else "Pagado sin retirar",

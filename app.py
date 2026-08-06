@@ -254,7 +254,7 @@ TEXTO_ALERTA_ETAPA = {
 #   "llegada" -> fecha real de llegada a puerto (respaldo: ETA)
 #   "almacen" -> fecha de entrada a almacén
 # Cambia esta sola línea si el criterio del negocio es el otro.
-BASE_FECHA_RECIBIDO = "llegada"
+BASE_FECHA_RECIBIDO = "almacen"
 
 VISTA_EN_PROCESO_PUERTO = "Puerto/Aeropuerto · Estatus"
 RECIBIDO_SHEET = "Recibido (Mes)"

@@ -236,12 +236,12 @@ SLA_RETRASO_DEFECTO = 7   # días de retraso sin actualizar el ETA antes de avis
 # embarque está atrasado (criterio interno), y DIAS_LIBRES es a partir de cuándo
 # la naviera o la terminal EMPIEZAN A COBRAR (criterio del proveedor, viene en el
 # contrato). El conteo de atrasados usa el primero; el costo usa el segundo.
-UMBRAL_ATRASO_PUERTO_DEFECTO = 5   # antes 7 — alerta a partir de 5 días en puerto/aeropuerto
+UMBRAL_ATRASO_PUERTO_DEFECTO = 5   # alerta a partir de 5 días en puerto/aeropuerto
 DIAS_LIBRES_DEFECTO = 0   # el costo corre desde la llegada a puerto, no desde el día 8
-# RD$2,000 por día es la tarifa que definió Dauris. Es una tarifa PLANA de
-# referencia, no la factura: no distingue naviera de terminal, no escalona, y no
-# sabe cuántos contenedores trae un embarque. En 0 el bloque de dinero se apaga.
-COSTO_DIA_DEFECTO = 2000.0
+# Sin tarifa de respaldo: el costo de demora sale ÚNICA y EXCLUSIVAMENTE de
+# Costo_Por_Dia en el Sheet, embarque por embarque — a pedido explícito, para
+# no promediar una tarifa que en realidad varía por naviera, terminal y
+# cantidad de contenedores. Sin esa celda llena, ese embarque no suma dinero.
 MONEDA_DEFECTO = "RD$"
 TEXTO_ALERTA_ETAPA = {
     "Llegada a puerto": "en {lugar} sin declarar",
@@ -391,32 +391,18 @@ html { -webkit-text-size-adjust: 100%; }
   .pnom { font-size:.74rem; }
 }
 
-/* ---------- Resumen ejecutivo de puerto (tarjetas, reemplaza el bloque .atraso) ----------
-   Antes era una sola caja ámbar/roja con todo adentro (total, alerta y dinero
-   mezclados): visualmente todo "gritaba urgente" aunque la mayoría del total
-   fuera normal. Ahora cada cifra es su propia tarjeta y el color de alerta
-   (ámbar/rojo) se reserva solo para lo que de verdad pasó el umbral; el total
-   en puerto y los pendientes de pago quedan en el azul neutro del resto del
-   tablero. Las filas de detalle por embarque (.atfila/.atbl/.atoc/...) se
-   mantienen igual, solo cambia el contenedor que las envuelve. */
-.ejec-fila { display:flex; flex-wrap:wrap; gap:10px; margin:6px 0 12px; }
-.ejec-card { flex:1 1 150px; background:#fff; border:1px solid var(--ant-borde);
-             border-top:3px solid var(--ec, #0C447C); border-radius:10px;
-             padding:12px 14px; box-shadow:0 1px 4px rgba(17,24,39,0.06); }
-.ejec-card.alerta { background:#FFFBEB; border-color:#FDE68A; }
-.ejec-card.alerta.grave { background:#FEF2F2; border-color:#FCA5A5; }
-.ejec-num { font-size:1.6rem; font-weight:800; color:var(--ec, #111827); line-height:1.1; }
-.ejec-lbl { font-size:0.76rem; color:#6B7280; margin-top:3px; }
-.ejec-sub { font-size:0.68rem; color:#9CA3AF; margin-top:2px; }
-.ejec-detalle { border:1px solid var(--ant-borde); border-radius:10px; overflow:hidden; margin-top:4px; }
+/* ---------- Resumen ejecutivo de puerto (filtro clicable, no tarjetas fijas) ----------
+   El contador vive en el propio botón del filtro (Todos · N, Atrasados · N,
+   Pendientes de pago · N, Costo · RD$X) y clicarlo filtra el detalle de abajo:
+   el número no es solo para mirar, también sirve para llegar al embarque.
+   El color de cada botón es fijo (rojo atrasados, ámbar pendientes, azul
+   costo) y se invierte (relleno en vez de solo borde) cuando está activo. */
+.ejec-detalle { border:1px solid var(--ant-borde); border-radius:10px; overflow:hidden; margin-top:8px; }
 .ejec-detalle .atttl { padding:8px 14px; background:#F9FAFB; border-bottom:1px solid var(--ant-borde);
                         font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em;
                         color:#6B7280; font-weight:700; margin-bottom:0; }
 .ejec-detalle .atfila { padding:7px 14px; }
 @media (max-width: 640px) {
-  .ejec-fila { gap:8px; }
-  .ejec-card { flex:1 1 calc(50% - 8px); padding:10px 12px; }
-  .ejec-num { font-size:1.3rem; }
   .ejec-detalle .atmonto { margin-left:0; }
 }
 
@@ -700,23 +686,20 @@ def texto_dias(n) -> str:
 
 @st.cache_resource
 def costos_puerto() -> dict:
-    """Parámetros del costo de atraso en puerto. Se ajustan desde Secrets:
+    """Parámetros del atraso en puerto que NO son la tarifa. Se ajustan desde
+    Secrets:
 
         [costo_puerto]
         umbral = 5
-        moneda = "US$"
+        moneda = "RD$"
         dias_libres = 5
-        costo_dia = 0
-
-        [costo_puerto.costo_dia_por_categoria]
-        Equipos = 150
-        "Carga Suelta" = 60
 
         [costo_puerto.dias_libres_por_categoria]
         Aéreos = 2
 
-    Mientras costo_dia sea 0 en todo, la app cuenta los atrasados pero no
-    muestra ninguna cifra de dinero."""
+    La tarifa diaria no vive aquí: sale exclusivamente de Costo_Por_Dia en el
+    Sheet (ver costo_dia_fila). No hay tarifa global ni por categoría de
+    respaldo — si esa celda está vacía, ese embarque no suma dinero."""
     cfg = {}
     try:
         cfg = st.secrets.get("costo_puerto", None) or {}
@@ -733,8 +716,6 @@ def costos_puerto() -> dict:
         "umbral": int(_num(cfg.get("umbral"), UMBRAL_ATRASO_PUERTO_DEFECTO)),
         "moneda": str(cfg.get("moneda") or MONEDA_DEFECTO),
         "dias_libres": _num(cfg.get("dias_libres"), DIAS_LIBRES_DEFECTO),
-        "costo_dia": _num(cfg.get("costo_dia"), COSTO_DIA_DEFECTO),
-        "costo_por_cat": dict(cfg.get("costo_dia_por_categoria", {}) or {}),
         "libres_por_cat": dict(cfg.get("dias_libres_por_categoria", {}) or {}),
     }
 
@@ -759,13 +740,13 @@ def tarifa_a_numero(valor):
 
 
 def costo_dia_fila(fila, cfg=None) -> float:
-    """Tarifa diaria de UNA fila. Prioridad: lo que diga el Sheet en
-    Costo_Por_Dia, luego la tarifa por categoría de Secrets, luego la global."""
-    cfg = cfg or costos_puerto()
+    """Tarifa diaria de UNA fila: sale EXCLUSIVAMENTE de Costo_Por_Dia en el
+    Sheet. Sin respaldo global ni por categoría — si esa celda está vacía o en
+    0, el embarque no tiene tarifa y no suma costo, en vez de heredar un
+    promedio que nadie fijó para ese embarque en particular. `cfg` se acepta
+    por compatibilidad con las llamadas existentes, aunque ya no se usa aquí."""
     propio = tarifa_a_numero(fila.get(COL_COSTO_DIA))
-    if propio is not None and propio > 0:
-        return float(propio)
-    return float(cfg["costo_por_cat"].get(fila.get("Categoria", ""), cfg["costo_dia"]))
+    return float(propio) if (propio is not None and propio > 0) else 0.0
 
 
 def costo_demora_fila(fila, cfg=None):
@@ -830,7 +811,8 @@ def resumen_atraso_puerto(df) -> dict:
         libres = float(cfg["libres_por_cat"].get(cat, cfg["dias_libres"]))
         tarifa = costo_dia_fila(fila, cfg)
         n_puerto += 1
-        if _lleno(fila.get("F_Solicitud")) and not _lleno(fila.get("F_Pago")):
+        pendiente_pago = _lleno(fila.get("F_Solicitud")) and not _lleno(fila.get("F_Pago"))
+        if pendiente_pago:
             n_pago += 1
         cobrables = max(0.0, float(dias) - libres)
         costo_fila = cobrables * tarifa
@@ -840,7 +822,10 @@ def resumen_atraso_puerto(df) -> dict:
             n_atr += 1
             dias_exc += int(dias) - cfg["umbral"]
             costo_atr += costo_fila
-        if costo_fila or atrasado:
+        # El detalle guarda todo lo que tiene algo que contar: costo, atraso o
+        # pago pendiente. Un embarque sin ninguna de las tres no aporta nada al
+        # filtro de abajo, así que no ocupa espacio en la lista.
+        if costo_fila or atrasado or pendiente_pago:
             detalle.append({
                 "bl": str(fila.get(COL_BL, "") or ""),
                 "oc": str(fila.get(COL_OC, "") or "").strip(),
@@ -848,6 +833,7 @@ def resumen_atraso_puerto(df) -> dict:
                 "dias": int(dias),
                 "exceso": max(0, int(dias) - cfg["umbral"]),
                 "atrasado": atrasado,
+                "pendiente_pago": pendiente_pago,
                 "costo": costo_fila,
                 "tarifa": tarifa,
             })
@@ -867,74 +853,90 @@ def _monto(valor: float, moneda: str) -> str:
     return f"{moneda}{valor:,.0f}"
 
 
-def _tarjeta_ejecutiva(numero: str, etiqueta: str, color: str, sub: str = "",
-                       alerta: bool = False, grave: bool = False) -> str:
-    """Una tarjeta del resumen ejecutivo de puerto. `alerta` la pone en fondo
-    ámbar (algo que vigilar); `alerta` + `grave` la pone en rojo (ya hay al
-    menos un embarque pasado del umbral). Sin ninguna de las dos, la tarjeta es
-    neutra: un conteo no es, por sí solo, un problema."""
-    clases = "ejec-card" + (" alerta" if alerta else "") + (" grave" if (alerta and grave) else "")
-    sub_html = f'<div class="ejec-sub">{esc(sub)}</div>' if sub else ""
-    return (f'<div class="{clases}" style="--ec:{color}">'
-            f'<div class="ejec-num">{numero}</div>'
-            f'<div class="ejec-lbl">{esc(etiqueta)}</div>{sub_html}</div>')
+def html_atraso_puerto(df, contexto: str = "") -> None:
+    """Filtro clicable de lo que está parado en puerto — reemplaza las
+    tarjetas fijas: el contador vive en el propio botón (Todos · N,
+    Atrasados · N, Pendientes de pago · N, Costo · RD$X) y clicarlo filtra el
+    detalle de abajo, así el número también sirve para llegar al embarque, no
+    solo para mirarlo. Costo sale vacío ("—") mientras ninguna fila tenga
+    Costo_Por_Dia lleno. Si no hay nada en puerto no dibuja nada: un cero
+    permanente se vuelve invisible en una semana.
 
-
-def html_atraso_puerto(df) -> str:
-    """Resumen ejecutivo de lo que está parado en puerto: total, alerta por
-    tiempo (más de `umbral` días) y costo. Tarjetas separadas en vez de un
-    único bloque rojo: el total y los pendientes de pago quedan neutros, y el
-    color de alerta se reserva para lo que de verdad pasó el umbral. Si no hay
-    nada en puerto no dibuja nada: un cero permanente se vuelve invisible en
-    una semana."""
+    `contexto` distingue el filtro cuando el mismo bloque aparece en más de
+    una vista (Todos, una categoría puntual, la pestaña dedicada de puerto):
+    sin esto, el estado de un filtro se pisaría con el de otro."""
     r = resumen_atraso_puerto(df)
     if not r["n_puerto"]:
-        return ""
-    grave = r["n_atrasados"] > 0
+        return
 
-    piezas = ['<div class="ejec-fila">']
-    piezas.append(_tarjeta_ejecutiva(str(r["n_puerto"]), "En puerto/aeropuerto", "#0C447C"))
-    piezas.append(_tarjeta_ejecutiva(
-        str(r["n_atrasados"]), f'Más de {r["umbral"]} días', "#B45309",
-        sub="requieren seguimiento", alerta=True, grave=grave,
-    ))
-    piezas.append(_tarjeta_ejecutiva(str(r["n_pendiente_pago"]), "Pendientes de pago", "#92400E"))
-    if r["hay_tarifa"]:
-        piezas.append(_tarjeta_ejecutiva(
-            _monto(r["costo_total"], r["moneda"]), "Costo acumulado en puerto", "#0C447C",
-            sub=f'{_monto(r["costo_promedio"], r["moneda"])} promedio/embarque',
-        ))
-        piezas.append(_tarjeta_ejecutiva(
-            _monto(r["costo_atrasados"], r["moneda"]), f'Costo en alerta (+{r["umbral"]}d)', "#991B1B",
-            alerta=True, grave=grave,
-        ))
-    else:
-        piezas.append(_tarjeta_ejecutiva("—", "Costo por día", "#6B7280",
-                                         sub="Costo_Por_Dia vacío o tarifa en 0 en Secrets"))
-    piezas.append("</div>")
+    clave_estado = f"filtro_puerto_{_slug_css(contexto)}"
+    actual = st.session_state.get(clave_estado, "todos")
 
-    if r["detalle"]:
-        filas = []
-        for d in r["detalle"][:10]:
-            ref = esc(d["bl"]) or "&mdash;"
-            oc = f' <span class="atoc">OC {esc(d["oc"])}</span>' if d["oc"] else \
-                 ' <span class="atoc atsin">sin OC</span>'
+    opciones = [
+        ("todos", f'Todos · {r["n_puerto"]}', "#0C447C"),
+        ("atrasados", f'Atrasados · {r["n_atrasados"]}', "#D7263D"),
+        ("pago", f'Pendientes de pago · {r["n_pendiente_pago"]}', "#B45309"),
+        ("costo", "Costo · " + (_monto(r["costo_total"], r["moneda"]) if r["hay_tarifa"] else "—"), "#2E86DE"),
+    ]
+
+    slug_ctx = _slug_css(contexto)
+    estilos = "".join(
+        f'.st-key-fpuerto_{slug_ctx}_{op} button {{'
+        f'border:1.5px solid {color} !important; border-radius:999px !important;'
+        f'background:{color if actual == op else "#fff"} !important;'
+        f'font-weight:700 !important;}} '
+        f'.st-key-fpuerto_{slug_ctx}_{op} button p {{'
+        f'color:{"#fff" if actual == op else color} !important;}} '
+        for op, _, color in opciones
+    )
+    st.markdown(f"<style>{estilos}</style>", unsafe_allow_html=True)
+
+    cols = st.columns(len(opciones))
+    for col, (op, etiqueta, _color) in zip(cols, opciones):
+        with col:
+            with st.container(key=f"fpuerto_{slug_ctx}_{op}"):
+                if st.button(etiqueta, key=f"btn_{clave_estado}_{op}", width="stretch"):
+                    st.session_state[clave_estado] = op
+                    rerun_fragmento()
+
+    detalle = r["detalle"]
+    if actual == "atrasados":
+        detalle = [d for d in detalle if d["atrasado"]]
+    elif actual == "pago":
+        detalle = [d for d in detalle if d.get("pendiente_pago")]
+    elif actual == "costo":
+        detalle = [d for d in detalle if d["costo"] > 0]
+
+    if not detalle:
+        st.caption("No hay embarques que coincidan con este filtro.")
+        return
+
+    filas = []
+    for d in detalle[:10]:
+        ref = esc(d["bl"]) or "&mdash;"
+        oc = (f' <span class="atoc">OC {esc(d["oc"])}</span>' if d["oc"]
+              else ' <span class="atoc atsin">sin OC</span>')
+        if d["costo"] > 0:
             monto = (f'<span class="atmonto">{_monto(d["costo"], r["moneda"])}'
-                     f'<span class="attarifa">{_monto(d.get("tarifa", 0), r["moneda"])}/día</span>'
-                     f'</span>' if r["hay_tarifa"] else "")
-            exceso = (f' · <b>+{d["exceso"]} sobre el plazo</b>' if d["atrasado"] else "")
-            filas.append(
-                f'<div class="atfila{"" if d["atrasado"] else " atok"}">'
-                f'<span class="atbl">{ref}</span>{oc}'
-                f'<span class="atdias">{d["dias"]} días en puerto{exceso}</span>'
-                f'{monto}</div>'
-            )
-        resto = len(r["detalle"]) - 10
-        if resto > 0:
-            filas.append(f'<div class="atfila atresto">y {resto} más</div>')
-        piezas.append('<div class="ejec-detalle"><div class="atttl">Costo acumulado '
-                      'por embarque</div>' + "".join(filas) + "</div>")
-    return "".join(piezas)
+                     f'<span class="attarifa">{_monto(d.get("tarifa", 0), r["moneda"])}/día</span></span>')
+        else:
+            monto = '<span class="atmonto" style="color:#9CA3AF;font-weight:600;">Costo —</span>'
+        exceso = f' · <b>+{d["exceso"]} sobre el plazo</b>' if d["atrasado"] else ""
+        filas.append(
+            f'<div class="atfila{"" if d["atrasado"] else " atok"}">'
+            f'<span class="atbl">{ref}</span>{oc}'
+            f'<span class="atdias">{d["dias"]} días en puerto{exceso}</span>'
+            f'{monto}</div>'
+        )
+    resto = len(detalle) - 10
+    if resto > 0:
+        filas.append(f'<div class="atfila atresto">y {resto} más</div>')
+
+    st.markdown(
+        '<div class="ejec-detalle"><div class="atttl" style="text-align:center;">'
+        'Costo acumulado por embarque</div>' + "".join(filas) + "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_resource
@@ -3323,7 +3325,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     if not en_proceso.empty:
         st.markdown("**En proceso en puerto**")
         st.markdown(html_chips(en_proceso["EtapaActual"].value_counts().to_dict()), unsafe_allow_html=True)
-        st.markdown(html_atraso_puerto(en_proceso), unsafe_allow_html=True)
+        html_atraso_puerto(en_proceso, contexto=tab_key)
         _panel_en_proceso(en_proceso, rol, contexto=tab_key)
 
     st.divider()
@@ -3508,7 +3510,7 @@ def mostrar_dashboard(datos: dict):
     if seleccion == VISTA_EN_PROCESO_PUERTO:
         st.markdown(html_chips(en_proceso_df["EtapaActual"].value_counts().to_dict()),
                     unsafe_allow_html=True)
-        st.markdown(html_atraso_puerto(en_proceso_df), unsafe_allow_html=True)
+        html_atraso_puerto(en_proceso_df, contexto=VISTA_EN_PROCESO_PUERTO)
         _panel_alertas(en_proceso_df)
         st.divider()
         _panel_en_proceso(en_proceso_df, rol, contexto=VISTA_EN_PROCESO_PUERTO)

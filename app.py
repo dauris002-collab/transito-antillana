@@ -869,43 +869,38 @@ def _monto(valor: float, moneda: str) -> str:
     return f"{moneda}{valor:,.0f}"
 
 
-def _atbloque(numero: str, etiqueta: str, apagado: bool = False) -> str:
-    return (f'<div class="atbloque"><div class="atnum{" atapagado" if apagado else ""}">'
-            f'{numero}</div><div class="atlbl">{etiqueta}</div></div>')
+# Claves internas del filtro. La etiqueta visible se arma aparte con su contador.
+FILTRO_TODOS, FILTRO_ATRASADOS, FILTRO_PAGO, FILTRO_COSTO = "todos", "atrasados", "pago", "costo"
+FILTROS_COSTO = [FILTRO_TODOS, FILTRO_ATRASADOS, FILTRO_PAGO, FILTRO_COSTO]
 
 
-FILTROS_COSTO = ["Todos", "Atrasados", "Pendientes de pago", "Sin tarifa"]
-
-
-def html_tarjetas_puerto(r: dict) -> str:
-    """Las tarjetas de arriba. Separadas del detalle porque el detalle ahora se
-    filtra con un control de Streamlit y no puede vivir dentro de un solo
-    bloque de HTML."""
-    grave = r["n_atrasados"] > 0
-    piezas = [f'<div class="atraso{" grave" if grave else ""}">']
-    piezas.append(_atbloque(str(r["n_puerto"]), "en puerto / aeropuerto"))
-    piezas.append(_atbloque(str(r["n_atrasados"]),
-                            f'más de {r["umbral"]} días · requieren seguimiento'))
-    piezas.append(_atbloque(str(r["n_pendiente_pago"]), "pendientes de pago"))
-    if r["hay_tarifa"]:
-        piezas.append(_atbloque(_monto(r["costo_total"], r["moneda"]),
-                                "acumulado en puerto desde la llegada"))
-        piezas.append(_atbloque(_monto(r["costo_atrasados"], r["moneda"]),
-                                f'de eso, en los atrasados (+{r["umbral"]}d)'))
-    if r["n_sin_tarifa"]:
-        piezas.append(_atbloque(str(r["n_sin_tarifa"]),
-                                "sin Costo_Por_Dia en el Sheet", apagado=True))
-    piezas.append("</div>")
-    return "".join(piezas)
+def etiqueta_filtro_costo(clave: str, r: dict) -> str:
+    """Cada opción lleva su propio contador, así que las tarjetas fijas de arriba
+    sobran: el número está donde se toca. El color solo aparece cuando el número
+    es distinto de cero, porque un rojo permanente en un contador en 0 deja de
+    leerse a las dos semanas."""
+    if clave == FILTRO_TODOS:
+        return f"Todos · {r['n_puerto']}"
+    if clave == FILTRO_ATRASADOS:
+        n = r["n_atrasados"]
+        return f":red[**Atrasados · {n}**]" if n else "Atrasados · 0"
+    if clave == FILTRO_PAGO:
+        n = r["n_pendiente_pago"]
+        return f":orange[**Pendientes de pago · {n}**]" if n else "Pendientes de pago · 0"
+    # Sin tarifas cargadas no hay monto que mostrar: la opción va sin número, en
+    # vez de anunciar un RD$0 que se leería como "no cuesta nada".
+    if not r["hay_tarifa"]:
+        return "Costo"
+    return f":red[**Costo · {_monto(r['costo_total'], r['moneda'])}**]"
 
 
 def _filtrar_detalle(detalle: list, filtro: str) -> list:
-    if filtro == "Atrasados":
+    if filtro == FILTRO_ATRASADOS:
         return [d for d in detalle if d["atrasado"]]
-    if filtro == "Pendientes de pago":
+    if filtro == FILTRO_PAGO:
         return [d for d in detalle if d["pendiente_pago"]]
-    if filtro == "Sin tarifa":
-        return [d for d in detalle if d["sin_tarifa"]]
+    if filtro == FILTRO_COSTO:
+        return [d for d in detalle if not d["sin_tarifa"]]
     return detalle
 
 
@@ -918,8 +913,10 @@ def html_detalle_costo(detalle: list, r: dict, tope: int = 12) -> str:
         oc = (f'<span class="atoc">OC {esc(d["oc"])}</span>' if d["oc"]
               else '<span class="atoc atsin">sin OC</span>')
         if d["sin_tarifa"]:
-            monto = ('<span class="atmonto atnotarifa">sin tarifa'
-                     '<span class="attarifa">falta Costo_Por_Dia</span></span>')
+            # Sin tarifa en el Sheet, el costo queda en blanco. Un "RD$0" afirmaría
+            # que ese embarque no cuesta nada, que es distinto de no saberlo.
+            monto = ('<span class="atmonto atnotarifa">Costo'
+                     '<span class="attarifa">&mdash;</span></span>')
         else:
             monto = (f'<span class="atmonto">{_monto(d["costo"], r["moneda"])}'
                      f'<span class="attarifa">{_monto(d["tarifa"], r["moneda"])}/día</span>'
@@ -939,16 +936,17 @@ def html_detalle_costo(detalle: list, r: dict, tope: int = 12) -> str:
 
 
 def panel_atraso_puerto(df, key: str = "todos"):
-    """Tarjetas + detalle filtrable. Si no hay nada en puerto no dibuja nada:
-    un cero permanente se vuelve invisible en una semana."""
+    """Detalle de costo por embarque, filtrable. Los contadores viven en las
+    propias opciones del filtro. Si no hay nada en puerto no dibuja nada."""
     r = resumen_atraso_puerto(df)
     if not r["n_puerto"]:
         return
-    st.markdown(html_tarjetas_puerto(r), unsafe_allow_html=True)
     st.markdown('<div class="atttl centrado">Costo acumulado por embarque</div>',
                 unsafe_allow_html=True)
-    filtro = selector_horizontal("Filtro de costo", FILTROS_COSTO,
-                                 key=f"filtro_costo_{key}")
+    filtro = selector_horizontal(
+        "Filtro de costo", FILTROS_COSTO, key=f"filtro_costo_{key}",
+        formato=lambda c: etiqueta_filtro_costo(c, r),
+    )
     st.markdown(html_detalle_costo(_filtrar_detalle(r["detalle"], filtro), r),
                 unsafe_allow_html=True)
 

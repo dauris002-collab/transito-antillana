@@ -236,7 +236,7 @@ SLA_RETRASO_DEFECTO = 7   # días de retraso sin actualizar el ETA antes de avis
 # embarque está atrasado (criterio interno), y DIAS_LIBRES es a partir de cuándo
 # la naviera o la terminal EMPIEZAN A COBRAR (criterio del proveedor, viene en el
 # contrato). El conteo de atrasados usa el primero; el costo usa el segundo.
-UMBRAL_ATRASO_PUERTO_DEFECTO = 7
+UMBRAL_ATRASO_PUERTO_DEFECTO = 5   # antes 7 — alerta a partir de 5 días en puerto/aeropuerto
 DIAS_LIBRES_DEFECTO = 0   # el costo corre desde la llegada a puerto, no desde el día 8
 # RD$2,000 por día es la tarifa que definió Dauris. Es una tarifa PLANA de
 # referencia, no la factura: no distingue naviera de terminal, no escalona, y no
@@ -391,17 +391,36 @@ html { -webkit-text-size-adjust: 100%; }
   .pnom { font-size:.74rem; }
 }
 
-/* ---------- Atraso acumulado en puerto y su costo ---------- */
-.atraso { display:flex; flex-wrap:wrap; gap:18px 28px; align-items:flex-start;
-          background:#FFFBEB; box-shadow:inset 0 0 0 1px #FCD34D;
-          border-radius:10px; padding:14px 16px; margin:6px 0 10px; }
-.atraso.grave { background:#FEF2F2; box-shadow:inset 0 0 0 1px #FCA5A5; }
-.atbloque { min-width:150px; }
-.atnum { font-size:1.55rem; font-weight:700; line-height:1.15; color:#92400E; }
-.atraso.grave .atnum { color:#991B1B; }
-.atnum.atapagado { color:#9CA3AF; }
-.atlbl { font-size:.78rem; color:#4B5563; margin-top:2px; }
-.atdetalle { flex-basis:100%; border-top:1px solid rgba(0,0,0,.10); padding-top:10px; }
+/* ---------- Resumen ejecutivo de puerto (tarjetas, reemplaza el bloque .atraso) ----------
+   Antes era una sola caja ámbar/roja con todo adentro (total, alerta y dinero
+   mezclados): visualmente todo "gritaba urgente" aunque la mayoría del total
+   fuera normal. Ahora cada cifra es su propia tarjeta y el color de alerta
+   (ámbar/rojo) se reserva solo para lo que de verdad pasó el umbral; el total
+   en puerto y los pendientes de pago quedan en el azul neutro del resto del
+   tablero. Las filas de detalle por embarque (.atfila/.atbl/.atoc/...) se
+   mantienen igual, solo cambia el contenedor que las envuelve. */
+.ejec-fila { display:flex; flex-wrap:wrap; gap:10px; margin:6px 0 12px; }
+.ejec-card { flex:1 1 150px; background:#fff; border:1px solid var(--ant-borde);
+             border-top:3px solid var(--ec, #0C447C); border-radius:10px;
+             padding:12px 14px; box-shadow:0 1px 4px rgba(17,24,39,0.06); }
+.ejec-card.alerta { background:#FFFBEB; border-color:#FDE68A; }
+.ejec-card.alerta.grave { background:#FEF2F2; border-color:#FCA5A5; }
+.ejec-num { font-size:1.6rem; font-weight:800; color:var(--ec, #111827); line-height:1.1; }
+.ejec-lbl { font-size:0.76rem; color:#6B7280; margin-top:3px; }
+.ejec-sub { font-size:0.68rem; color:#9CA3AF; margin-top:2px; }
+.ejec-detalle { border:1px solid var(--ant-borde); border-radius:10px; overflow:hidden; margin-top:4px; }
+.ejec-detalle .atttl { padding:8px 14px; background:#F9FAFB; border-bottom:1px solid var(--ant-borde);
+                        font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em;
+                        color:#6B7280; font-weight:700; margin-bottom:0; }
+.ejec-detalle .atfila { padding:7px 14px; }
+@media (max-width: 640px) {
+  .ejec-fila { gap:8px; }
+  .ejec-card { flex:1 1 calc(50% - 8px); padding:10px 12px; }
+  .ejec-num { font-size:1.3rem; }
+  .ejec-detalle .atmonto { margin-left:0; }
+}
+
+/* Filas de detalle por embarque dentro de .ejec-detalle (costo acumulado) */
 .atttl { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em;
          color:#6B7280; margin-bottom:6px; }
 .atfila { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px;
@@ -417,12 +436,6 @@ html { -webkit-text-size-adjust: 100%; }
 .attarifa { display:block; font-weight:400; font-size:.68rem; color:#6B7280; }
 .atresto { color:#6B7280; font-style:italic; }
 .atfila.atok .atmonto { color:#4B5563; }
-@media (max-width: 640px) {
-  .atraso { gap:12px 16px; padding:12px; }
-  .atbloque { min-width:calc(50% - 8px); }
-  .atnum { font-size:1.25rem; }
-  .atmonto { margin-left:0; }
-}
 
 /* ---------- Chips de resumen por etapa (reemplazan 5 st.metric en fila) ---------- */
 .chips { display:flex; flex-wrap:wrap; gap:8px; margin:4px 0 10px 0; }
@@ -690,7 +703,7 @@ def costos_puerto() -> dict:
     """Parámetros del costo de atraso en puerto. Se ajustan desde Secrets:
 
         [costo_puerto]
-        umbral = 7
+        umbral = 5
         moneda = "US$"
         dias_libres = 5
         costo_dia = 0
@@ -758,8 +771,8 @@ def costo_dia_fila(fila, cfg=None) -> float:
 def costo_demora_fila(fila, cfg=None):
     """Lo que lleva causado ESE embarque, contado DESDE LA LLEGADA A PUERTO.
 
-    El contador no arranca en el día 8: el costo se causa desde que la carga
-    toca puerto, y el umbral de 7 días solo define a partir de cuándo lo
+    El contador no arranca en el día del umbral: el costo se causa desde que la
+    carga toca puerto, y el umbral de alerta solo define a partir de cuándo lo
     consideramos atrasado. Son dos cosas distintas y el dinero sigue al primero.
 
     Devuelve None si no aplica: no ha llegado, ya se recibió en almacén, o no
@@ -795,8 +808,8 @@ def resumen_atraso_puerto(df) -> dict:
     """Lo que está en puerto ahora mismo y lo que lleva costado.
 
     El costo cuenta desde la llegada a puerto, no desde que se pasa del plazo.
-    El umbral de 7 días solo separa lo atrasado de lo que va en tiempo; no mueve
-    el contador de dinero."""
+    El umbral solo separa lo atrasado de lo que va en tiempo; no mueve el
+    contador de dinero."""
     cfg = costos_puerto()
     vacio = {"n_puerto": 0, "n_atrasados": 0, "n_pendiente_pago": 0,
              "dias_excedidos": 0, "costo_total": 0.0, "costo_atrasados": 0.0,
@@ -854,32 +867,51 @@ def _monto(valor: float, moneda: str) -> str:
     return f"{moneda}{valor:,.0f}"
 
 
-def _atbloque(numero: str, etiqueta: str, apagado: bool = False) -> str:
-    return (f'<div class="atbloque"><div class="atnum{" atapagado" if apagado else ""}">'
-            f'{numero}</div><div class="atlbl">{etiqueta}</div></div>')
+def _tarjeta_ejecutiva(numero: str, etiqueta: str, color: str, sub: str = "",
+                       alerta: bool = False, grave: bool = False) -> str:
+    """Una tarjeta del resumen ejecutivo de puerto. `alerta` la pone en fondo
+    ámbar (algo que vigilar); `alerta` + `grave` la pone en rojo (ya hay al
+    menos un embarque pasado del umbral). Sin ninguna de las dos, la tarjeta es
+    neutra: un conteo no es, por sí solo, un problema."""
+    clases = "ejec-card" + (" alerta" if alerta else "") + (" grave" if (alerta and grave) else "")
+    sub_html = f'<div class="ejec-sub">{esc(sub)}</div>' if sub else ""
+    return (f'<div class="{clases}" style="--ec:{color}">'
+            f'<div class="ejec-num">{numero}</div>'
+            f'<div class="ejec-lbl">{esc(etiqueta)}</div>{sub_html}</div>')
 
 
 def html_atraso_puerto(df) -> str:
-    """Tablero de lo que está parado en puerto y lo que cuesta. Si no hay nada en
-    puerto no dibuja nada: un cero permanente se vuelve invisible en una semana."""
+    """Resumen ejecutivo de lo que está parado en puerto: total, alerta por
+    tiempo (más de `umbral` días) y costo. Tarjetas separadas en vez de un
+    único bloque rojo: el total y los pendientes de pago quedan neutros, y el
+    color de alerta se reserva para lo que de verdad pasó el umbral. Si no hay
+    nada en puerto no dibuja nada: un cero permanente se vuelve invisible en
+    una semana."""
     r = resumen_atraso_puerto(df)
     if not r["n_puerto"]:
         return ""
     grave = r["n_atrasados"] > 0
-    piezas = [f'<div class="atraso{" grave" if grave else ""}">']
-    piezas.append(_atbloque(str(r["n_pendiente_pago"]),
-                            "pendientes de que Finanzas pague"))
-    piezas.append(_atbloque(str(r["n_atrasados"]),
-                            f'atrasados (+{r["umbral"]} días en puerto)'))
+
+    piezas = ['<div class="ejec-fila">']
+    piezas.append(_tarjeta_ejecutiva(str(r["n_puerto"]), "En puerto/aeropuerto", "#0C447C"))
+    piezas.append(_tarjeta_ejecutiva(
+        str(r["n_atrasados"]), f'Más de {r["umbral"]} días', "#B45309",
+        sub="requieren seguimiento", alerta=True, grave=grave,
+    ))
+    piezas.append(_tarjeta_ejecutiva(str(r["n_pendiente_pago"]), "Pendientes de pago", "#92400E"))
     if r["hay_tarifa"]:
-        piezas.append(_atbloque(_monto(r["costo_total"], r["moneda"]),
-                                "acumulado desde la llegada a puerto"))
-        piezas.append(_atbloque(
-            _monto(r["costo_atrasados"], r["moneda"]),
-            f'de eso, en los atrasados · {_monto(r["costo_promedio"], r["moneda"])} '
-            f'promedio por embarque en puerto'))
+        piezas.append(_tarjeta_ejecutiva(
+            _monto(r["costo_total"], r["moneda"]), "Costo acumulado en puerto", "#0C447C",
+            sub=f'{_monto(r["costo_promedio"], r["moneda"])} promedio/embarque',
+        ))
+        piezas.append(_tarjeta_ejecutiva(
+            _monto(r["costo_atrasados"], r["moneda"]), f'Costo en alerta (+{r["umbral"]}d)', "#991B1B",
+            alerta=True, grave=grave,
+        ))
     else:
-        piezas.append(_atbloque("—", "costo apagado: tarifa en 0 en Secrets", True))
+        piezas.append(_tarjeta_ejecutiva("—", "Costo por día", "#6B7280",
+                                         sub="Costo_Por_Dia vacío o tarifa en 0 en Secrets"))
+    piezas.append("</div>")
 
     if r["detalle"]:
         filas = []
@@ -900,9 +932,8 @@ def html_atraso_puerto(df) -> str:
         resto = len(r["detalle"]) - 10
         if resto > 0:
             filas.append(f'<div class="atfila atresto">y {resto} más</div>')
-        piezas.append('<div class="atdetalle"><div class="atttl">Costo acumulado '
+        piezas.append('<div class="ejec-detalle"><div class="atttl">Costo acumulado '
                       'por embarque</div>' + "".join(filas) + "</div>")
-    piezas.append("</div>")
     return "".join(piezas)
 
 

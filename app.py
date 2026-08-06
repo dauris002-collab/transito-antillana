@@ -131,6 +131,13 @@ COL_OC = "OC"
 COL_EE = "EE"
 CATEGORIAS_CON_OC_EE = ["Aéreos", "Carga Suelta"]
 
+# Tarifa de demora por embarque, escrita a mano en el Sheet. Opcional: si la
+# columna no existe, o la celda está vacía, se usa la tarifa de Secrets. Manda
+# siempre la del Sheet, porque la tarifa real la fija el contrato de cada
+# naviera y no un promedio de la app. Acepta entero o decimal, con o sin
+# separadores de miles ("2000", "2,500.50", "RD$ 3.000").
+COL_COSTO_DIA = "Costo_Por_Dia"
+
 # Columnas opcionales: si existen en el Sheet, la app las usa; si no, ni se
 # mencionan. Así se pueden agregar Orden_Compra, Cliente, Puerto_Destino o
 # Valor_USD desde Google Sheets sin tocar una línea de código.
@@ -230,12 +237,12 @@ SLA_RETRASO_DEFECTO = 7   # días de retraso sin actualizar el ETA antes de avis
 # la naviera o la terminal EMPIEZAN A COBRAR (criterio del proveedor, viene en el
 # contrato). El conteo de atrasados usa el primero; el costo usa el segundo.
 UMBRAL_ATRASO_PUERTO_DEFECTO = 7
-DIAS_LIBRES_DEFECTO = 0
-# En 0 el bloque de costo NO se muestra. A propósito: una tarifa inventada
-# produce un número que parece exacto y es ficción, y esto se le enseña al
-# presidente. Se llena desde Secrets con tarifas de facturas reales.
-COSTO_DIA_DEFECTO = 0.0
-MONEDA_DEFECTO = "US$"
+DIAS_LIBRES_DEFECTO = 0   # el costo corre desde la llegada a puerto, no desde el día 8
+# RD$2,000 por día es la tarifa que definió Dauris. Es una tarifa PLANA de
+# referencia, no la factura: no distingue naviera de terminal, no escalona, y no
+# sabe cuántos contenedores trae un embarque. En 0 el bloque de dinero se apaga.
+COSTO_DIA_DEFECTO = 2000.0
+MONEDA_DEFECTO = "RD$"
 TEXTO_ALERTA_ETAPA = {
     "Llegada a puerto": "en {lugar} sin declarar",
     "Recepción y declaración": "declarado y sin solicitar el pago",
@@ -370,6 +377,20 @@ html { -webkit-text-size-adjust: 100%; }
 .kpi-value { font-size:2.0rem; font-weight:800; line-height:1; color:#fff; }
 .kpi-sub { font-size:0.70rem; color:rgba(255,255,255,0.88); margin-top:6px; }
 
+/* ---------- Barras por país (HTML puro: no se mueven en celular) ---------- */
+.paises { margin:4px 0 10px; }
+.pfila { display:grid; grid-template-columns:minmax(72px,26%) 1fr 34px;
+         align-items:center; gap:8px; padding:3px 0; }
+.pnom { font-size:.8rem; color:#374151; overflow:hidden; text-overflow:ellipsis;
+        white-space:nowrap; }
+.pbarra { background:rgba(0,0,0,.06); border-radius:6px; height:14px; overflow:hidden; }
+.pbarra span { display:block; height:100%; border-radius:6px; }
+.pval { font-size:.8rem; font-weight:700; color:#374151; text-align:right; }
+@media (max-width: 640px) {
+  .pfila { grid-template-columns:minmax(64px,34%) 1fr 28px; gap:6px; }
+  .pnom { font-size:.74rem; }
+}
+
 /* ---------- Atraso acumulado en puerto y su costo ---------- */
 .atraso { display:flex; flex-wrap:wrap; gap:18px 28px; align-items:flex-start;
           background:#FFFBEB; box-shadow:inset 0 0 0 1px #FCD34D;
@@ -380,8 +401,27 @@ html { -webkit-text-size-adjust: 100%; }
 .atraso.grave .atnum { color:#991B1B; }
 .atnum.atapagado { color:#9CA3AF; }
 .atlbl { font-size:.78rem; color:#4B5563; margin-top:2px; }
-.atpie { flex-basis:100%; font-size:.78rem; color:#4B5563;
-         border-top:1px solid rgba(0,0,0,.08); padding-top:8px; }
+.atdetalle { flex-basis:100%; border-top:1px solid rgba(0,0,0,.10); padding-top:10px; }
+.atttl { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em;
+         color:#6B7280; margin-bottom:6px; }
+.atfila { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px;
+          padding:5px 0; border-bottom:1px dotted rgba(0,0,0,.08); font-size:.82rem; }
+.atfila:last-child { border-bottom:0; }
+.atbl { font-weight:700; color:#111827; }
+.atoc { font-size:.74rem; color:#4B5563; background:rgba(0,0,0,.05);
+        border-radius:5px; padding:1px 6px; }
+.atoc.atsin { color:#92400E; background:rgba(146,64,14,.10); }
+.atdias { color:#4B5563; }
+.atmonto { margin-left:auto; font-weight:700; color:#991B1B; white-space:nowrap;
+           text-align:right; }
+.attarifa { display:block; font-weight:400; font-size:.68rem; color:#6B7280; }
+.atresto { color:#6B7280; font-style:italic; }
+@media (max-width: 640px) {
+  .atraso { gap:12px 16px; padding:12px; }
+  .atbloque { min-width:calc(50% - 8px); }
+  .atnum { font-size:1.25rem; }
+  .atmonto { margin-left:0; }
+}
 
 /* ---------- Chips de resumen por etapa (reemplazan 5 st.metric en fila) ---------- */
 .chips { display:flex; flex-wrap:wrap; gap:8px; margin:4px 0 10px 0; }
@@ -685,57 +725,122 @@ def costos_puerto() -> dict:
     }
 
 
+_RX_MILES_PUNTO = re.compile(r"^\s*[^\d\-]*-?\d{1,3}(\.\d{3})+\s*$")
+
+
+def tarifa_a_numero(valor):
+    """Lee la tarifa escrita a mano en el Sheet.
+
+    No usa a_numero() directo por un problema real: en RD "4.500" son cuatro mil
+    quinientos, pero a_numero lo lee como 4.50 porque trata el punto como
+    decimal. En un campo de dinero eso es un error de mil veces, y salió en la
+    prueba de este módulo. Aquí, un punto seguido de exactamente tres dígitos y
+    sin comas se trata como separador de miles."""
+    texto = str(valor or "").strip()
+    if not texto:
+        return None
+    if "," not in texto and _RX_MILES_PUNTO.match(texto):
+        texto = texto.replace(".", "")
+    return a_numero(texto)
+
+
+def costo_dia_fila(fila, cfg=None) -> float:
+    """Tarifa diaria de UNA fila. Prioridad: lo que diga el Sheet en
+    Costo_Por_Dia, luego la tarifa por categoría de Secrets, luego la global."""
+    cfg = cfg or costos_puerto()
+    propio = tarifa_a_numero(fila.get(COL_COSTO_DIA))
+    if propio is not None and propio > 0:
+        return float(propio)
+    return float(cfg["costo_por_cat"].get(fila.get("Categoria", ""), cfg["costo_dia"]))
+
+
+def costo_demora_fila(fila, cfg=None):
+    """Lo gastado por ESE embarque por estar atrasado: días por encima del
+    umbral × su tarifa. Devuelve None si no aplica (no está en puerto, ya se
+    recibió, no pasa del umbral, o no hay tarifa)."""
+    cfg = cfg or costos_puerto()
+    dias = fila.get("DiasEnPuerto")
+    if not es_numero(dias) or _lleno(fila.get("F_Almacen")) or dias <= cfg["umbral"]:
+        return None
+    tarifa = costo_dia_fila(fila, cfg)
+    if tarifa <= 0:
+        return None
+    return (int(dias) - cfg["umbral"]) * tarifa
+
+
+def _lleno(v) -> bool:
+    """Una celda de fecha vacía llega como None, como NaN o como cadena vacía
+    según de dónde venga la columna. NaN es truthy, así que `if fila["F_Pago"]`
+    da True en una fila SIN pago y el conteo sale en cero sin avisar. Pasó en la
+    prueba de este mismo módulo."""
+    if v is None:
+        return False
+    try:
+        if pd.isna(v):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return str(v).strip() != ""
+
+
 def resumen_atraso_puerto(df) -> dict:
-    """Cuenta lo atrasado en puerto y estima lo que cuesta.
+    """Tres cifras sobre lo que está en puerto ahora mismo, y su costo.
 
-    Dos conteos distintos a propósito:
-      · `dias_excedidos`  = días por encima del umbral interno. Es el atraso.
-      · `dias_facturables` = días por encima de los días libres del proveedor.
-        Es lo que se paga. Casi nunca son el mismo número.
-
-    El costo es una ESTIMACIÓN a tarifa plana por día. No sustituye la factura:
-    ignora los tramos escalonados que cobran casi todas las navieras (los
-    primeros días a una tarifa y los siguientes más caros), no distingue entre
-    demoraje de la línea y almacenaje de la terminal, y no sabe si el embarque
-    ocupa uno o varios contenedores."""
+    Dos costos distintos a propósito, porque sirven para conversaciones distintas:
+      · `costo_puerto` = todos los días en puerto × tarifa. Es lo que el embarque
+        lleva causado desde que llegó. Sirve para saber cuánto hay parado.
+      · `costo_demora` = solo los días por encima del umbral × tarifa. Es lo
+        atribuible al atraso, o sea lo que se habría ahorrado despachando a
+        tiempo. Es el número que sirve para pedir algo.
+    Presentar solo el primero infla; solo el segundo subestima."""
     cfg = costos_puerto()
-    vacio = {"n": 0, "dias_excedidos": 0, "dias_facturables": 0.0,
-             "costo": 0.0, "costo_promedio": 0.0, "umbral": cfg["umbral"],
-             "moneda": cfg["moneda"], "hay_tarifa": False, "peor": None}
+    vacio = {"n_puerto": 0, "n_atrasados": 0, "n_pendiente_pago": 0,
+             "dias_excedidos": 0, "costo_puerto": 0.0, "costo_demora": 0.0,
+             "costo_promedio": 0.0, "umbral": cfg["umbral"], "moneda": cfg["moneda"],
+             "hay_tarifa": False, "detalle": []}
     if df is None or df.empty or "DiasEnPuerto" not in df.columns:
         return vacio
 
-    n = dias_exc = 0
-    facturables = costo = 0.0
-    peor = None
+    n_puerto = n_atr = n_pago = dias_exc = 0
+    costo_p = costo_d = 0.0
+    detalle = []
     for _, fila in df.iterrows():
         dias = fila.get("DiasEnPuerto")
-        # Solo lo que sigue en puerto: si ya se recibió en almacén, el contador
-        # está congelado y ese atraso pertenece al histórico, no a lo pendiente.
-        if not es_numero(dias) or fila.get("F_Almacen") or dias <= cfg["umbral"]:
+        # Congelado = ya se recibió: ese atraso es histórico, no pendiente.
+        if not es_numero(dias) or _lleno(fila.get("F_Almacen")):
             continue
         cat = fila.get("Categoria", "")
         libres = float(cfg["libres_por_cat"].get(cat, cfg["dias_libres"]))
-        tarifa = float(cfg["costo_por_cat"].get(cat, cfg["costo_dia"]))
-        n += 1
-        dias_exc += int(dias) - cfg["umbral"]
-        dias_fact = max(0.0, float(dias) - libres)
-        facturables += dias_fact
-        costo += dias_fact * tarifa
-        if peor is None or dias > peor[1]:
-            peor = (str(fila.get("BL", "") or ""), int(dias))
+        tarifa = costo_dia_fila(fila, cfg)
+        n_puerto += 1
+        if _lleno(fila.get("F_Solicitud")) and not _lleno(fila.get("F_Pago")):
+            n_pago += 1
+        cobrables = max(0.0, float(dias) - libres)
+        costo_fila = cobrables * tarifa
+        costo_p += costo_fila
+        if dias > cfg["umbral"]:
+            n_atr += 1
+            exceso = int(dias) - cfg["umbral"]
+            dias_exc += exceso
+            costo_d += exceso * tarifa
+            detalle.append({
+                "bl": str(fila.get(COL_BL, "") or ""),
+                "oc": str(fila.get(COL_OC, "") or "").strip(),
+                "cat": cat,
+                "dias": int(dias),
+                "exceso": exceso,
+                "costo": costo_fila,
+                "costo_demora": exceso * tarifa,
+                "tarifa": tarifa,
+            })
 
-    hay_tarifa = costo > 0
+    detalle.sort(key=lambda d: d["dias"], reverse=True)
     return {
-        "n": n,
-        "dias_excedidos": dias_exc,
-        "dias_facturables": facturables,
-        "costo": costo,
-        "costo_promedio": (costo / n) if (n and hay_tarifa) else 0.0,
-        "umbral": cfg["umbral"],
-        "moneda": cfg["moneda"],
-        "hay_tarifa": hay_tarifa,
-        "peor": peor,
+        "n_puerto": n_puerto, "n_atrasados": n_atr, "n_pendiente_pago": n_pago,
+        "dias_excedidos": dias_exc, "costo_puerto": costo_p, "costo_demora": costo_d,
+        "costo_promedio": (costo_d / n_atr) if (n_atr and costo_d) else 0.0,
+        "umbral": cfg["umbral"], "moneda": cfg["moneda"],
+        "hay_tarifa": costo_p > 0, "detalle": detalle,
     }
 
 
@@ -743,40 +848,52 @@ def _monto(valor: float, moneda: str) -> str:
     return f"{moneda}{valor:,.0f}"
 
 
+def _atbloque(numero: str, etiqueta: str, apagado: bool = False) -> str:
+    return (f'<div class="atbloque"><div class="atnum{" atapagado" if apagado else ""}">'
+            f'{numero}</div><div class="atlbl">{etiqueta}</div></div>')
+
+
 def html_atraso_puerto(df) -> str:
-    """Bloque de atraso acumulado en puerto. Si no hay nada atrasado no dibuja
-    nada: un cero permanente en pantalla se vuelve invisible en una semana."""
+    """Tablero de lo que está parado en puerto y lo que cuesta. Si no hay nada en
+    puerto no dibuja nada: un cero permanente se vuelve invisible en una semana."""
     r = resumen_atraso_puerto(df)
-    if not r["n"]:
+    if not r["n_puerto"]:
         return ""
-    grave = r["n"] > 0 and r["dias_excedidos"] > r["umbral"] * r["n"]
+    grave = r["n_atrasados"] > 0
     piezas = [f'<div class="atraso{" grave" if grave else ""}">']
-    piezas.append(
-        f'<div class="atbloque"><div class="atnum">{r["n"]}</div>'
-        f'<div class="atlbl">{"embarque atrasado" if r["n"] == 1 else "embarques atrasados"}'
-        f' (+{r["umbral"]} días en puerto)</div></div>'
-    )
-    piezas.append(
-        f'<div class="atbloque"><div class="atnum">{r["dias_excedidos"]}</div>'
-        f'<div class="atlbl">días acumulados por encima del plazo</div></div>'
-    )
+    piezas.append(_atbloque(str(r["n_pendiente_pago"]),
+                            "pendientes de que Finanzas pague"))
+    piezas.append(_atbloque(str(r["n_atrasados"]),
+                            f'atrasados (+{r["umbral"]} días en puerto)'))
     if r["hay_tarifa"]:
-        piezas.append(
-            f'<div class="atbloque"><div class="atnum">{_monto(r["costo"], r["moneda"])}</div>'
-            f'<div class="atlbl">costo estimado del atraso · '
-            f'{_monto(r["costo_promedio"], r["moneda"])} promedio por embarque</div></div>'
-        )
+        piezas.append(_atbloque(_monto(r["costo_puerto"], r["moneda"]),
+                                "causado en puerto desde la llegada"))
+        piezas.append(_atbloque(
+            _monto(r["costo_demora"], r["moneda"]),
+            f'atribuible al atraso · {_monto(r["costo_promedio"], r["moneda"])} '
+            f'promedio por embarque atrasado'))
     else:
-        piezas.append(
-            '<div class="atbloque"><div class="atnum atapagado">—</div>'
-            '<div class="atlbl">costo sin calcular: falta la tarifa por día '
-            'en Secrets</div></div>'
-        )
-    if r["peor"] and r["peor"][0]:
-        piezas.append(
-            f'<div class="atpie">El más atrasado: <b>{esc(r["peor"][0])}</b>, '
-            f'{texto_dias(r["peor"][1])} en puerto.</div>'
-        )
+        piezas.append(_atbloque("—", "costo apagado: tarifa en 0 en Secrets", True))
+
+    if r["detalle"]:
+        filas = []
+        for d in r["detalle"][:10]:
+            ref = esc(d["bl"]) or "&mdash;"
+            oc = f' <span class="atoc">OC {esc(d["oc"])}</span>' if d["oc"] else \
+                 ' <span class="atoc atsin">sin OC</span>'
+            monto = (f'<span class="atmonto">{_monto(d["costo_demora"], r["moneda"])}'
+                     f'<span class="attarifa">{_monto(d.get("tarifa", 0), r["moneda"])}/día</span>'
+                     f'</span>' if r["hay_tarifa"] else "")
+            filas.append(
+                f'<div class="atfila"><span class="atbl">{ref}</span>{oc}'
+                f'<span class="atdias">{d["dias"]} días · +{d["exceso"]} sobre el plazo</span>'
+                f'{monto}</div>'
+            )
+        resto = len(r["detalle"]) - 10
+        if resto > 0:
+            filas.append(f'<div class="atfila atresto">y {resto} más</div>')
+        piezas.append('<div class="atdetalle"><div class="atttl">Detalle del atraso '
+                      'por embarque</div>' + "".join(filas) + "</div>")
     piezas.append("</div>")
     return "".join(piezas)
 
@@ -1220,6 +1337,17 @@ for _canon, _formas in _ALIAS_PAISES_CRUDO.items():
 _VACIOS_PAIS = {"", "n/a", "na", "n.a.", "-", "--", "s/d", "nd", "no aplica", "pendiente", "?"}
 
 
+_RX_NO_PAIS = re.compile(r"^[\d\s/:.\-]+$")
+
+
+def _no_parece_pais(v) -> bool:
+    """Filas con las columnas corridas meten fechas y números en País_Origen.
+    Sin esto, "2026-08-04 19:58:00" se dibuja como si fuera un país y estira el
+    eje del gráfico hasta deformarlo en pantallas de celular."""
+    t = str(v or "").strip()
+    return bool(t) and bool(_RX_NO_PAIS.match(t))
+
+
 def unificar_paises(serie: pd.Series) -> pd.Series:
     """'China', 'CHINA' y 'china ' son el mismo país y no deben salir como tres
     barras distintas en el gráfico ni como tres opciones del filtro. Para lo que
@@ -1237,7 +1365,7 @@ def unificar_paises(serie: pd.Series) -> pd.Series:
 
     def resolver(v):
         clave = _norm(v)
-        if clave in _VACIOS_PAIS:
+        if clave in _VACIOS_PAIS or _no_parece_pais(v):
             return NO_ESPECIFICADO
         return ALIAS_PAISES.get(clave) or canonico.get(clave, NO_ESPECIFICADO)
 
@@ -2391,6 +2519,15 @@ def html_contadores(fila) -> str:
         etiqueta = "Del pago al retiro" if retirado else "Pagado sin retirar"
         clase = _clase_contador(espera, sla["Pago realizado"], cerrado=retirado)
         piezas.append(_chip(clase, etiqueta, espera))
+    # Lo que lleva gastado ESTE embarque por estar atrasado. Va en rojo siempre:
+    # si hay una cifra aquí es porque ya se pasó del plazo, no hay versión buena.
+    gasto = costo_demora_fila(fila)
+    if gasto:
+        cfg = costos_puerto()
+        piezas.append(
+            f'<span class="contador mal">⚠ Demora acumulada: '
+            f'{_monto(gasto, cfg["moneda"])}</span>'
+        )
     return "".join(piezas)
 
 
@@ -2512,38 +2649,33 @@ def grafico_linea_tiempo(df: pd.DataFrame, key: str):
 
 
 def grafico_paises(df: pd.DataFrame, key: str):
-    serie = df[COL_PAIS].replace("", NO_ESPECIFICADO).value_counts().sort_values()
+    """Barras por país en HTML/CSS, no en Plotly.
+
+    Plotly recalcula el ancho del eje según el largo de las etiquetas y lo vuelve
+    a hacer en cada redibujado: en celular eso es lo que hacía que las barras se
+    movieran solas al girar el teléfono o al abrir el teclado. Estas barras miden
+    en porcentaje del ancho disponible, así que no dependen del texto ni de
+    JavaScript, y se imprimen bien.
+
+    Se pierde el clic-para-filtrar que tenía la versión de Plotly; el filtro por
+    país sigue disponible en la barra de filtros de abajo."""
+    if COL_PAIS not in df.columns or df.empty:
+        return
+    serie = df[COL_PAIS].replace("", NO_ESPECIFICADO).value_counts()
     if serie.empty:
         return
-    colores = [PALETA_PAISES[i % len(PALETA_PAISES)] for i in range(len(serie))]
-    fig = go.Figure(
-        data=[go.Bar(x=serie.values, y=serie.index, orientation="h",
-                     marker=dict(color=colores), text=serie.values, textposition="outside",
-                     hovertemplate="%{y}: %{x} embarque(s)<extra></extra>")]
-    )
-    fig.update_layout(
-        margin=dict(t=18, b=10, l=10, r=24), height=260,
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#374151", size=11), dragmode=False,
-        xaxis=dict(showgrid=False, showticklabels=False,
-                   title=dict(text="Por país de origen (toca una barra para filtrar)", font=dict(size=10))),
-        yaxis=dict(showgrid=False),
-    )
-    seleccion = st.plotly_chart(
-        fig, width="stretch", config={"displayModeBar": False, "responsive": True},
-        on_select="rerun", selection_mode="points", key=f"pais_chart_{key}",
-    )
-    puntos = (seleccion or {}).get("selection", {}).get("points", [])
-    if puntos:
-        pais = puntos[0].get("y")
-        if pais and pais != NO_ESPECIFICADO:
-            # Plotly conserva la selección entre reruns: sin esta firma, el clic se
-            # reaplicaría en cada rerun y anularía cualquier cambio manual posterior.
-            firma = f"{key}:{pais}"
-            if firma != st.session_state.get(f"firma_pais_{key}"):
-                st.session_state[f"pais_{key}"] = pais
-                st.session_state[f"firma_pais_{key}"] = firma
-                rerun_fragmento()
+    tope = int(serie.max()) or 1
+    piezas = ['<div class="paises"><div class="atttl">Por país de origen</div>']
+    for i, (pais, n) in enumerate(serie.items()):
+        ancho = max(4.0, (int(n) / tope) * 100.0)
+        color = PALETA_PAISES[i % len(PALETA_PAISES)]
+        piezas.append(
+            f'<div class="pfila"><div class="pnom">{esc(str(pais))}</div>'
+            f'<div class="pbarra"><span style="width:{ancho:.1f}%;background:{color}"></span></div>'
+            f'<div class="pval">{int(n)}</div></div>'
+        )
+    piezas.append("</div>")
+    st.markdown("".join(piezas), unsafe_allow_html=True)
 
 
 def _ficha_embarque(fila):
@@ -2597,6 +2729,12 @@ def _ficha_embarque(fila):
         if es_numero(fila.get("DiasPagoDespacho")):
             campos.append(("Del pago al retiro" if retirado else "Pagado sin retirar",
                            texto_dias(fila["DiasPagoDespacho"])))
+        _cfg_costo = costos_puerto()
+        _gasto = costo_demora_fila(fila, _cfg_costo)
+        if _gasto:
+            campos.append(("Tarifa de demora",
+                           f'{_monto(costo_dia_fila(fila, _cfg_costo), _cfg_costo["moneda"])} por día'))
+            campos.append(("Demora acumulada", _monto(_gasto, _cfg_costo["moneda"])))
     if str(fila.get("Alerta", "") or "").strip():
         campos.append(("⚠ Atención", fila["Alerta"]))
 
@@ -3003,6 +3141,8 @@ def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
             "Sí" if (es_numero(d) and d > sla_etapas()["Solicitud de pago a finanzas"]) else "No"
             for d in df["DiasSolicitudPago"]],
         "Días de pago a retiro": df["DiasPagoDespacho"],
+        "Tarifa demora/día": [costo_dia_fila(f) for _, f in df.iterrows()],
+        "Demora acumulada": [costo_demora_fila(f) for _, f in df.iterrows()],
         "Alerta operativa": df["Alerta"],
     })
     for extra in columnas_extra(df):

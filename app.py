@@ -3039,8 +3039,16 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
 
             with st.expander("Corregir fecha o retroceder etapa"):
                 c1, c2 = st.columns([1.4, 1])
+                # El selector solo lista las primeras 4 etapas (la de almacén se
+                # maneja aparte, con el botón de archivar) — así que el índice
+                # nunca puede pasar de la última posición de esa lista. Sin este
+                # tope, un embarque cuya etapa activa YA es "Recibido en almacén"
+                # (idx=4, p. ej. porque alguien llenó Fecha_Despacho a mano en el
+                # Sheet sin pasar por 'Marcar como recibido') le pasaba index=4 a
+                # un selectbox de 4 opciones (0-3) y tumbaba la pantalla.
+                indice_selector = min(max(idx, 0), len(ETAPAS_PUERTO) - 2)
                 nueva_etapa = c1.selectbox("Etapa", ETAPAS_PUERTO[:-1],
-                                           index=max(idx, 0), key=f"et_{clave}")
+                                           index=indice_selector, key=f"et_{clave}")
                 fecha_corregida = c2.date_input("Fecha real", value=hoy_rd(), format="DD/MM/YYYY",
                                                 key=f"fc_{clave}")
                 st.caption("Elegir una etapa anterior borra las fechas de las etapas posteriores: "

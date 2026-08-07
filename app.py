@@ -54,6 +54,20 @@ Cambios estructurales frente a la versión anterior (resumen para mantenimiento)
     un .apply por tecla, caché del Excel de descarga (antes se regeneraba en
     cada rerun), y caché del parser de fechas.
 
+v3.1 — tres ajustes pedidos después de usar la v3.0 en producción:
+ 15. El filtro de arriba (Todos/Atrasados/Pendientes de pago/Costo) y el
+     diagrama de abajo ahora se hablan: los embarques que cumplen el filtro
+     activo salen PRIMERO en el diagrama, en vez de vivir cada uno con su
+     propio orden y obligar a "ver más" para encontrar el resto.
+ 16. La tabla de "Costo acumulado por embarque" ya no se despliega sola: los
+     contadores siguen siempre visibles en los botones del filtro, pero la
+     tabla solo aparece después de clickear alguno (aunque sea "Todos").
+ 17. Aéreos y Carga Suelta no pasan por un puerto marítimo, así que su costo
+     de demora ahora dice "Costo por Almacenaje" en vez de "Costo en puerto"
+     (chip del diagrama y ficha del embarque). La tabla agregada de costo, que
+     mezcla categorías, se queda con el rótulo genérico "Costo acumulado por
+     embarque" — avísame si también quieres partirla por tipo de almacenaje.
+
 Se mantiene igual: encabezados tolerantes a acentos, una sola llamada a la API
 por refresco (values_batch_get), fechas escritas siempre en ISO con RAW, orden
 operativo (primero lo atrasado), auditoría en la pestaña "Log", escapado HTML de
@@ -87,7 +101,7 @@ from gspread.utils import rowcol_to_a1
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------------------------
-VERSION_APP = "3.0"
+VERSION_APP = "3.1"
 
 st.set_page_config(
     page_title="Antillana · Embarques en Tránsito",
@@ -130,6 +144,11 @@ COL_FECHA_ALMACEN = "Fecha_Despacho"                 # entrada a almacén = "Mar
 COL_OC = "OC"
 COL_EE = "EE"
 CATEGORIAS_CON_OC_EE = ["Aéreos", "Carga Suelta"]
+# Estas dos categorías no se despachan desde un puerto marítimo: la carga queda
+# en un almacén (aéreo) o donde la deja el consolidador (carga suelta). El
+# costo de demora ahí se llama "por almacenaje", no "en puerto" — el resto de
+# los contadores (días, SLA) usa exactamente el mismo cálculo.
+CATEGORIAS_ALMACENAJE = ["Aéreos", "Carga Suelta"]
 
 # Tarifa de demora por embarque, escrita a mano en el Sheet. Opcional: si la
 # columna no existe, o la celda está vacía, se usa la tarifa de Secrets. Manda
@@ -186,6 +205,12 @@ def etiqueta_etapa(etapa: str, categoria="") -> str:
     if etapa == "Llegada a puerto" and es_aereo(categoria):
         return "Llegada al aeropuerto"
     return ETIQUETA_CORTA_ETAPA.get(etapa, etapa)
+
+
+def etiqueta_costo(categoria) -> str:
+    """'Costo por Almacenaje' para Aéreos y Carga Suelta (no pasan por un
+    puerto marítimo); 'Costo en puerto' para el resto."""
+    return "Costo por Almacenaje" if categoria in CATEGORIAS_ALMACENAJE else "Costo en puerto"
 
 # 3 contadores operativos:
 #   1) Salida -> Llegada a puerto (tránsito; se congela al confirmar la llegada)
@@ -785,6 +810,27 @@ def _lleno(v) -> bool:
     return str(v).strip() != ""
 
 
+def _cumple_filtro_puerto(fila, filtro: str, cfg=None) -> bool:
+    """Mismo criterio que arma el detalle de html_atraso_puerto, evaluado fila
+    por fila. Se usa para REORDENAR el diagrama de _panel_en_proceso según el
+    filtro activo (Atrasados / Pendientes de pago / Costo), en vez de tener dos
+    listas —la de arriba y la del diagrama— que no se hablan entre sí."""
+    if filtro == "todos":
+        return True
+    cfg = cfg or costos_puerto()
+    dias = fila.get("DiasEnPuerto")
+    if not es_numero(dias) or _lleno(fila.get("F_Almacen")):
+        return False
+    if filtro == "atrasados":
+        return dias > cfg["umbral"]
+    if filtro == "pago":
+        return _lleno(fila.get("F_Solicitud")) and not _lleno(fila.get("F_Pago"))
+    if filtro == "costo":
+        gasto = costo_demora_fila(fila, cfg)
+        return bool(gasto and gasto > 0)
+    return True
+
+
 def resumen_atraso_puerto(df) -> dict:
     """Lo que está en puerto ahora mismo y lo que lleva costado.
 
@@ -870,6 +916,7 @@ def html_atraso_puerto(df, contexto: str = "") -> None:
         return
 
     clave_estado = f"filtro_puerto_{_slug_css(contexto)}"
+    clave_click = f"filtro_puerto_click_{_slug_css(contexto)}"
     actual = st.session_state.get(clave_estado, "todos")
 
     opciones = [
@@ -897,7 +944,16 @@ def html_atraso_puerto(df, contexto: str = "") -> None:
             with st.container(key=f"fpuerto_{slug_ctx}_{op}"):
                 if st.button(etiqueta, key=f"btn_{clave_estado}_{op}", width="stretch"):
                     st.session_state[clave_estado] = op
+                    st.session_state[clave_click] = True
                     rerun_fragmento()
+
+    # El detalle (costo acumulado por embarque) se queda oculto hasta que se
+    # clickee alguno de los botones de arriba, aunque sea "Todos": antes se
+    # desplegaba de una vez y era la tabla más larga de toda la pantalla, sin
+    # que nadie la hubiera pedido todavía. Los contadores siguen viéndose
+    # siempre — viven en el propio botón, no en esta tabla.
+    if not st.session_state.get(clave_click, False):
+        return
 
     detalle = r["detalle"]
     if actual == "atrasados":
@@ -1267,7 +1323,7 @@ def _localizar_fila(ws, bl: str, fila_sugerida=None):
     """Ubica la fila de un BL dentro de una pestaña. Devuelve (fila, error).
 
     Este es el corazón del arreglo de esta versión. Antes se usaba ws.find(BL),
-    que devuelve la PRIMERA coincidencia: con dos embarques parciales del mismo
+    que devuelve la PRIMERA coincidencia. Con dos embarques parciales del mismo
     BL, la app editaba, archivaba o borraba la fila equivocada en silencio.
     Ahora la pantalla manda el número de fila que está mostrando y aquí se
     verifica contra el Sheet: si esa fila sigue teniendo ese BL, se usa; si el
@@ -2569,7 +2625,7 @@ def html_contadores(fila) -> str:
         tarde = es_numero(dias_p) and dias_p > cfg_costo["umbral"]
         clase = "contador mal" if tarde else "contador"
         piezas.append(
-            f'<span class="{clase}">{marca(clase)}Costo en puerto: '
+            f'<span class="{clase}">{marca(clase)}{etiqueta_costo(fila.get("Categoria", ""))}: '
             f'{_monto(gasto, cfg_costo["moneda"])}</span>'
         )
     return "".join(piezas)
@@ -2776,9 +2832,11 @@ def _ficha_embarque(fila):
         _cfg_costo = costos_puerto()
         _gasto = costo_demora_fila(fila, _cfg_costo)
         if _gasto:
-            campos.append(("Tarifa en puerto",
+            _es_almacenaje = etiqueta_costo(fila.get("Categoria", "")) == "Costo por Almacenaje"
+            campos.append(("Tarifa de almacenaje" if _es_almacenaje else "Tarifa en puerto",
                            f'{_monto(costo_dia_fila(fila, _cfg_costo), _cfg_costo["moneda"])} por día'))
-            campos.append(("Costo acumulado en puerto", _monto(_gasto, _cfg_costo["moneda"])))
+            campos.append(("Costo acumulado por Almacenaje" if _es_almacenaje else "Costo acumulado en puerto",
+                           _monto(_gasto, _cfg_costo["moneda"])))
     if str(fila.get("Alerta", "") or "").strip():
         campos.append(("⚠ Atención", fila["Alerta"]))
 
@@ -2968,10 +3026,25 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
     retrocede desde el desplegable, que es lo raro.
 
     'contexto' identifica desde dónde se llama: el mismo embarque puede
-    aparecer en más de una vista y sin esto las claves de sus widgets chocan."""
+    aparecer en más de una vista y sin esto las claves de sus widgets chocan.
+
+    Si arriba se activó un filtro del panel de costo/atraso (html_atraso_puerto,
+    mismo 'contexto'), los embarques que lo cumplen se muestran PRIMERO: antes
+    el filtro de arriba y este diagrama no se hablaban, así que filtrar por
+    "Pendientes de pago" arriba no cambiaba en nada el orden de abajo, y había
+    que ir dándole "ver más" para encontrar el resto."""
     es_admin = rol == "admin"
-    orden = df.sort_values(["AlertaDias", "EtapaIdx", COL_ETA],
-                           ascending=[False, True, True], na_position="last")
+    filtro_activo = st.session_state.get(f"filtro_puerto_{_slug_css(contexto)}", "todos")
+    cfg_costo = costos_puerto()
+    df = df.copy()
+    df["_NoCumpleFiltro"] = ~df.apply(lambda f: _cumple_filtro_puerto(f, filtro_activo, cfg_costo), axis=1)
+    orden = df.sort_values(["_NoCumpleFiltro", "AlertaDias", "EtapaIdx", COL_ETA],
+                           ascending=[True, False, True, True], na_position="last")
+
+    if filtro_activo != "todos":
+        n_cumple = int((~orden["_NoCumpleFiltro"]).sum())
+        if n_cumple:
+            st.caption(f"Mostrando primero los {n_cumple} embarque(s) que cumplen el filtro activo de arriba.")
 
     clave_ver = f"ver_todos_{_slug_css(contexto)}"
     ver_todos = st.session_state.get(clave_ver, False)

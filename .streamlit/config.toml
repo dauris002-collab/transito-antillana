@@ -1,4 +1,3 @@
-# Copiar como .streamlit/config.toml en la raíz del repo.
 [theme]
 base = "light"
 primaryColor = "#2E86DE"

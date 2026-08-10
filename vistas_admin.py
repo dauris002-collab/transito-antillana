@@ -15,9 +15,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from sheets_io import (
-    CATEGORIAS, COL_ACTUALIZACION, COL_BL, COL_CANT, COL_DESC, COL_EE, COL_ETA,
+    CATEGORIAS, COL_ACTUALIZACION, COL_BL, COL_CANT, COL_CLIENTE, COL_DESC,
+    COL_EE, COL_ETA,
     COL_FECHA_ALMACEN, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO, COL_FECHA_SALIDA,
-    COL_FECHA_SOLICITUD_PAGO, COL_MODELO, COL_OC, COL_PAIS, MESES_ES, MESES_ES_CORTO,
+    COL_FECHA_SOLICITUD_PAGO, COL_MODELO, COL_OC, COL_PAIS, COL_STOCK, MESES_ES,
+    MESES_ES_CORTO,
     NO_ESPECIFICADO, REQUIRED_COLUMNS, _con_reintento, _leer_log, _norm,
     _refrescar_estructura, _validar_orden_flujo, actualizar_embarque, ahora_rd,
     append_row, append_rows_bulk, es_numero, get_spreadsheet, hoy_rd,
@@ -65,6 +67,9 @@ def form_alta_manual(datos: dict):
             c7, c8 = st.columns(2)
             oc = c7.text_input("OC")
             ee = c8.text_input("EE")
+        c9, c10 = st.columns(2)
+        cliente = c9.text_input("Cliente")
+        stock = c10.text_input("Stock")
         salida = st.date_input("Fecha de salida (opcional)", value=None, format="DD/MM/YYYY",
                                help="Si no la sabes, déjala vacía y agrégala después desde 'Editar'.")
         enviado = st.form_submit_button("Guardar embarque", type="primary")
@@ -99,6 +104,10 @@ def form_alta_manual(datos: dict):
             datos_nuevos[COL_OC] = oc.strip()
         if ee.strip():
             datos_nuevos[COL_EE] = ee.strip()
+    if cliente.strip():
+        datos_nuevos[COL_CLIENTE] = cliente.strip()
+    if stock.strip():
+        datos_nuevos[COL_STOCK] = stock.strip()
 
     ok, mensaje = append_row(datos_nuevos, categoria)
     if ok:
@@ -164,6 +173,9 @@ def form_editar(datos: dict):
             c6, c7 = st.columns(2)
             oc = c6.text_input("OC", value=str(fila.get(COL_OC, "")))
             ee = c7.text_input("EE", value=str(fila.get(COL_EE, "")))
+        c8, c9 = st.columns(2)
+        cliente = c8.text_input("Cliente", value=str(fila.get(COL_CLIENTE, "")))
+        stock = c9.text_input("Stock", value=str(fila.get(COL_STOCK, "")))
         st.caption(f"Fila {n_fila} de '{categoria}' · ETA actual en el Sheet: {fila[COL_ETA] or '(vacío)'}")
         forzar = st.checkbox("Sobrescribir aunque otra persona lo haya cambiado mientras tanto")
         guardar = st.form_submit_button("Guardar cambios", type="primary")
@@ -193,6 +205,8 @@ def form_editar(datos: dict):
     if con_oc_ee:
         cambios[COL_OC] = oc.strip()
         cambios[COL_EE] = ee.strip()
+    cambios[COL_CLIENTE] = cliente.strip()
+    cambios[COL_STOCK] = stock.strip()
 
     ok, mensaje = actualizar_embarque(bl_original, categoria, cambios, fila_sugerida=n_fila,
                                       sello_esperado=sello, forzar=forzar)
@@ -225,8 +239,10 @@ def _plantilla_excel() -> bytes:
             COL_PAIS: "China",
             COL_ETA: "2026-08-25",
             COL_FECHA_SALIDA: "",
+            COL_CLIENTE: "",
+            COL_STOCK: "",
         }],
-        columns=REQUIRED_COLUMNS + [COL_FECHA_SALIDA],
+        columns=REQUIRED_COLUMNS + [COL_FECHA_SALIDA, COL_CLIENTE, COL_STOCK],
     )
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         ejemplo.to_excel(writer, index=False, sheet_name="Embarques")
@@ -243,11 +259,11 @@ def form_carga_masiva(datos: dict):
     )
     categoria = st.selectbox("Categoría de destino (todo el archivo se carga aquí)", CATEGORIAS)
     con_oc_ee = categoria in CATEGORIAS_CON_OC_EE
-    columnas_opcionales = [COL_FECHA_SALIDA] + ([COL_OC, COL_EE] if con_oc_ee else [])
+    columnas_opcionales = [COL_FECHA_SALIDA, COL_CLIENTE, COL_STOCK] + ([COL_OC, COL_EE] if con_oc_ee else [])
     extra_txt = f", '{COL_OC}' y '{COL_EE}'" if con_oc_ee else ""
     st.caption("Columnas obligatorias: " + ", ".join(REQUIRED_COLUMNS) +
-               f". '{COL_FECHA_SALIDA}'{extra_txt} son opcionales. El ETA puede venir en cualquier "
-               "formato reconocible; se guarda como AAAA-MM-DD.")
+               f". '{COL_FECHA_SALIDA}', '{COL_CLIENTE}', '{COL_STOCK}'{extra_txt} son opcionales. "
+               "El ETA puede venir en cualquier formato reconocible; se guarda como AAAA-MM-DD.")
 
     archivo = st.file_uploader("Archivo .xlsx", type=["xlsx"])
     if archivo is None:
@@ -401,12 +417,14 @@ def _grafico_anual(df_anio: pd.DataFrame, anio: int):
 def _tabla_detalle(df: pd.DataFrame) -> pd.DataFrame:
     """Vista legible del histórico, con la fecha ya formateada en español."""
     if df.empty:
-        return pd.DataFrame(columns=["BL", "Descripción", "Modelo/Serie", "Cantidad",
-                                     "Origen", "Fecha recibido", "Categoría", "Registrado por"])
+        return pd.DataFrame(columns=["BL", "Descripción", "Modelo/Serie", "Cliente", "Stock",
+                                     "Cantidad", "Origen", "Fecha recibido", "Categoría", "Registrado por"])
     salida = pd.DataFrame({
         "BL": df.get(COL_BL, ""),
         "Descripción": df.get(COL_DESC, ""),
         "Modelo/Serie": df.get(COL_MODELO, ""),
+        "Cliente": df.get(COL_CLIENTE, ""),
+        "Stock": df.get(COL_STOCK, ""),
         "Cantidad": df.get(COL_CANT, ""),
         "Origen": df.get(COL_PAIS, ""),
         "Fecha recibido": [f"{f.day:02d} {MESES_ES_CORTO[f.month]} {f.year}" for f in df["FechaParsed"]],
@@ -532,13 +550,14 @@ def mostrar_historico(datos: dict, rol: str):
     mes_sel = m1.selectbox("Mes", meses_con_datos, index=idx_mes,
                            format_func=lambda m: MESES_ES[m], key="hist_mes")
     busqueda = m2.text_input("Buscar en el mes", key="hist_busca",
-                             placeholder="BL, descripción o modelo…")
+                             placeholder="BL, descripción, modelo o cliente…")
 
     filtrado = df_anio[df_anio["Mes"] == mes_sel]
     if busqueda and busqueda.strip():
         q = _norm(busqueda)
         filtrado = filtrado[filtrado.apply(
-            lambda r: q in _norm(f"{r.get(COL_BL,'')} {r.get(COL_DESC,'')} {r.get(COL_MODELO,'')}"), axis=1
+            lambda r: q in _norm(f"{r.get(COL_BL,'')} {r.get(COL_DESC,'')} {r.get(COL_MODELO,'')} "
+                                 f"{r.get(COL_CLIENTE,'')}"), axis=1
         )]
 
     etiqueta_mes = f"{MESES_ES[mes_sel]} {anio_sel}"

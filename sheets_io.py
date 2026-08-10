@@ -95,6 +95,17 @@ COL_OC = "OC"
 COL_EE = "EE"
 
 
+# Cliente al que pertenece el embarque y stock restante/disponible. Aplican a
+# las 5 categorías (a diferencia de OC/EE, que son solo de Aéreos y Carga
+# Suelta): en Equipos y Generadores se agregan junto al Modelo/Serie, y en
+# Aéreos, Carga Suelta y Consolidados reemplazan esa columna en la lista,
+# porque ahí el modelo/serie no es el dato que se usa para rastrear la carga.
+COL_CLIENTE = "Cliente"
+
+
+COL_STOCK = "Stock"
+
+
 # Tarifa de demora por embarque, escrita a mano en el Sheet. Opcional: si la
 # columna no existe, o la celda está vacía, se usa la tarifa de Secrets. Manda
 # siempre la del Sheet, porque la tarifa real la fija el contrato de cada
@@ -121,7 +132,7 @@ COLUMNAS_FLUJO = [COL_FECHA_LLEGADA_PUERTO, COL_FECHA_DECLARACION,
 
 ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
                                   COL_ESTATUS_LLEGADA, COL_FECHA_SALIDA,
-                                  *COLUMNAS_FLUJO, COL_OC, COL_EE]
+                                  *COLUMNAS_FLUJO, COL_OC, COL_EE, COL_CLIENTE, COL_STOCK]
 
 
 # Columnas que la app calcula o gestiona internamente y que no se muestran como
@@ -215,6 +226,7 @@ COLUMNAS_RECIBIDO = [
     COL_BL, COL_DESC, COL_MODELO, COL_CANT, COL_PAIS, COL_ETA,
     "Fecha_Recibido", "Categoria_Origen", "Registrado_Por", COL_ACTUALIZACION,
     COL_ACTUALIZADO_POR, COL_FECHA_SALIDA, *COLUMNAS_FLUJO, COL_OC, COL_EE,
+    COL_CLIENTE, COL_STOCK,
 ]
 
 
@@ -1265,7 +1277,7 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
     for etapa in ETAPAS_PUERTO:
         if final[etapa]:
             registro[COLUMNA_FECHA_ETAPA[etapa]] = final[etapa].isoformat()
-    for columna in (COL_FECHA_SALIDA, COL_OC, COL_EE):
+    for columna in (COL_FECHA_SALIDA, COL_OC, COL_EE, COL_CLIENTE, COL_STOCK):
         valor = str(datos_norm.get(_norm(columna), "")).strip()
         if valor:
             registro[columna] = valor
@@ -1284,7 +1296,8 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
 @_con_manejo_apierror
 def quitar_de_recibido(bl: str, categoria_manual: str = None, fila_sugerida=None):
     """Reversa de 'Marcar como Recibido': devuelve el embarque a su categoría con
-    TODO lo que traía (fechas del flujo, salida, OC/EE), no pelado como antes."""
+    TODO lo que traía (fechas del flujo, salida, OC/EE, Cliente/Stock), no pelado
+    como antes."""
     ws_recibido = get_worksheet(RECIBIDO_SHEET)
     if ws_recibido is None:
         return False, f"No existe la pestaña '{RECIBIDO_SHEET}'."
@@ -1307,7 +1320,7 @@ def quitar_de_recibido(bl: str, categoria_manual: str = None, fila_sugerida=None
         COL_PAIS: datos_norm.get(_norm(COL_PAIS), ""),
         COL_ETA: datos_norm.get(_norm(COL_ETA), ""),
     }
-    for columna in (COL_FECHA_SALIDA, COL_OC, COL_EE, *COLUMNAS_FLUJO):
+    for columna in (COL_FECHA_SALIDA, COL_OC, COL_EE, COL_CLIENTE, COL_STOCK, *COLUMNAS_FLUJO):
         valor = str(datos_norm.get(_norm(columna), "")).strip()
         if valor:
             devuelto[columna] = valor

@@ -19,15 +19,17 @@ import streamlit as st
 
 from sheets_io import (
     CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
-    COL_DESC, COL_EE, COL_ETA, COL_MODELO, COL_OC, COL_PAIS, ETAPAS_PUERTO,
-    INDICE_ETAPA, MESES_ES, MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO,
+    COL_CLIENTE, COL_DESC, COL_EE, COL_ETA, COL_MODELO, COL_OC, COL_PAIS,
+    COL_STOCK, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES, MESES_ES_CORTO,
+    NO_ESPECIFICADO, SLA_ETAPA_DEFECTO,
     VALOR_RETRASADO, _norm, _slug_css, avanzar_estado_puerto, columnas_extra,
     costos_puerto, eliminar_embarque, es_numero, formato_dinero, formato_eta,
     hoy_rd, invalidar_caches, marcar_como_recibido, marcar_estatus_llegada,
     registrar_log, sla_etapas,
 )
 from logica import (
-    CATEGORIAS_CON_OC_EE, CATEGORIA_AEREA, EST_PROXIMO, EST_PUERTO, EST_RETRASADO,
+    CATEGORIAS_CLIENTE_STOCK, CATEGORIAS_CON_OC_EE, CATEGORIA_AEREA, EST_PROXIMO,
+    EST_PUERTO, EST_RETRASADO,
     EST_SIN_FECHA, EST_TRANSITO, ETIQUETA_CORTA_ETAPA, ICONO_ETAPA, PALETA_PAISES,
     SEMANAS_HORIZONTE, STATUS_COLOR, STATUS_ORDER, UMBRAL_PROXIMO,
     _cumple_filtro_puerto, _en_proceso, _etiquetas_desambiguadas, _monto,
@@ -655,16 +657,48 @@ def _ref_oc_ee(fila) -> str:
     return f'<div class="c-ref">{" · ".join(piezas)}</div>' if piezas else ""
 
 
+def _celda_modelo_cliente(r) -> str:
+    """La 3ra columna de la lista: Modelo/Serie para Equipos y Generadores
+    (máquinas con modelo y número de serie propios), Cliente/Stock para
+    Aéreos, Carga Suelta y Consolidados (ahí lo que rastrea la carga es a
+    quién pertenece y cuánto queda, no un modelo/serie que casi nunca traen).
+    En Equipos/Generadores, si además hay Cliente/Stock cargado, se agrega
+    debajo del modelo — igual que OC/EE se agrega debajo del BL."""
+    cliente = str(r.get(COL_CLIENTE, "") or "").strip()
+    stock = str(r.get(COL_STOCK, "") or "").strip()
+    piezas = []
+    if cliente:
+        piezas.append(esc(cliente))
+    if stock:
+        piezas.append(f"Stock {esc(stock)}")
+    cliente_stock = " · ".join(piezas)
+
+    if r.get("Categoria", "") in CATEGORIAS_CLIENTE_STOCK:
+        return f'<div class="c-suave" data-l="Cliente/Stock">{cliente_stock or "—"}</div>'
+    sub = f'<div class="c-ref">{cliente_stock}</div>' if cliente_stock else ""
+    return f'<div class="c-suave" data-l="Modelo/Serie">{esc(r[COL_MODELO])}{sub}</div>'
+
+
 def render_lista(df: pd.DataFrame):
-    """Un solo bloque HTML: tabla en desktop, tarjetas en celular (lo decide el CSS)."""
+    """Un solo bloque HTML: tabla en desktop, tarjetas en celular (lo decide el CSS).
+
+    El encabezado de la 3ra columna (desktop) se adapta a lo que trae el
+    grupo de filas: "Cliente/Stock" si son todas Aéreos/Carga Suelta/
+    Consolidados, "Modelo/Serie" en cualquier otro caso (incluida la vista
+    "Todos", donde se mezclan categorías) — el rótulo por fila (celular) es
+    siempre el correcto porque lo decide _celda_modelo_cliente()."""
     if df.empty:
         st.markdown('<div class="lista"><div class="vacio">No hay embarques que coincidan con el filtro.</div></div>',
                     unsafe_allow_html=True)
         return
 
+    categorias_presentes = set(df["Categoria"]) if "Categoria" in df.columns else set()
+    encabezado_col3 = ("Cliente/Stock" if categorias_presentes
+                       and categorias_presentes <= set(CATEGORIAS_CLIENTE_STOCK)
+                       else "Modelo/Serie")
     partes = [
         '<div class="lista"><div class="fila-head">'
-        "<div>BL</div><div>Descripción</div><div>Modelo/Serie</div><div>Cant.</div>"
+        f"<div>BL</div><div>Descripción</div><div>{encabezado_col3}</div><div>Cant.</div>"
         "<div>País</div><div>ETA</div><div>Estado</div></div>"
     ]
     for _, r in df.iterrows():
@@ -687,7 +721,7 @@ def render_lista(df: pd.DataFrame):
             f'<div class="c-bl" data-l="BL">{esc(r[COL_BL]) if str(r[COL_BL]).strip() else "(sin BL)"}'
             f'{_ref_oc_ee(r)}</div>'
             f'<div class="c-suave" data-l="Descripción">{esc(r[COL_DESC])}</div>'
-            f'<div class="c-suave" data-l="Modelo/Serie">{esc(r[COL_MODELO])}</div>'
+            f'{_celda_modelo_cliente(r)}'
             f'<div data-l="Cantidad">{esc(r[COL_CANT])}</div>'
             f'<div data-l="País">{esc(r[COL_PAIS])}</div>'
             f'<div data-l="ETA">{esc(formato_eta(r[COL_ETA]))}</div>'
@@ -808,6 +842,10 @@ def _ficha_embarque(fila):
             campos.append(("OC", fila[COL_OC]))
         if str(fila.get(COL_EE, "")).strip():
             campos.append(("EE", fila[COL_EE]))
+    if str(fila.get(COL_CLIENTE, "")).strip():
+        campos.append(("Cliente", fila[COL_CLIENTE]))
+    if str(fila.get(COL_STOCK, "")).strip():
+        campos.append(("Stock", fila[COL_STOCK]))
     if fila.get("F_Salida"):
         campos.append(("Fecha de salida", formato_eta(fila["F_Salida"])))
     if es_numero(fila.get("DiasTransito")):
@@ -1244,6 +1282,8 @@ def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
         "BL": df[COL_BL],
         "OC": df[COL_OC] if COL_OC in df.columns else "",
         "EE": df[COL_EE] if COL_EE in df.columns else "",
+        "Cliente": df[COL_CLIENTE] if COL_CLIENTE in df.columns else "",
+        "Stock": df[COL_STOCK] if COL_STOCK in df.columns else "",
         "Descripción": df[COL_DESC],
         "Modelo/Serie": df[COL_MODELO],
         "Cantidad": df[COL_CANT],
@@ -1423,7 +1463,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
 
     f1, f2, f3 = st.columns([2, 1, 1])
     busqueda = f1.text_input("Buscar", key=f"busca_{tab_key}",
-                             placeholder="BL, descripción, modelo, OC…", label_visibility="collapsed")
+                             placeholder="BL, descripción, modelo, OC, cliente…", label_visibility="collapsed")
     pais_sel = f2.selectbox("País", paises, key=f"pais_{tab_key}", label_visibility="collapsed")
     estado_sel = f3.selectbox("Estado", estados, key=f"estado_{tab_key}", label_visibility="collapsed")
 

@@ -16,10 +16,10 @@ from datetime import date, datetime
 import pandas as pd
 
 from sheets_io import (
-    COL_BL, COL_COSTO_DIA, COL_DESC, COL_EE, COL_ESTATUS_LLEGADA,
+    COL_BL, COL_CLIENTE, COL_COSTO_DIA, COL_DESC, COL_EE, COL_ESTATUS_LLEGADA,
     COL_ETA, COL_FECHA_ALMACEN, COL_FECHA_DECLARACION, COL_FECHA_LLEGADA_PUERTO,
     COL_FECHA_PAGO, COL_FECHA_SALIDA, COL_FECHA_SOLICITUD_PAGO, COL_MODELO,
-    COL_OC, COL_PAIS, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES_CORTO,
+    COL_OC, COL_PAIS, COL_STOCK, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES_CORTO,
     VALOR_RETRASADO,
     _fecha_de_tokens, _interpretar_tokens, _norm, _slug_css, _tokenizar_fecha,
     a_numero, columna_de_valor, costos_puerto, es_numero, hoy_rd, parsear_fecha,
@@ -28,6 +28,14 @@ from sheets_io import (
 
 
 CATEGORIAS_CON_OC_EE = ["Aéreos", "Carga Suelta"]
+
+
+# Estas tres categorías no traen un modelo/serie que sirva para rastrear la
+# carga (a diferencia de Equipos y Generadores, que sí son máquinas con
+# modelo y número de serie propios): ahí la columna de la lista que normalmente
+# muestra Modelo/Serie muestra Cliente/Stock en su lugar. En Equipos y
+# Generadores, Cliente/Stock se agrega junto al Modelo/Serie, no lo reemplaza.
+CATEGORIAS_CLIENTE_STOCK = ["Aéreos", "Carga Suelta", "Consolidados"]
 
 
 # Estas dos categorías no se despachan desde un puerto marítimo: la carga queda
@@ -530,10 +538,12 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     # normalizaba tres campos por fila; ahora es un contains sobre texto ya listo.
     oc = df[COL_OC] if COL_OC in df.columns else [""] * len(df)
     ee = df[COL_EE] if COL_EE in df.columns else [""] * len(df)
+    cliente = df[COL_CLIENTE] if COL_CLIENTE in df.columns else [""] * len(df)
+    stock = df[COL_STOCK] if COL_STOCK in df.columns else [""] * len(df)
     df["Buscar"] = [
-        _norm(f"{bl} {desc} {modelo} {pais} {o} {e}")
-        for bl, desc, modelo, pais, o, e in zip(df[COL_BL], df[COL_DESC], df[COL_MODELO],
-                                                df[COL_PAIS], oc, ee)
+        _norm(f"{bl} {desc} {modelo} {pais} {o} {e} {c} {s}")
+        for bl, desc, modelo, pais, o, e, c, s in zip(df[COL_BL], df[COL_DESC], df[COL_MODELO],
+                                                       df[COL_PAIS], oc, ee, cliente, stock)
     ]
     return df.sort_values(["Prioridad", "OrdenSec"], kind="stable").reset_index(drop=True)
 

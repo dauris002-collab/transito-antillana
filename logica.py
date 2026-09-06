@@ -667,18 +667,32 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
 def resumen_pagos(df: pd.DataFrame) -> dict:
     """Estadística objetivo del módulo: de los expedientes con montos, cuántos
     quedaron cerrados (SIN MORA y Pago Realizado ya registrados) y cuántos
-    siguen abiertos, cuántos de los cerrados se pagaron dentro de la ventana
-    saludable, el promedio de días de mora, y el sobrecosto acumulado por
-    moneda (solo se suma cuando el extra es positivo; un pago más barato que
-    lo estimado no "resta" sobrecosto, simplemente no genera ninguno)."""
+    siguen abiertos, cuánto suma lo que TODAVÍA se debe (los abiertos), cuántos
+    de los cerrados se pagaron dentro de la ventana saludable, el promedio de
+    días de mora, y el sobrecosto acumulado por moneda (solo se suma cuando el
+    extra es positivo; un pago más barato que lo estimado no "resta"
+    sobrecosto, simplemente no genera ninguno)."""
     vacio = {"n_pagados": 0, "n_abiertos": 0, "n_a_tiempo": 0, "dias_mora_promedio": None,
-             "sobrecosto": {"USD": 0.0, "DOP": 0.0}}
+             "sobrecosto": {"USD": 0.0, "DOP": 0.0}, "total_por_pagar": {"USD": 0.0, "DOP": 0.0}}
     if df is None or df.empty or "FechaPagoRealParsed" not in df.columns:
         return vacio
 
     cerrado_mask = df["FechaPagoRealParsed"].notna() & df["FechaSinMoraParsed"].notna()
     cerrados = df[cerrado_mask]
+    abiertos = df[~cerrado_mask]
     vacio["n_abiertos"] = int((~cerrado_mask).sum())
+
+    # "Total por pagar" solo suma lo ABIERTO: un expediente ya cerrado ya se
+    # pagó, así que su monto no es algo que "todavía se deba".
+    total_por_pagar = {"USD": 0.0, "DOP": 0.0}
+    for total in abiertos.get("TotalActual", []):
+        total = total or {}
+        for moneda in ("USD", "DOP"):
+            v = total.get(moneda)
+            if v is not None:
+                total_por_pagar[moneda] += v
+    vacio["total_por_pagar"] = total_por_pagar
+
     if cerrados.empty:
         return vacio
 
@@ -697,4 +711,5 @@ def resumen_pagos(df: pd.DataFrame) -> dict:
         "n_a_tiempo": a_tiempo,
         "dias_mora_promedio": (sum(dias) / len(dias)) if dias else None,
         "sobrecosto": sobrecosto,
+        "total_por_pagar": total_por_pagar,
     }

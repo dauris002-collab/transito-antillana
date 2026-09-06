@@ -432,9 +432,15 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
                 and dias_rel > sla["__retraso__"]:
             texto = f"Retrasado {texto_dias(dias_rel)} y sin ETA nuevo"
             dias_alerta = int(dias_rel)
-        elif not etapa and estado == EST_PUERTO and dias_rel is not None \
-                and dias_rel > sla["__retraso__"]:
-            texto = f"ETA vencido hace {texto_dias(dias_rel)} y nadie ha confirmado si llegó"
+        elif not etapa and estado == EST_PUERTO and dias_rel is not None:
+            # Sin umbral a propósito: en cuanto el ETA vence y nadie ha
+            # respondido '¿llegó?', ya hay algo que hacer. Poner un plazo de
+            # gracia aquí hacía que este aviso contara menos embarques que el
+            # KPI "Por confirmar llegada" —que nunca tuvo umbral—, y dos
+            # números con la misma etiqueta y distinto valor en la misma
+            # pantalla solo generan desconfianza en el tablero.
+            cuando = "hoy" if dias_rel == 0 else f"hace {texto_dias(dias_rel)}"
+            texto = f"ETA vencido {cuando} y nadie ha confirmado si llegó"
             dias_alerta = int(dias_rel)
         alertas.append(texto)
         alerta_dias.append(dias_alerta)

@@ -16,13 +16,13 @@ import pandas as pd
 
 from sheets_io import (
     COL_BL, COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_FECHA_DECLARACION,
-    COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL, COL_FECHA_SALIDA,
-    COL_FECHA_SIN_MORA, COL_LLEGO, COL_MODELO, COL_OC, COL_PAGOREAL_DOP,
-    COL_PAGOREAL_USD, COL_PAIS, COL_SINMORA_DOP, COL_SINMORA_USD,
-    CONCEPTOS_PAGO, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
+    COL_FECHA_PAGO_REAL, COL_FECHA_SALIDA, COL_FECHA_SIN_MORA, COL_LLEGO,
+    COL_MODELO, COL_OC, COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS,
+    COL_SINMORA_DOP, COL_SINMORA_USD, CONCEPTOS_PAGO, ETAPAS_PUERTO,
+    INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
     _fecha_de_tokens, _interpretar_tokens, _norm, _slug_css, _tokenizar_fecha,
     a_numero, columna_de_valor, costos_puerto, es_llego_no, es_llego_si,
-    es_numero, fecha_llegada_fila, hoy_rd, parsear_fecha, sla_etapas,
+    es_numero, hoy_rd, parsear_fecha, sla_etapas,
     _validar_orden_flujo,
 )
 
@@ -555,60 +555,34 @@ def monto_extra(fila) -> dict:
     return extra
 
 
-def _referencia_transito(activos: pd.DataFrame, historico: pd.DataFrame) -> dict:
-    """Mapa BL -> (descripción, categoría, fecha de llegada) leído de tránsito,
-    activos primero y el histórico como respaldo. Es de solo lectura: Pagos no
-    duplica estos datos, los consulta cada vez que hace falta mostrarlos."""
-    referencia = {}
-    for fuente, es_hist in ((activos, False), (historico, True)):
-        if fuente is None or fuente.empty:
-            continue
-        for _, r in fuente.iterrows():
-            bl = str(r.get(COL_BL, "")).strip()
-            if not bl or bl in referencia:
-                continue
-            if es_hist:
-                llegada = (parsear_fecha(r.get(COL_FECHA_LLEGADA_PUERTO, ""))
-                          or parsear_fecha(r.get(COL_ETA, "")))
-                categoria = str(r.get("Categoria_Origen", "") or "")
-            else:
-                llegada = fecha_llegada_fila(r)
-                categoria = str(r.get("Categoria", "") or "")
-            referencia[bl] = (str(r.get(COL_DESC, "")), categoria, llegada)
-    return referencia
-
-
 def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
                      historico: pd.DataFrame) -> pd.DataFrame:
-    """Cruza Pagos con tránsito por BL para traer Descripción/Categoría/Llegada
-    sin que Logística los teclee dos veces. Un BL de Pagos que no aparece en
-    tránsito (activo ni histórico) se marca 'BLSinTransito': la fila se
-    muestra igual, no se oculta ni se bloquea, solo avisa que falta ese cruce."""
+    """Agrega al DataFrame de Pagos lo que no vive directamente en sus celdas:
+    si el BL sigue existiendo en tránsito (para detectar filas huérfanas), si
+    el expediente ya tiene algún monto cargado, y los totales/mora derivados
+    de las ventanas SIN MORA / Pago Realizado ya congeladas.
+
+    Descripción, Cantidad y Llegada NO se cruzan aquí: viven en la propia hoja
+    Pagos, sincronizadas por sincronizar_pagos_con_transito(), así que se leen
+    tal cual de sus columnas — no hay lookup en vivo que hacer."""
     df = df_pagos.copy()
-    calculadas = ["Descripcion_T", "Categoria_T", "Llegada_T", "BLSinTransito",
-                  "SinMoraTotales", "PagoRealTotales", "MontoExtra", "DiasMora",
-                  "FechaSinMoraParsed", "FechaPagoRealParsed"]
+    calculadas = ["BLSinTransito", "TieneMontos", "SinMoraTotales", "PagoRealTotales",
+                  "MontoExtra", "DiasMora", "FechaSinMoraParsed", "FechaPagoRealParsed"]
     if df.empty:
         for c in calculadas:
             df[c] = []
         return df
 
-    referencia = _referencia_transito(activos, historico)
-    desc_t, cat_t, lleg_t, sin_t = [], [], [], []
-    for bl in df[COL_BL].astype(str).str.strip():
-        info = referencia.get(bl)
-        if info:
-            desc_t.append(info[0])
-            cat_t.append(info[1])
-            lleg_t.append(info[2])
-            sin_t.append(False)
-        else:
-            desc_t.append("")
-            cat_t.append("")
-            lleg_t.append(None)
-            sin_t.append(bool(bl))
-    df["Descripcion_T"], df["Categoria_T"] = desc_t, cat_t
-    df["Llegada_T"], df["BLSinTransito"] = lleg_t, sin_t
+    bls_transito = set()
+    for fuente in (activos, historico):
+        if fuente is not None and not fuente.empty:
+            bls_transito |= {str(b).strip() for b in fuente[COL_BL] if str(b).strip()}
+    df["BLSinTransito"] = [
+        bool(bl) and bl not in bls_transito
+        for bl in df[COL_BL].astype(str).str.strip()
+    ]
+
+    df["TieneMontos"] = [totales_conceptos(r) is not None for _, r in df.iterrows()]
 
     df["FechaSinMoraParsed"] = [parsear_fecha(v) for v in df.get(COL_FECHA_SIN_MORA, [])]
     df["FechaPagoRealParsed"] = [parsear_fecha(v) for v in df.get(COL_FECHA_PAGO_REAL, [])]

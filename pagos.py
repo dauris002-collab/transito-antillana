@@ -25,10 +25,10 @@ from sheets_io import (
     CATEGORIAS, COL_BL, COL_CANT, COL_DESC, COL_ESTADO_PAGO, COL_ETA,
     COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA,
     COL_PAGO_LLEGADA, CONCEPTOS_PAGO, ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE,
-    MONEDA_CONCEPTO, _norm, a_numero, fecha_llegada_fila, formato_eta,
-    guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago, parsear_fecha,
-    registrar_log, registrar_pago_realizado, registrar_sin_mora,
-    sincronizar_pagos_con_transito,
+    MONEDA_CONCEPTO, _norm, a_numero, aplicar_selector_fecha_pagos,
+    fecha_llegada_fila, formato_eta, guardar_pago, hoy_rd, invalidar_caches,
+    marcar_estado_pago, parsear_fecha, registrar_log, registrar_pago_realizado,
+    registrar_sin_mora, sincronizar_pagos_con_transito,
 )
 from logica import enriquecer_pagos, resumen_pagos, totales_conceptos
 from ui_componentes import COLOR_RECIBIDAS_MES, COLOR_TOTAL, CUSTOM_CSS, tarjeta_kpi
@@ -147,33 +147,43 @@ def _tarjetas_resumen(resumen: dict):
 def _tabla_pagos(df: pd.DataFrame) -> pd.DataFrame:
     filas = []
     for _, r in df.iterrows():
+        total = r.get("TotalActual") or {}
         sm = r.get("SinMoraTotales") or {}
         pr = r.get("PagoRealTotales") or {}
         extra = r.get("MontoExtra") or {}
-        filas.append({
+        fila = {
             "BL": r.get(COL_BL, ""),
             "Descripción": r.get(COL_DESC, ""),
             "Cantidad": r.get(COL_CANT, ""),
             "Llegada": r.get(COL_PAGO_LLEGADA, ""),
             "Estado": str(r.get(COL_ESTADO_PAGO, "")).strip() or ESTADO_PAGO_PENDIENTE,
-            "SIN MORA (fecha)": r.get(COL_FECHA_SIN_MORA, ""),
-            "SIN MORA US$": sm.get("USD"),
-            "SIN MORA RD$": sm.get("DOP"),
-            "Pago real (fecha)": r.get(COL_FECHA_PAGO_REAL, ""),
-            "Pago real US$": pr.get("USD"),
-            "Pago real RD$": pr.get("DOP"),
-            "Extra US$": extra.get("USD"),
-            "Extra RD$": extra.get("DOP"),
-            "Días de mora": r.get("DiasMora"),
-        })
+        }
+        # Un concepto vacío se muestra vacío, no como 0 — igual que en el Sheet.
+        for concepto in CONCEPTOS_PAGO:
+            valor = a_numero(r.get(concepto, ""))
+            fila[concepto] = valor if valor is not None else None
+        fila["Total a pagar US$"] = total.get("USD")
+        fila["Total a pagar RD$"] = total.get("DOP")
+        fila["Días sin pagar"] = r.get("DiasSinPagar")
+        fila["Fecha saludable"] = r.get(COL_FECHA_SIN_MORA, "")
+        fila["SIN MORA US$ (congelado)"] = sm.get("USD")
+        fila["SIN MORA RD$ (congelado)"] = sm.get("DOP")
+        fila["Pago real (fecha)"] = r.get(COL_FECHA_PAGO_REAL, "")
+        fila["Pago real US$"] = pr.get("USD")
+        fila["Pago real RD$"] = pr.get("DOP")
+        fila["Extra US$"] = extra.get("USD")
+        fila["Extra RD$"] = extra.get("DOP")
+        fila["Días de mora"] = r.get("DiasMora")
+        filas.append(fila)
     return pd.DataFrame(filas)
 
 
 def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
     resumen = resumen_pagos(enriquecido)
     _tarjetas_resumen(resumen)
-    st.caption("El sobrecosto no se estima con una tarifa: es la diferencia entre lo que Logística "
-               "fijó como pago saludable (SIN MORA) y lo que realmente se terminó pagando.")
+    st.caption("\"Total a pagar\" es lo que hay cargado en los conceptos AHORA MISMO. \"SIN MORA "
+              "(congelado)\" es lo que se fijó como línea base cuando se registró esa ventana desde "
+              "la app — puede diferir del total actual si algún concepto cambió después.")
 
     if enriquecido.empty:
         st.info("Todavía no hay expedientes sincronizados desde tránsito.")
@@ -386,3 +396,9 @@ def panel_pagos(datos: dict, es_admin: bool):
         form_ventana_pago(enriquecido, "pago_real")
     with st.expander("Marcar estado (Pendiente/Pagado)"):
         form_estado_pago(enriquecido)
+    with st.expander("Activar el selector de calendario en Fecha_SinMora / Fecha_PagoRealizado"):
+        st.caption("Solo hace falta correrlo una vez. Agrega el ícono de calendario nativo de Google "
+                  "Sheets a esas dos columnas para poder elegir la fecha con clic en vez de teclearla.")
+        if st.button("Activar selector de calendario", key="btn_selector_fecha"):
+            ok, mensaje = aplicar_selector_fecha_pagos()
+            (st.success if ok else st.error)(mensaje)

@@ -1579,6 +1579,50 @@ def _buscar_fila_pago(ws, bl: str):
     return None, True
 
 
+def _aplicar_selector_fecha(ws):
+    """Mejor esfuerzo: agrega el selector de calendario nativo de Google Sheets
+    (Data validation de tipo fecha) a Fecha_SinMora y Fecha_PagoRealizado, para
+    que al hacer clic en esas celdas aparezca el icono de calendario en vez de
+    depender de que alguien teclee la fecha en un formato válido.
+
+    'strict': False a propósito: si algo se escribe mal, se marca con una
+    advertencia visual en vez de RECHAZAR la escritura — un candado duro aquí
+    podría bloquear una escritura de la app si el formato de fecha no coincide
+    exactamente con lo que Sheets espera. Devuelve (ok, mensaje): quien llame
+    desde la creación automática de la pestaña puede ignorar el resultado (es
+    cosmético, no debe tumbar una escritura real de datos), pero un disparo
+    manual sí necesita saber si de verdad funcionó."""
+    try:
+        headers = ws.row_values(1)
+        requests = []
+        for col_nombre in (COL_FECHA_SIN_MORA, COL_FECHA_PAGO_REAL):
+            idx = _columna_indice(headers, col_nombre)
+            if not idx:
+                continue
+            requests.append({
+                "setDataValidation": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": 1,
+                        "endRowIndex": 2000,
+                        "startColumnIndex": idx - 1,
+                        "endColumnIndex": idx,
+                    },
+                    "rule": {
+                        "condition": {"type": "DATE_IS_VALID"},
+                        "showCustomUi": True,
+                        "strict": False,
+                    },
+                },
+            })
+        if not requests:
+            return False, "No se encontraron las columnas Fecha_SinMora / Fecha_PagoRealizado en la pestaña."
+        get_spreadsheet().batch_update({"requests": requests})
+        return True, "Selector de calendario aplicado en Fecha_SinMora y Fecha_PagoRealizado."
+    except Exception as e:  # noqa: BLE001
+        return False, f"No se pudo aplicar el selector de calendario: {e}"
+
+
 def _obtener_o_crear_ws_pagos():
     ws = get_worksheet(PAGOS_SHEET)
     if ws is not None:
@@ -1587,7 +1631,20 @@ def _obtener_o_crear_ws_pagos():
     ws = ss.add_worksheet(title=PAGOS_SHEET, rows=2000, cols=len(COLUMNAS_PAGOS))
     _con_reintento(lambda: ws.update(range_name="A1", values=[COLUMNAS_PAGOS], value_input_option="RAW"))
     _refrescar_estructura()
-    return get_worksheet(PAGOS_SHEET)
+    ws = get_worksheet(PAGOS_SHEET)
+    _aplicar_selector_fecha(ws)  # mejor esfuerzo, no bloquea si falla
+    return ws
+
+
+def aplicar_selector_fecha_pagos():
+    """Aplica (o reintenta) el selector de calendario sobre la pestaña Pagos
+    que YA EXISTE. Para correrlo a mano una vez sobre una pestaña creada antes
+    de que este selector existiera — la creación automática solo lo aplica a
+    pestañas nuevas."""
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}' todavía."
+    return _aplicar_selector_fecha(ws)
 
 
 @_con_manejo_apierror

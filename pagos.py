@@ -22,7 +22,7 @@ import pandas as pd
 import streamlit as st
 
 from sheets_io import (
-    CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
+    CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
     COL_DESC, COL_EMPRESA, COL_ESTADO_PAGO, COL_ETA, COL_FECHA_LLEGADA_PUERTO,
     COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA, COL_PAGO_LLEGADA, COL_PAGOREAL_DOP,
     COL_PAGOREAL_USD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO,
@@ -33,7 +33,7 @@ from sheets_io import (
     registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
 )
 from logica import PALETA_PAISES, enriquecer_pagos, esc, resumen_pagos, totales_conceptos
-from ui_componentes import COLOR_TOTAL, CUSTOM_CSS, _logo_base64
+from ui_componentes import COLOR_TOTAL, CUSTOM_CSS, _logo_base64, rerun_fragmento
 
 
 COLOR_SOBRECOSTO = "#991B1B"
@@ -45,6 +45,16 @@ COLOR_MORA_PROMEDIO = "#B45309"
 # Un color fijo por concepto — reusa la misma paleta "amigable" que ya usan
 # los gráficos de país en tránsito, así no se inventa una gama nueva.
 COLOR_CONCEPTO = dict(zip(CONCEPTOS_PAGO, PALETA_PAISES))
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _enriquecer_pagos_cacheado(df_pagos: pd.DataFrame, activos: pd.DataFrame,
+                               historico: pd.DataFrame) -> pd.DataFrame:
+    """Envoltura cacheada de enriquecer_pagos() (logica.py se queda sin
+    Streamlit, tal como está diseñado). Misma ventana de 45s que cargar_todo():
+    con varios viewers mirando Pagos a la vez, comparten este cálculo en vez de
+    que cada sesión lo repita. No cambia qué se calcula, solo cuándo."""
+    return enriquecer_pagos(df_pagos, activos, historico)
 
 
 PAGOS_CSS = """
@@ -232,7 +242,7 @@ def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
             with st.container(key=f"pagokpi_{slug}"):
                 if st.button(f"{label.upper()}\n\n{valor}", key=f"btn_pagokpi_{slug}", width="stretch"):
                     st.session_state["pago_filtro_estado"] = "todos" if filtro_activo == slug else slug
-                    st.rerun()
+                    rerun_fragmento()
     with cols[-1]:
         st.markdown(_tarjeta_por_pagar(resumen["total_por_pagar"]), unsafe_allow_html=True)
     return st.session_state.get("pago_filtro_estado", "todos")
@@ -334,7 +344,7 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
     nuevo_slug = ESTADO_SLUG[estatus_sel]
     if nuevo_slug != slug_actual:
         st.session_state["pago_filtro_estado"] = nuevo_slug
-        st.rerun()
+        rerun_fragmento()
 
     vista = enriquecido if empresa_sel == "Todas" or enriquecido.empty \
         else enriquecido[enriquecido["EmpresaEfectiva"] == empresa_sel]
@@ -621,6 +631,7 @@ def _encabezado_pagos(sello_info: dict):
     )
 
 
+@st.fragment
 def panel_pagos(datos: dict, es_admin: bool):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
@@ -641,7 +652,7 @@ def panel_pagos(datos: dict, es_admin: bool):
         else:
             st.warning(f"No se pudo sincronizar Pagos con tránsito automáticamente: {mensaje}")
 
-    enriquecido = enriquecer_pagos(df_pagos, activos, historico)
+    enriquecido = _enriquecer_pagos_cacheado(df_pagos, activos, historico)
 
     mostrar_dashboard_pagos(enriquecido)
 

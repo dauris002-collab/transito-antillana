@@ -16,13 +16,13 @@ import pandas as pd
 
 from sheets_io import (
     COL_BL, COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_FECHA_DECLARACION,
-    COL_FECHA_PAGO_REAL, COL_FECHA_SALIDA, COL_FECHA_SIN_MORA, COL_LLEGO,
-    COL_MODELO, COL_OC, COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS,
-    COL_SINMORA_DOP, COL_SINMORA_USD, CONCEPTOS_PAGO, ETAPAS_PUERTO,
-    INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
+    COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL, COL_FECHA_SALIDA,
+    COL_FECHA_SIN_MORA, COL_LLEGO, COL_MODELO, COL_OC, COL_PAGOREAL_DOP,
+    COL_PAGOREAL_USD, COL_PAIS, COL_SINMORA_DOP, COL_SINMORA_USD,
+    CONCEPTOS_PAGO, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
     _fecha_de_tokens, _interpretar_tokens, _norm, _slug_css, _tokenizar_fecha,
     a_numero, columna_de_valor, costos_puerto, es_llego_no, es_llego_si,
-    es_numero, hoy_rd, parsear_fecha, sla_etapas,
+    es_numero, fecha_llegada_fila, hoy_rd, parsear_fecha, sla_etapas,
     _validar_orden_flujo,
 )
 
@@ -555,19 +555,51 @@ def monto_extra(fila) -> dict:
     return extra
 
 
+def _llegadas_confirmadas(activos: pd.DataFrame, historico: pd.DataFrame) -> dict:
+    """BL -> fecha de llegada CONFIRMADA, leída en vivo de tránsito (no del
+    valor guardado en Pagos, que se sincroniza una sola vez y puede quedar
+    desactualizado si la llegada se confirma después). Un archivo en
+    'Recibido (Mes)' siempre cuenta como confirmado — no se archiva sin haber
+    pasado por la confirmación de llegada."""
+    mapa = {}
+    if activos is not None and not activos.empty:
+        for _, r in activos.iterrows():
+            bl = str(r.get(COL_BL, "")).strip()
+            if not bl:
+                continue
+            llegada = fecha_llegada_fila(r)
+            if llegada:
+                mapa[bl] = llegada
+    if historico is not None and not historico.empty:
+        for _, r in historico.iterrows():
+            bl = str(r.get(COL_BL, "")).strip()
+            if not bl or bl in mapa:
+                continue
+            llegada = parsear_fecha(r.get(COL_FECHA_LLEGADA_PUERTO, ""))
+            if llegada:
+                mapa[bl] = llegada
+    return mapa
+
+
 def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
                      historico: pd.DataFrame) -> pd.DataFrame:
     """Agrega al DataFrame de Pagos lo que no vive directamente en sus celdas:
-    si el BL sigue existiendo en tránsito (para detectar filas huérfanas), si
-    el expediente ya tiene algún monto cargado, y los totales/mora derivados
-    de las ventanas SIN MORA / Pago Realizado ya congeladas.
+    si el BL sigue existiendo en tránsito, el total ACTUAL de lo que está
+    lleno en los conceptos (en vivo, no depende de haber 'congelado' SIN
+    MORA), el contador de días sin pagar (desde la llegada CONFIRMADA hasta
+    hoy o hasta que se pague), y los totales/mora derivados de las ventanas
+    SIN MORA / Pago Realizado ya congeladas.
 
     Descripción, Cantidad y Llegada NO se cruzan aquí: viven en la propia hoja
-    Pagos, sincronizadas por sincronizar_pagos_con_transito(), así que se leen
-    tal cual de sus columnas — no hay lookup en vivo que hacer."""
+    Pagos, sincronizadas por sincronizar_pagos_con_transito() — se leen tal
+    cual de sus columnas. La ÚNICA excepción es la llegada CONFIRMADA que usa
+    el contador de días sin pagar: esa sí se recalcula en vivo, porque si se
+    queda con el valor sincronizado una vez, nunca se actualiza cuando la
+    llegada se confirma después."""
     df = df_pagos.copy()
-    calculadas = ["BLSinTransito", "TieneMontos", "SinMoraTotales", "PagoRealTotales",
-                  "MontoExtra", "DiasMora", "FechaSinMoraParsed", "FechaPagoRealParsed"]
+    calculadas = ["BLSinTransito", "TieneMontos", "TotalActual", "DiasSinPagar",
+                  "SinMoraTotales", "PagoRealTotales", "MontoExtra", "DiasMora",
+                  "FechaSinMoraParsed", "FechaPagoRealParsed"]
     if df.empty:
         for c in calculadas:
             df[c] = []
@@ -582,10 +614,25 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
         for bl in df[COL_BL].astype(str).str.strip()
     ]
 
-    df["TieneMontos"] = [totales_conceptos(r) is not None for _, r in df.iterrows()]
+    totales_actuales = [totales_conceptos(r) for _, r in df.iterrows()]
+    df["TotalActual"] = totales_actuales
+    df["TieneMontos"] = [t is not None for t in totales_actuales]
 
     df["FechaSinMoraParsed"] = [parsear_fecha(v) for v in df.get(COL_FECHA_SIN_MORA, [])]
     df["FechaPagoRealParsed"] = [parsear_fecha(v) for v in df.get(COL_FECHA_PAGO_REAL, [])]
+
+    llegadas_confirmadas = _llegadas_confirmadas(activos, historico)
+    hoy = hoy_rd()
+    dias_sin_pagar = []
+    for bl, fecha_pago in zip(df[COL_BL].astype(str).str.strip(), df["FechaPagoRealParsed"]):
+        llegada = llegadas_confirmadas.get(bl)
+        if not llegada:
+            dias_sin_pagar.append(None)  # todavía sin confirmar: el contador no arranca
+            continue
+        referencia = fecha_pago or hoy   # ya pagado -> se congela ahí; si no, corre hasta hoy
+        dias_sin_pagar.append((referencia - llegada).days)
+    df["DiasSinPagar"] = dias_sin_pagar
+
     df["SinMoraTotales"] = [
         {"USD": a_numero(r.get(COL_SINMORA_USD)), "DOP": a_numero(r.get(COL_SINMORA_DOP))}
         for _, r in df.iterrows()

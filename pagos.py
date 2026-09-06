@@ -22,18 +22,18 @@ import pandas as pd
 import streamlit as st
 
 from sheets_io import (
-    CATEGORIAS, COL_BL, COL_CANT, COL_DESC, COL_EMPRESA, COL_ESTADO_PAGO,
-    COL_ETA, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA,
-    COL_PAGO_LLEGADA, COL_PAGOREAL_DOP, COL_PAGOREAL_USD, CONCEPTOS_PAGO,
-    EMPRESA_ANTILLANA, EMPRESAS_PAGO, ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE,
-    MONEDA_CONCEPTO, _norm, a_numero, aplicar_selectores_pagos,
-    fecha_llegada_fila, formato_eta, guardar_pago, hoy_rd, invalidar_caches,
-    marcar_estado_pago, mover_empresa_primera_columna, parsear_fecha,
-    registrar_log, registrar_pago_realizado, registrar_sin_mora,
-    sincronizar_pagos_con_transito,
+    CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
+    COL_DESC, COL_EMPRESA, COL_ESTADO_PAGO, COL_ETA, COL_FECHA_LLEGADA_PUERTO,
+    COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA, COL_PAGO_LLEGADA, COL_PAGOREAL_DOP,
+    COL_PAGOREAL_USD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO,
+    ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE, MESES_ES_CORTO, MONEDA_CONCEPTO,
+    _norm, a_numero, aplicar_selectores_pagos, fecha_llegada_fila, formato_eta,
+    guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago,
+    mover_empresa_primera_columna, parsear_fecha, parsear_marca, registrar_log,
+    registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
 )
 from logica import PALETA_PAISES, enriquecer_pagos, esc, resumen_pagos, totales_conceptos
-from ui_componentes import COLOR_TOTAL, CUSTOM_CSS
+from ui_componentes import COLOR_TOTAL, CUSTOM_CSS, _logo_base64
 
 
 COLOR_SOBRECOSTO = "#991B1B"
@@ -568,13 +568,66 @@ def form_estado_pago(enriquecido: pd.DataFrame):
 # ---------------------------------------------------------------------------
 # PANEL PRINCIPAL — lo único que app.py necesita llamar
 # ---------------------------------------------------------------------------
+def _sello_actualizacion_pagos(df_pagos: pd.DataFrame) -> dict:
+    """Última carga/persona que tocó CUALQUIER fila de Pagos — mismo cálculo
+    que cargar_todo() hace para tránsito, pero sobre esta hoja. Aparte a
+    propósito: si reusáramos el sello de datos['ultima_carga'] (que viene de
+    tránsito), el encabezado de Pagos mostraría una hora que no tiene nada
+    que ver con esta pestaña."""
+    vacio = {"ultima_carga": None, "ultima_persona": ""}
+    if df_pagos is None or df_pagos.empty or COL_ACTUALIZACION not in df_pagos.columns:
+        return vacio
+    marcas = [m for m in (parsear_marca(v) for v in df_pagos[COL_ACTUALIZACION]) if m]
+    if not marcas:
+        return vacio
+    ultima = max(marcas)
+    persona = ""
+    if COL_ACTUALIZADO_POR in df_pagos.columns:
+        for marca_val, autor in zip(df_pagos[COL_ACTUALIZACION], df_pagos[COL_ACTUALIZADO_POR]):
+            if parsear_marca(marca_val) == ultima and str(autor).strip():
+                persona = str(autor).strip()
+                break
+    return {"ultima_carga": ultima, "ultima_persona": persona}
+
+
+def _encabezado_pagos(sello_info: dict):
+    """Mismo encabezado con logo que usa el Dashboard de tránsito — reusa las
+    clases CSS que ya trae CUSTOM_CSS (.ant-head, .ant-eyebrow, etc.), sin
+    tocar ui_componentes.py — pero con título y sello propios de Pagos."""
+    anio = hoy_rd().year
+    ultima = sello_info.get("ultima_carga")
+    persona = str(sello_info.get("ultima_persona", "") or "").strip()
+    if ultima:
+        sello = (f"Información actualizada: {ultima.day:02d} {MESES_ES_CORTO[ultima.month]} "
+                 f"{ultima.year}, {ultima.strftime('%I:%M %p').lstrip('0').lower()} (hora RD)")
+        if persona:
+            sello += f" · por {persona}"
+    else:
+        sello = "Sin registro de la última carga de información en Pagos"
+    logo = _logo_base64()
+    img = f'<img class="ant-logo" src="{logo}" alt="Antillana Comercial">' if logo else ""
+    st.markdown(
+        f'<div class="ant-head">{img}'
+        f'<span class="ant-eyebrow">'
+        f'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0C447C" stroke-width="2" '
+        f'stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/>'
+        f'<path d="M9 21v-6h6v6"/></svg> Logística e Importaciones {anio}</span>'
+        f'<div class="ant-title">Estatus de Pagos</div>'
+        f'<div class="ant-rule"></div>'
+        f'<div class="ant-sub">Antillana Comercial</div>'
+        f'<div class="ant-stamp"><span class="ant-dot"></span> {esc(sello)}</div>'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def panel_pagos(datos: dict, es_admin: bool):
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-    st.subheader("Estatus de Pago")
 
     activos = datos.get("activos", pd.DataFrame())
     historico = datos.get("historico", pd.DataFrame())
     df_pagos = datos.get("pagos", pd.DataFrame())
+    _encabezado_pagos(_sello_actualizacion_pagos(df_pagos))
 
     # Sincronización automática: solo admin (los viewers nunca deben disparar
     # escrituras), y solo cuando la comparación en memoria encuentra un BL de

@@ -620,21 +620,23 @@ def _celda_referencia(r) -> str:
     """La 3ra columna de la lista. No todas las categorías traen lo mismo:
     Modelo/Serie solo lo tienen Equipos, Generadores y Consolidados; Cliente/
     Stock solo Equipos, Generadores y Aéreos. Carga Suelta no trae ninguno de
-    los dos y ahí la celda sale vacía en vez de inventar un dato."""
+    los dos y ahí la celda sale vacía en vez de inventar un dato.
+
+    Cuando la categoría prioriza Modelo/Serie pero esa celda viene vacía Y sí
+    hay Cliente/Stock cargado, se muestra el Cliente/Stock como dato principal
+    en vez de un guion — un guion escondía un dato real que sí estaba en el
+    Sheet."""
     categoria = r.get("Categoria", "")
     columna = columna_referencia(categoria)
     if not columna:
         return '<div class="c-suave" data-l="Referencia">—</div>'
+    valor_principal = str(r.get(columna, "") or "").strip()
+    cliente = str(r.get(COL_CLIENTE_STOCK, "") or "").strip() if columna == COL_MODELO else ""
+    if columna == COL_MODELO and not valor_principal and cliente:
+        return f'<div class="c-suave" data-l="Cliente/Stock">{esc(cliente)}</div>'
     etiqueta = "Modelo/Serie" if columna == COL_MODELO else "Cliente/Stock"
-    valor = esc(r.get(columna, ""))
-    extra = ""
-    # En Equipos y Generadores conviven ambos: el modelo manda y el cliente va
-    # debajo, igual que OC/EE va debajo del BL.
-    if columna == COL_MODELO:
-        cliente = str(r.get(COL_CLIENTE_STOCK, "") or "").strip()
-        if cliente:
-            extra = f'<div class="c-ref">{esc(cliente)}</div>'
-    return f'<div class="c-suave" data-l="{etiqueta}">{valor}{extra}</div>'
+    extra = f'<div class="c-ref">{esc(cliente)}</div>' if cliente else ""
+    return f'<div class="c-suave" data-l="{etiqueta}">{esc(valor_principal) or "—"}{extra}</div>'
 
 
 def render_lista(df: pd.DataFrame):
@@ -1345,8 +1347,19 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
         st.markdown("</div>", unsafe_allow_html=True)
 
     # -------------------- EN PROCESO EN PUERTO --------------------
+    # Se lee el filtro de Estado ANTES de que el selectbox se instancie más
+    # abajo: el valor ya vive en session_state desde el render anterior (o
+    # desde que un botón de KPI lo puso ahí), así que no hace falta esperar a
+    # dibujar el selector para saber qué está activo.
+    #
+    # Esta sección es, por definición, sobre lo que está EN PUERTO — no tiene
+    # sentido que aparezca primero cuando el usuario pidió ver "En tránsito",
+    # "Retrasados" u otro estado que no es este. Se muestra solo cuando el
+    # filtro es "Todos" o el propio "En Puerto".
+    estado_filtro_actual = st.session_state.get(f"estado_{tab_key}", "Todos")
+    mostrar_en_proceso = estado_filtro_actual in ("Todos", EST_PUERTO)
     en_proceso = _en_proceso(df)
-    if not en_proceso.empty:
+    if mostrar_en_proceso and not en_proceso.empty:
         st.markdown("**En proceso en puerto**")
         st.markdown(html_chips(en_proceso["EtapaActual"].value_counts().to_dict()), unsafe_allow_html=True)
         html_atraso_puerto(en_proceso, contexto=tab_key)

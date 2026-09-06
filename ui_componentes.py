@@ -18,7 +18,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from sheets_io import (
-    CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
+    CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
     COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_LLEGO, COL_MODELO,
     COL_OC, COL_PAIS, ETAPA_ALMACEN, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES,
     MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO,
@@ -465,6 +465,21 @@ def _logo_base64() -> str:
     return ""
 
 
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _enriquecer_cacheado(df: pd.DataFrame) -> pd.DataFrame:
+    """Envoltura cacheada de enriquecer() (logica.py es sin Streamlit a propósito,
+    así que el cacheo vive aquí, no ahí). Misma ventana de 45s que ya tolera
+    cargar_todo(): con varios viewers mirando el mismo tablero a la vez, solo
+    la primera sesión calcula esto — las demás reciben el mismo resultado ya
+    calculado en vez de repetirlo cada una por su cuenta.
+
+    enriquecer() usa la fecha de HOY para calcular días transcurridos, así que
+    cachearlo introduce hasta 45s de margen en esos contadores — la misma
+    tolerancia que ya existe en el resto del tablero, no una nueva. No cambia
+    QUÉ se calcula, solo evita recalcularlo de más."""
+    return enriquecer(df)
+
+
 def encabezado(datos: dict):
     anio = hoy_rd().year
     ultima = datos.get("ultima_carga")
@@ -688,9 +703,12 @@ def render_lista(df: pd.DataFrame):
     st.markdown("".join(partes), unsafe_allow_html=True)
 
 
-def grafico_linea_tiempo(df: pd.DataFrame, key: str):
-    """Qué viene encima, semana por semana. Responde la pregunta que un gerente
-    hace de verdad ('¿qué me llega en las próximas semanas?')."""
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _figura_linea_tiempo(df: pd.DataFrame) -> go.Figure:
+    """Arma la figura (sin dibujarla) — cacheada porque no depende de los
+    filtros de más abajo (buscador, país, etapa, orden): usa el df completo de
+    la categoría, así que antes se reconstruía en cada tecla del buscador sin
+    necesidad. Misma ventana de 45s que el resto del tablero."""
     hoy = hoy_rd()
     inicio_semana = hoy - timedelta(days=hoy.weekday())
     etiquetas, valores, colores = [], [], []
@@ -742,24 +760,29 @@ def grafico_linea_tiempo(df: pd.DataFrame, key: str):
         yaxis=dict(showgrid=True, gridcolor="#F3F4F6", showticklabels=False, title=""),
         bargap=0.35, dragmode=False,
     )
+    return fig
+
+
+def grafico_linea_tiempo(df: pd.DataFrame, key: str):
+    """Qué viene encima, semana por semana. Responde la pregunta que un gerente
+    hace de verdad ('¿qué me llega en las próximas semanas?')."""
+    fig = _figura_linea_tiempo(df)
     st.plotly_chart(fig, width="stretch",
                     config={"displayModeBar": False, "staticPlot": True, "responsive": True},
                     key=f"tl_{key}")
 
 
-def grafico_paises(df: pd.DataFrame, key: str):
-    """Barras por país en HTML/CSS, no en Plotly.
-
-    Plotly recalcula el ancho del eje según el largo de las etiquetas y lo vuelve
-    a hacer en cada redibujado: en celular eso es lo que hacía que las barras se
-    movieran solas al girar el teléfono o al abrir el teclado. Estas barras miden
-    en porcentaje del ancho disponible, así que no dependen del texto ni de
-    JavaScript, y se imprimen bien."""
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _html_paises(df: pd.DataFrame) -> str:
+    """Arma el HTML de las barras por país — cacheado por la misma razón que
+    la gráfica de llegadas: no depende de los filtros de más abajo. Cadena
+    vacía cuando no hay nada que mostrar, para no complicarle la vida al
+    llamador con un None."""
     if COL_PAIS not in df.columns or df.empty:
-        return
+        return ""
     serie = df[COL_PAIS].replace("", NO_ESPECIFICADO).value_counts()
     if serie.empty:
-        return
+        return ""
     tope = int(serie.max()) or 1
     piezas = ['<div class="paises"><div class="atttl">Por país de origen</div>']
     for i, (pais, n) in enumerate(serie.items()):
@@ -771,7 +794,20 @@ def grafico_paises(df: pd.DataFrame, key: str):
             f'<div class="pval">{int(n)}</div></div>'
         )
     piezas.append("</div>")
-    st.markdown("".join(piezas), unsafe_allow_html=True)
+    return "".join(piezas)
+
+
+def grafico_paises(df: pd.DataFrame, key: str):
+    """Barras por país en HTML/CSS, no en Plotly.
+
+    Plotly recalcula el ancho del eje según el largo de las etiquetas y lo vuelve
+    a hacer en cada redibujado: en celular eso es lo que hacía que las barras se
+    movieran solas al girar el teléfono o al abrir el teclado. Estas barras miden
+    en porcentaje del ancho disponible, así que no dependen del texto ni de
+    JavaScript, y se imprimen bien."""
+    html = _html_paises(df)
+    if html:
+        st.markdown(html, unsafe_allow_html=True)
 
 
 def _ficha_embarque(fila):
@@ -1527,7 +1563,7 @@ def mostrar_dashboard(datos: dict):
         st.info("Todavía no hay embarques cargados.")
         return
 
-    df_todo = enriquecer(df_todo)
+    df_todo = _enriquecer_cacheado(df_todo)
     recibidas_mes = contar_recibidas_mes(datos["historico"])
     rol = st.session_state.get("rol", "viewer")
 

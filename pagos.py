@@ -32,7 +32,7 @@ from sheets_io import (
     registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
 )
 from logica import PALETA_PAISES, enriquecer_pagos, esc, resumen_pagos, totales_conceptos
-from ui_componentes import COLOR_RECIBIDAS_MES, COLOR_TOTAL, CUSTOM_CSS, tarjeta_kpi
+from ui_componentes import COLOR_RECIBIDAS_MES, COLOR_TOTAL, CUSTOM_CSS
 
 
 COLOR_SOBRECOSTO = "#991B1B"
@@ -149,19 +149,71 @@ def _hay_bls_sin_sincronizar(activos: pd.DataFrame, historico: pd.DataFrame, pag
 # ---------------------------------------------------------------------------
 # DASHBOARD (viewer + admin)
 # ---------------------------------------------------------------------------
-def _tarjetas_resumen(resumen: dict):
-    c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(tarjeta_kpi("Expedientes cerrados", resumen["n_pagados"], COLOR_TOTAL),
-                unsafe_allow_html=True)
-    c2.markdown(tarjeta_kpi("Pagados a tiempo", resumen["n_a_tiempo"], COLOR_RECIBIDAS_MES),
-                unsafe_allow_html=True)
+COLOR_ABIERTOS = "#2E86DE"
+
+
+def _aplicar_filtro_kpi(df: pd.DataFrame, filtro: str) -> pd.DataFrame:
+    """Mismo criterio que arma resumen_pagos, evaluado fila por fila para
+    poder filtrar la lista de tarjetas según qué KPI se haya clickeado."""
+    if df.empty or filtro == "todos":
+        return df
+    cerrado = df["FechaPagoRealParsed"].notna() & df["FechaSinMoraParsed"].notna()
+    if filtro == "cerrados":
+        return df[cerrado]
+    if filtro == "abiertos":
+        return df[~cerrado]
+    if filtro == "a_tiempo":
+        return df[cerrado & (df["DiasMora"] <= 0)]
+    if filtro == "con_mora":
+        return df[cerrado & (df["DiasMora"] > 0)]
+    if filtro == "con_sobrecosto":
+        def _tiene_extra(e):
+            e = e or {}
+            return any(v is not None and v > 0 for v in e.values())
+        return df[cerrado & df["MontoExtra"].apply(_tiene_extra)]
+    return df
+
+
+def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
+    """Las 5 tarjetas de KPI como botones clicables — mismo patrón que las
+    categorías de tránsito: un clic filtra la lista de abajo, y clickear la
+    misma que ya está activa la vuelve a 'todos'. Devuelve el filtro que quedó
+    activo después del clic (o el mismo de antes, si no se clickeó nada)."""
     prom = resumen["dias_mora_promedio"]
-    c3.markdown(tarjeta_kpi("Mora promedio", f"{prom:.0f} d" if prom is not None else "—",
-                            COLOR_MORA_PROMEDIO), unsafe_allow_html=True)
     sobre = resumen["sobrecosto"]
-    c4.markdown(tarjeta_kpi("Sobrecosto acumulado",
-                            f"US$ {sobre['USD']:,.0f} · RD$ {sobre['DOP']:,.0f}",
-                            COLOR_SOBRECOSTO), unsafe_allow_html=True)
+    kpis = [
+        ("Expedientes cerrados", str(resumen["n_pagados"]), COLOR_TOTAL, "cerrados"),
+        ("Expedientes abiertos", str(resumen["n_abiertos"]), COLOR_ABIERTOS, "abiertos"),
+        ("Pagados a tiempo", str(resumen["n_a_tiempo"]), COLOR_RECIBIDAS_MES, "a_tiempo"),
+        ("Mora promedio", f"{prom:.0f} d" if prom is not None else "—", COLOR_MORA_PROMEDIO, "con_mora"),
+        ("Sobrecosto acumulado", f"US$ {sobre['USD']:,.0f} · RD$ {sobre['DOP']:,.0f}",
+         COLOR_SOBRECOSTO, "con_sobrecosto"),
+    ]
+    estilos = "".join(
+        f'.st-key-pagokpi_{slug} button {{background:{color} !important; color:#fff !important; '
+        f'border:{"3px solid #111827" if filtro_activo == slug else "none"} !important; '
+        f'border-radius:14px !important; width:100% !important; min-height:92px !important; '
+        f'padding:14px 10px !important; box-shadow:0 2px 8px rgba(17,24,39,0.12) !important;}} '
+        f'.st-key-pagokpi_{slug} button > div {{display:flex !important; flex-direction:column !important; '
+        f'align-items:center !important; justify-content:center !important; width:100% !important;}} '
+        f'.st-key-pagokpi_{slug} button p {{margin:0 !important; color:#fff !important; '
+        f'text-align:center !important; width:100% !important;}} '
+        f'.st-key-pagokpi_{slug} button p:first-of-type {{font-size:0.68rem !important; '
+        f'font-weight:700 !important; letter-spacing:0.05em !important; text-transform:uppercase !important; '
+        f'opacity:0.92 !important;}} '
+        f'.st-key-pagokpi_{slug} button p:last-of-type {{font-size:1.35rem !important; '
+        f'font-weight:800 !important; margin-top:6px !important;}}'
+        for _, _, color, slug in kpis
+    )
+    st.markdown(f"<style>{estilos}</style>", unsafe_allow_html=True)
+    cols = st.columns(len(kpis))
+    for col, (label, valor, _color, slug) in zip(cols, kpis):
+        with col:
+            with st.container(key=f"pagokpi_{slug}"):
+                if st.button(f"{label.upper()}\n\n{valor}", key=f"btn_pagokpi_{slug}", width="stretch"):
+                    st.session_state["pago_filtro_estado"] = "todos" if filtro_activo == slug else slug
+                    st.rerun()
+    return st.session_state.get("pago_filtro_estado", "todos")
 
 
 def _html_expediente(r) -> str:
@@ -224,35 +276,31 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
     vista = enriquecido if empresa_sel == "Todas" or enriquecido.empty \
         else enriquecido[enriquecido["EmpresaEfectiva"] == empresa_sel]
 
-    resumen = resumen_pagos(vista)
-    _tarjetas_resumen(resumen)
-    st.caption("\"Total a pagar\" es lo que hay cargado en los conceptos AHORA MISMO. Lo que aparece "
-              "\"Pagado el...\" al pie de la tarjeta usa la ventana SIN MORA que se haya congelado "
-              "desde la app para calcular el extra sobre lo saludable.")
-
     if vista.empty:
         st.info("No hay expedientes de Pagos para esta selección.")
         return
 
     con_montos = vista[vista["TieneMontos"]]
-    sin_montos = len(vista) - len(con_montos)
 
     sin_transito = int(vista["BLSinTransito"].sum())
     if sin_transito:
         st.warning(f"{sin_transito} expediente(s) de Pagos ya no tienen un BL coincidente en tránsito "
                    "(activo ni histórico) — puede que se hayan eliminado o cambiado de BL ahí.")
 
+    resumen = resumen_pagos(con_montos)
+    filtro_activo = _tarjetas_resumen(resumen, st.session_state.get("pago_filtro_estado", "todos"))
+
     if con_montos.empty:
         st.info(f"Hay {len(vista)} expediente(s) en esta selección, pero ninguno tiene montos "
                 "cargados todavía. Se muestran aquí solo cuando tengan al menos un concepto lleno.")
         return
 
-    if sin_montos:
-        st.caption(f"Mostrando {len(con_montos)} expediente(s) con montos cargados · "
-                  f"{sin_montos} más ya están en la hoja esperando que se les llenen los conceptos.")
-
+    filtrado = _aplicar_filtro_kpi(con_montos, filtro_activo)
     st.markdown(PAGOS_CSS, unsafe_allow_html=True)
-    st.markdown("".join(_html_expediente(r) for _, r in con_montos.iterrows()), unsafe_allow_html=True)
+    if filtrado.empty:
+        st.caption("Ningún expediente coincide con este filtro.")
+    else:
+        st.markdown("".join(_html_expediente(r) for _, r in filtrado.iterrows()), unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------

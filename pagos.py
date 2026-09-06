@@ -307,8 +307,35 @@ def _html_expediente(r) -> str:
     )
 
 
+ESTADO_DISPLAY = {"todos": "Todos", "abiertos": "Pendiente", "cerrados": "Pagado"}
+
+
+ESTADO_SLUG = {v: k for k, v in ESTADO_DISPLAY.items()}
+
+
 def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
-    empresa_sel = st.selectbox("Empresa", ["Todas"] + EMPRESAS_PAGO, key="pago_filtro_empresa")
+    c1, c2 = st.columns(2)
+    with c1:
+        empresa_sel = st.selectbox("Empresa", ["Todas"] + EMPRESAS_PAGO, key="pago_filtro_empresa")
+
+    # Mismo estado que ya manejan los botones de KPI (Pagados/Pendientes),
+    # para que este selector y esos botones nunca se contradigan. La clave
+    # del widget incluye el slug actual a propósito: así, si el estado cambia
+    # desde un botón, este selector se re-crea con el valor correcto en vez
+    # de quedarse pegado en lo que el usuario había elegido antes aquí.
+    slug_actual = st.session_state.get("pago_filtro_estado", "todos")
+    if slug_actual not in ESTADO_DISPLAY:
+        slug_actual = "todos"  # "con_mora"/"con_sobrecosto" no tienen equivalente en este selector
+    opciones_estatus = ["Todos", "Pendiente", "Pagado"]
+    with c2:
+        estatus_sel = st.selectbox("Estatus", opciones_estatus,
+                                   index=opciones_estatus.index(ESTADO_DISPLAY[slug_actual]),
+                                   key=f"pago_filtro_estatus_{slug_actual}")
+    nuevo_slug = ESTADO_SLUG[estatus_sel]
+    if nuevo_slug != slug_actual:
+        st.session_state["pago_filtro_estado"] = nuevo_slug
+        st.rerun()
+
     vista = enriquecido if empresa_sel == "Todas" or enriquecido.empty \
         else enriquecido[enriquecido["EmpresaEfectiva"] == empresa_sel]
 

@@ -57,6 +57,7 @@ from ui_componentes import CUSTOM_CSS, VERSION_APP, mostrar_dashboard, selector_
 from vistas_admin import (
     form_alta_manual, form_carga_masiva, form_editar, herramientas, mostrar_historico,
 )
+from pagos import panel_pagos
 
 
 st.set_page_config(
@@ -280,8 +281,9 @@ def main():
 
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     es_admin = st.session_state.rol == "admin"
-    secciones = (["Dashboard", "Agregar", "Editar", "Carga masiva", "Histórico", "Herramientas"]
-                 if es_admin else ["Dashboard", "Histórico"])
+    secciones = (["Dashboard", "Agregar", "Editar", "Carga masiva", "Histórico",
+                  "Estatus de Pago", "Herramientas"]
+                 if es_admin else ["Dashboard", "Histórico", "Estatus de Pago"])
 
     # Navegación con estado propio en vez de st.tabs: además de no ejecutar el
     # cuerpo de todas las secciones en cada rerun, permite saltar por código
@@ -332,6 +334,8 @@ def main():
         form_carga_masiva(datos)
     elif seccion == "Histórico":
         mostrar_historico(datos, "admin" if es_admin else "viewer")
+    elif seccion == "Estatus de Pago":
+        panel_pagos(datos, es_admin)
     elif seccion == "Herramientas":
         herramientas(datos)
 

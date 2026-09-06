@@ -1672,10 +1672,12 @@ def aplicar_selectores_pagos():
     """Aplica (o reintenta) los selectores de calendario y de Empresa sobre la
     pestaña Pagos que YA EXISTE. Para correrlo a mano una vez sobre una
     pestaña creada antes de que estos selectores existieran — la creación
-    automática solo los aplica a pestañas nuevas."""
+    automática solo los aplica a pestañas nuevas. Se asegura primero de que
+    las columnas existan (por si Empresa nunca se llegó a crear)."""
     ws = get_worksheet(PAGOS_SHEET)
     if ws is None:
         return False, f"No existe la pestaña '{PAGOS_SHEET}' todavía."
+    _asegurar_columnas(ws, COLUMNAS_PAGOS)
     return _aplicar_validaciones_pagos(ws)
 
 
@@ -1684,16 +1686,19 @@ def mover_empresa_primera_columna():
     Pagos que ya existía de antes. Puramente cosmético: la app siempre busca
     las columnas por NOMBRE, nunca por posición, así que esto no cambia nada
     funcionalmente — es solo para que se vea como Logística lo pidió al
-    trabajar directo en el Sheet. Pensado para correrlo una sola vez."""
+    trabajar directo en el Sheet. Pensado para correrlo una sola vez.
+
+    Se asegura primero de que la columna exista: si nadie ha guardado nada
+    desde que Empresa se agregó al esquema, la columna todavía no está en el
+    Sheet, y sin esto el botón no encontraba nada que mover."""
     ws = get_worksheet(PAGOS_SHEET)
     if ws is None:
         return False, f"No existe la pestaña '{PAGOS_SHEET}' todavía."
     try:
-        headers = ws.row_values(1)
+        headers = _asegurar_columnas(ws, COLUMNAS_PAGOS)
         idx = _columna_indice(headers, COL_EMPRESA)
         if not idx:
-            return False, ("La columna 'Empresa' todavía no existe en la pestaña — guarda algún "
-                           "expediente primero para que se cree, y luego corre esto.")
+            return False, "No se pudo crear ni encontrar la columna 'Empresa'."
         idx0 = idx - 1
         if idx0 == 0:
             return True, "'Empresa' ya es la primera columna."

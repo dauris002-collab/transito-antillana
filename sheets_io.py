@@ -302,7 +302,7 @@ EMPRESAS_PAGO = [EMPRESA_ANTILLANA, "Tecnicaribe", "Motor Ibérico"]
 
 
 COLUMNAS_PAGOS = [
-    COL_BL, COL_EMPRESA, COL_DESC, COL_CANT, COL_PAGO_LLEGADA, *CONCEPTOS_PAGO, COL_ESTADO_PAGO,
+    COL_EMPRESA, COL_BL, COL_DESC, COL_CANT, COL_PAGO_LLEGADA, *CONCEPTOS_PAGO, COL_ESTADO_PAGO,
     COL_FECHA_SIN_MORA, COL_SINMORA_USD, COL_SINMORA_DOP,
     COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
     COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
@@ -1679,16 +1679,49 @@ def aplicar_selectores_pagos():
     return _aplicar_validaciones_pagos(ws)
 
 
+def mover_empresa_primera_columna():
+    """Mueve la columna Empresa a la posición A (antes de BL) en una pestaña
+    Pagos que ya existía de antes. Puramente cosmético: la app siempre busca
+    las columnas por NOMBRE, nunca por posición, así que esto no cambia nada
+    funcionalmente — es solo para que se vea como Logística lo pidió al
+    trabajar directo en el Sheet. Pensado para correrlo una sola vez."""
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}' todavía."
+    try:
+        headers = ws.row_values(1)
+        idx = _columna_indice(headers, COL_EMPRESA)
+        if not idx:
+            return False, ("La columna 'Empresa' todavía no existe en la pestaña — guarda algún "
+                           "expediente primero para que se cree, y luego corre esto.")
+        idx0 = idx - 1
+        if idx0 == 0:
+            return True, "'Empresa' ya es la primera columna."
+        get_spreadsheet().batch_update({"requests": [{
+            "moveDimension": {
+                "source": {"sheetId": ws.id, "dimension": "COLUMNS",
+                          "startIndex": idx0, "endIndex": idx0 + 1},
+                "destinationIndex": 0,
+            },
+        }]})
+        _refrescar_estructura()
+        return True, "'Empresa' movida a la primera columna (A)."
+    except Exception as e:  # noqa: BLE001
+        return False, f"No se pudo mover la columna: {e}"
+
+
 @_con_manejo_apierror
-def guardar_pago(bl: str, conceptos: dict, estado: str = None, referencia: dict = None):
+def guardar_pago(bl: str, conceptos: dict, estado: str = None, empresa: str = None, referencia: dict = None):
     """Crea o actualiza la fila de Pagos de un BL. `conceptos` trae únicamente
     los que aplican a este expediente (los que no, se guardan vacíos: 'no
-    aplica' no es lo mismo que 'cero'). `referencia` (Descripción/Cantidad/
-    Llegada) solo se usa AL CREAR la fila — si ya existe, no se toca, porque
-    esos tres campos son de sincronizar_pagos_con_transito(), no de este
-    formulario, y no hay que pisar lo que ya se sincronizó. No toca las
-    ventanas SIN MORA ni Pago Realizado — esas se fijan aparte, con
-    registrar_sin_mora() y registrar_pago_realizado()."""
+    aplica' no es lo mismo que 'cero'). `empresa`, si viene, se aplica SIEMPRE
+    (crear o editar) — a diferencia de Descripción/Cantidad/Llegada, Empresa
+    no tiene otra fuente de verdad que pisar: es Logística quien la fija, así
+    que corregirla aquí es exactamente lo que se espera. `referencia`
+    (Descripción/Cantidad/Llegada) solo se usa AL CREAR la fila — si ya
+    existe, no se toca, porque esos vienen de sincronizar_pagos_con_transito().
+    No toca las ventanas SIN MORA ni Pago Realizado — esas se fijan aparte,
+    con registrar_sin_mora() y registrar_pago_realizado()."""
     bl = str(bl or "").strip()
     if not bl:
         return False, "Falta el BL."
@@ -1703,6 +1736,8 @@ def guardar_pago(bl: str, conceptos: dict, estado: str = None, referencia: dict 
     datos = {c: v for c, v in conceptos.items() if c in CONCEPTOS_PAGO}
     if estado:
         datos[COL_ESTADO_PAGO] = estado
+    if empresa:
+        datos[COL_EMPRESA] = empresa
     datos[COL_ACTUALIZACION] = marca_ahora()
     datos[COL_ACTUALIZADO_POR] = usuario_actual()
 
@@ -1845,13 +1880,15 @@ def sincronizar_pagos_con_transito(activos: pd.DataFrame, historico: pd.DataFram
                 llegada = fecha_llegada_fila(r) or parsear_fecha(r.get(COL_ETA, ""))
             nuevas.append({
                 COL_BL: bl,
-                COL_EMPRESA: EMPRESA_ANTILLANA,
                 COL_DESC: str(r.get(COL_DESC, "")),
                 COL_CANT: str(r.get(COL_CANT, "")),
                 COL_PAGO_LLEGADA: llegada.isoformat() if llegada else "",
                 COL_ACTUALIZACION: sello,
                 COL_ACTUALIZADO_POR: autor,
             })
+            # Empresa se deja en blanco a propósito: tránsito no tiene ese
+            # concepto (solo trackea Antillana), y quién debe cada expediente
+            # lo decide Logística a mano, no la sincronización.
             vistos.add(clave)
 
     if not nuevas:

@@ -288,8 +288,21 @@ COL_PAGOREAL_DOP = "PagoRealizado_DOP"
 COL_PAGO_LLEGADA = "Llegada"
 
 
+# Razón social del expediente. Tránsito solo trackea embarques de Antillana
+# Comercial, así que todo lo que llega por sincronizar_pagos_con_transito()
+# se marca así de una vez. Tecnicaribe y Motor Ibérico no tienen tránsito
+# propio en esta app: sus expedientes se agregan directo en el Sheet.
+COL_EMPRESA = "Empresa"
+
+
+EMPRESA_ANTILLANA = "Antillana Comercial"
+
+
+EMPRESAS_PAGO = [EMPRESA_ANTILLANA, "Tecnicaribe", "Motor Ibérico"]
+
+
 COLUMNAS_PAGOS = [
-    COL_BL, COL_DESC, COL_CANT, COL_PAGO_LLEGADA, *CONCEPTOS_PAGO, COL_ESTADO_PAGO,
+    COL_BL, COL_EMPRESA, COL_DESC, COL_CANT, COL_PAGO_LLEGADA, *CONCEPTOS_PAGO, COL_ESTADO_PAGO,
     COL_FECHA_SIN_MORA, COL_SINMORA_USD, COL_SINMORA_DOP,
     COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
     COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
@@ -1579,19 +1592,19 @@ def _buscar_fila_pago(ws, bl: str):
     return None, True
 
 
-def _aplicar_selector_fecha(ws):
-    """Mejor esfuerzo: agrega el selector de calendario nativo de Google Sheets
-    (Data validation de tipo fecha) a Fecha_SinMora y Fecha_PagoRealizado, para
-    que al hacer clic en esas celdas aparezca el icono de calendario en vez de
-    depender de que alguien teclee la fecha en un formato válido.
+def _aplicar_validaciones_pagos(ws):
+    """Mejor esfuerzo: agrega los selectores nativos de Google Sheets —
+    calendario en Fecha_SinMora / Fecha_PagoRealizado, lista desplegable en
+    Empresa — para que esas columnas se elijan con clic en vez de tecleo
+    libre.
 
-    'strict': False a propósito: si algo se escribe mal, se marca con una
-    advertencia visual en vez de RECHAZAR la escritura — un candado duro aquí
-    podría bloquear una escritura de la app si el formato de fecha no coincide
-    exactamente con lo que Sheets espera. Devuelve (ok, mensaje): quien llame
-    desde la creación automática de la pestaña puede ignorar el resultado (es
-    cosmético, no debe tumbar una escritura real de datos), pero un disparo
-    manual sí necesita saber si de verdad funcionó."""
+    'strict': False en ambos casos a propósito: si algo no calza exactamente,
+    Sheets lo marca con una advertencia visual en vez de RECHAZAR la
+    escritura — un candado duro aquí podría bloquear una escritura real de la
+    app o de Logística. Devuelve (ok, mensaje): quien llame desde la creación
+    automática de la pestaña puede ignorar el resultado (es cosmético, no
+    debe tumbar una escritura real de datos), pero un disparo manual sí
+    necesita saber si de verdad funcionó."""
     try:
         headers = ws.row_values(1)
         requests = []
@@ -1615,12 +1628,31 @@ def _aplicar_selector_fecha(ws):
                     },
                 },
             })
+        idx_empresa = _columna_indice(headers, COL_EMPRESA)
+        if idx_empresa:
+            requests.append({
+                "setDataValidation": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": 1,
+                        "endRowIndex": 2000,
+                        "startColumnIndex": idx_empresa - 1,
+                        "endColumnIndex": idx_empresa,
+                    },
+                    "rule": {
+                        "condition": {"type": "ONE_OF_LIST",
+                                      "values": [{"userEnteredValue": e} for e in EMPRESAS_PAGO]},
+                        "showCustomUi": True,
+                        "strict": False,
+                    },
+                },
+            })
         if not requests:
-            return False, "No se encontraron las columnas Fecha_SinMora / Fecha_PagoRealizado en la pestaña."
+            return False, "No se encontraron las columnas esperadas (fechas / Empresa) en la pestaña."
         get_spreadsheet().batch_update({"requests": requests})
-        return True, "Selector de calendario aplicado en Fecha_SinMora y Fecha_PagoRealizado."
+        return True, "Selectores aplicados: calendario en las fechas, lista desplegable en Empresa."
     except Exception as e:  # noqa: BLE001
-        return False, f"No se pudo aplicar el selector de calendario: {e}"
+        return False, f"No se pudo aplicar los selectores: {e}"
 
 
 def _obtener_o_crear_ws_pagos():
@@ -1632,19 +1664,19 @@ def _obtener_o_crear_ws_pagos():
     _con_reintento(lambda: ws.update(range_name="A1", values=[COLUMNAS_PAGOS], value_input_option="RAW"))
     _refrescar_estructura()
     ws = get_worksheet(PAGOS_SHEET)
-    _aplicar_selector_fecha(ws)  # mejor esfuerzo, no bloquea si falla
+    _aplicar_validaciones_pagos(ws)  # mejor esfuerzo, no bloquea si falla
     return ws
 
 
-def aplicar_selector_fecha_pagos():
-    """Aplica (o reintenta) el selector de calendario sobre la pestaña Pagos
-    que YA EXISTE. Para correrlo a mano una vez sobre una pestaña creada antes
-    de que este selector existiera — la creación automática solo lo aplica a
-    pestañas nuevas."""
+def aplicar_selectores_pagos():
+    """Aplica (o reintenta) los selectores de calendario y de Empresa sobre la
+    pestaña Pagos que YA EXISTE. Para correrlo a mano una vez sobre una
+    pestaña creada antes de que estos selectores existieran — la creación
+    automática solo los aplica a pestañas nuevas."""
     ws = get_worksheet(PAGOS_SHEET)
     if ws is None:
         return False, f"No existe la pestaña '{PAGOS_SHEET}' todavía."
-    return _aplicar_selector_fecha(ws)
+    return _aplicar_validaciones_pagos(ws)
 
 
 @_con_manejo_apierror
@@ -1813,6 +1845,7 @@ def sincronizar_pagos_con_transito(activos: pd.DataFrame, historico: pd.DataFram
                 llegada = fecha_llegada_fila(r) or parsear_fecha(r.get(COL_ETA, ""))
             nuevas.append({
                 COL_BL: bl,
+                COL_EMPRESA: EMPRESA_ANTILLANA,
                 COL_DESC: str(r.get(COL_DESC, "")),
                 COL_CANT: str(r.get(COL_CANT, "")),
                 COL_PAGO_LLEGADA: llegada.isoformat() if llegada else "",

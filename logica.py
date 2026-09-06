@@ -1,53 +1,51 @@
 """
 logica.py — Reglas de negocio de Antillana Comercial, sin Streamlit.
 
-Estado del embarque, etapas del flujo, costos de demora, formateo de fechas
-y textos, y el enriquecimiento del DataFrame que alimenta las vistas. Puede
-importar de sheets_io.py (constantes de columnas, utilidades de fecha/texto
-y accesores de Secrets) pero nunca al revés.
+Estado del embarque, etapas del flujo, formateo de fechas y textos, y el
+enriquecimiento del DataFrame que alimenta las vistas. Puede importar de
+sheets_io.py (constantes de columnas, utilidades de fecha/texto y accesores
+de Secrets) pero nunca al revés.
 """
 
 from __future__ import annotations
 
 import html
-import re
 from datetime import date, datetime
 
 import pandas as pd
 
 from sheets_io import (
-    COL_BL, COL_CLIENTE, COL_COSTO_DIA, COL_DESC, COL_EE, COL_ESTATUS_LLEGADA,
-    COL_ETA, COL_FECHA_ALMACEN, COL_FECHA_DECLARACION, COL_FECHA_LLEGADA_PUERTO,
-    COL_FECHA_PAGO, COL_FECHA_SALIDA, COL_FECHA_SOLICITUD_PAGO, COL_MODELO,
-    COL_OC, COL_PAIS, COL_STOCK, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES_CORTO,
-    VALOR_RETRASADO,
+    COL_BL, COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_FECHA_DECLARACION,
+    COL_FECHA_SALIDA, COL_LLEGO, COL_MODELO, COL_OC, COL_PAIS,
+    ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES_CORTO,
     _fecha_de_tokens, _interpretar_tokens, _norm, _slug_css, _tokenizar_fecha,
-    a_numero, columna_de_valor, costos_puerto, es_numero, hoy_rd, parsear_fecha,
-    sla_etapas, _validar_orden_flujo,
+    a_numero, columna_de_valor, costos_puerto, es_llego_no, es_llego_si,
+    es_numero, fecha_llegada_fila, hoy_rd, parsear_fecha, sla_etapas,
+    _validar_orden_flujo,
 )
 
 
+# OC (orden de compra) y EE: hay áreas que validan la carga por orden de compra
+# en vez de por BL, pero solo estas dos categorías las manejan.
 CATEGORIAS_CON_OC_EE = ["Aéreos", "Carga Suelta"]
 
 
-# Estas tres categorías no traen un modelo/serie que sirva para rastrear la
-# carga (a diferencia de Equipos y Generadores, que sí son máquinas con
-# modelo y número de serie propios): ahí la columna de la lista que normalmente
-# muestra Modelo/Serie muestra Cliente/Stock en su lugar. En Equipos y
-# Generadores, Cliente/Stock se agrega junto al Modelo/Serie, no lo reemplaza.
-CATEGORIAS_CLIENTE_STOCK = ["Aéreos", "Carga Suelta", "Consolidados"]
+# Equipos, Generadores y Consolidados son máquinas o lotes con modelo y número
+# de serie propios; en Aéreos y Carga Suelta ese dato no existe y pedirlo solo
+# genera columnas vacías.
+CATEGORIAS_CON_MODELO = ["Equipos", "Generadores", "Consolidados"]
+
+
+# Dónde se rastrea la carga por cliente y stock disponible.
+CATEGORIAS_CON_CLIENTE_STOCK = ["Equipos", "Generadores", "Aéreos"]
 
 
 # Estas dos categorías no se despachan desde un puerto marítimo: la carga queda
-# en un almacén (aéreo) o donde la deja el consolidador (carga suelta). El
-# costo de demora ahí se llama "por almacenaje", no "en puerto" — el resto de
-# los contadores (días, SLA) usa exactamente el mismo cálculo.
+# en un almacén (aéreo) o donde la deja el consolidador (carga suelta). Solo
+# cambia el rótulo; los contadores usan exactamente el mismo cálculo.
 CATEGORIAS_ALMACENAJE = ["Aéreos", "Carga Suelta"]
 
 
-# El flujo de 5 etapas aplica a TODAS las categorías, sin importar el modo de
-# llegada. Lo único que cambia es el rótulo/ícono de la primera etapa: "Llegada
-# a puerto" (🚢) para carga marítima, "Llegada al aeropuerto" (✈️) para Aéreos.
 CATEGORIA_AEREA = "Aéreos"
 
 
@@ -65,40 +63,38 @@ def lugar_de(categoria) -> str:
 
 def etiqueta_etapa(etapa: str, categoria="") -> str:
     """Nombre corto de la etapa, con "aeropuerto" cuando el embarque es aéreo."""
-    if etapa == "Llegada a puerto" and es_aereo(categoria):
+    if etapa == ETAPAS_PUERTO[0] and es_aereo(categoria):
         return "Llegada al aeropuerto"
     return ETIQUETA_CORTA_ETAPA.get(etapa, etapa)
 
 
-def etiqueta_costo(categoria) -> str:
-    """'Costo por Almacenaje' para Aéreos y Carga Suelta (no pasan por un
-    puerto marítimo); 'Costo en puerto' para el resto."""
-    return "Costo por Almacenaje" if categoria in CATEGORIAS_ALMACENAJE else "Costo en puerto"
+def columna_referencia(categoria) -> str:
+    """Qué mostrar en la 3ra columna de la lista para esta categoría."""
+    if categoria in CATEGORIAS_CON_MODELO:
+        return COL_MODELO
+    if categoria in CATEGORIAS_CON_CLIENTE_STOCK:
+        return COL_CLIENTE_STOCK
+    return ""
 
 
 ETIQUETA_CORTA_ETAPA = {
     "Llegada a puerto": "Llegada a puerto",
     "Recepción y declaración": "Recepción/declaración",
-    "Solicitud de pago a finanzas": "Solicitud de pago",
-    "Pago realizado": "Pago realizado",
-    "Recibido en almacén": "Recibido en almacén",
 }
 
 
 ICONO_ETAPA = {
     "Llegada a puerto": "🚢",
     "Recepción y declaración": "📄",
-    "Solicitud de pago a finanzas": "💰",
-    "Pago realizado": "✅",
-    "Recibido en almacén": "🏬",
 }
+
+
+ICONO_ALMACEN = "🏬"
 
 
 TEXTO_ALERTA_ETAPA = {
     "Llegada a puerto": "en {lugar} sin declarar",
-    "Recepción y declaración": "declarado y sin solicitar el pago",
-    "Solicitud de pago a finanzas": "esperando que Finanzas pague",
-    "Pago realizado": "pagado y sin retirar del {lugar}",
+    "Recepción y declaración": "declarado y sin retirar del {lugar}",
 }
 
 
@@ -177,61 +173,10 @@ def texto_dias(n) -> str:
     return f"{d} día" if d == 1 else f"{d} días"
 
 
-_RX_MILES_PUNTO = re.compile(r"^\s*[^\d\-]*-?\d{1,3}(\.\d{3})+\s*$")
-
-
-def tarifa_a_numero(valor):
-    """Lee la tarifa escrita a mano en el Sheet.
-
-    No usa a_numero() directo por un problema real: en RD "4.500" son cuatro mil
-    quinientos, pero a_numero lo lee como 4.50 porque trata el punto como
-    decimal. En un campo de dinero eso es un error de mil veces, y salió en la
-    prueba de este módulo. Aquí, un punto seguido de exactamente tres dígitos y
-    sin comas se trata como separador de miles."""
-    texto = str(valor or "").strip()
-    if not texto:
-        return None
-    if "," not in texto and _RX_MILES_PUNTO.match(texto):
-        texto = texto.replace(".", "")
-    return a_numero(texto)
-
-
-def costo_dia_fila(fila, cfg=None) -> float:
-    """Tarifa diaria de UNA fila: sale EXCLUSIVAMENTE de Costo_Por_Dia en el
-    Sheet. Sin respaldo global ni por categoría — si esa celda está vacía o en
-    0, el embarque no tiene tarifa y no suma costo, en vez de heredar un
-    promedio que nadie fijó para ese embarque en particular. `cfg` se acepta
-    por compatibilidad con las llamadas existentes, aunque ya no se usa aquí."""
-    propio = tarifa_a_numero(fila.get(COL_COSTO_DIA))
-    return float(propio) if (propio is not None and propio > 0) else 0.0
-
-
-def costo_demora_fila(fila, cfg=None):
-    """Lo que lleva causado ESE embarque, contado DESDE LA LLEGADA A PUERTO.
-
-    El contador no arranca en el día del umbral: el costo se causa desde que la
-    carga toca puerto, y el umbral de alerta solo define a partir de cuándo lo
-    consideramos atrasado. Son dos cosas distintas y el dinero sigue al primero.
-
-    Devuelve None si no aplica: no ha llegado, ya se recibió en almacén, o no
-    hay tarifa."""
-    cfg = cfg or costos_puerto()
-    dias = fila.get("DiasEnPuerto")
-    if not es_numero(dias) or _lleno(fila.get("F_Almacen")):
-        return None
-    tarifa = costo_dia_fila(fila, cfg)
-    if tarifa <= 0:
-        return None
-    libres = float(cfg["libres_por_cat"].get(fila.get("Categoria", ""), cfg["dias_libres"]))
-    cobrables = max(0.0, float(dias) - libres)
-    return cobrables * tarifa if cobrables else None
-
-
 def _lleno(v) -> bool:
-    """Una celda de fecha vacía llega como None, como NaN o como cadena vacía
-    según de dónde venga la columna. NaN es truthy, así que `if fila["F_Pago"]`
-    da True en una fila SIN pago y el conteo sale en cero sin avisar. Pasó en la
-    prueba de este mismo módulo."""
+    """Una celda vacía llega como None, como NaN o como cadena vacía según de
+    dónde venga la columna. NaN es truthy, así que `if fila["F_Declaracion"]` da
+    True en una fila SIN declaración y el conteo sale mal sin avisar."""
     if v is None:
         return False
     try:
@@ -245,90 +190,70 @@ def _lleno(v) -> bool:
 def _cumple_filtro_puerto(fila, filtro: str, cfg=None) -> bool:
     """Mismo criterio que arma el detalle de html_atraso_puerto, evaluado fila
     por fila. Se usa para REORDENAR el diagrama de _panel_en_proceso según el
-    filtro activo (Atrasados / Pendientes de pago / Costo), en vez de tener dos
-    listas —la de arriba y la del diagrama— que no se hablan entre sí."""
+    filtro activo, en vez de tener dos listas —la de arriba y la del diagrama—
+    que no se hablan entre sí."""
     if filtro == "todos":
         return True
     cfg = cfg or costos_puerto()
     dias = fila.get("DiasEnPuerto")
-    if not es_numero(dias) or _lleno(fila.get("F_Almacen")):
+    if not es_numero(dias):
         return False
     if filtro == "atrasados":
         return dias > cfg["umbral"]
-    if filtro == "pago":
-        return _lleno(fila.get("F_Solicitud")) and not _lleno(fila.get("F_Pago"))
-    if filtro == "costo":
-        gasto = costo_demora_fila(fila, cfg)
-        return bool(gasto and gasto > 0)
+    if filtro == "sin_declarar":
+        return not _lleno(fila.get("F_Declaracion"))
     return True
 
 
 def resumen_atraso_puerto(df) -> dict:
-    """Lo que está en puerto ahora mismo y lo que lleva costado.
+    """Lo que está en puerto ahora mismo y cuánto lleva ahí.
 
-    El costo cuenta desde la llegada a puerto, no desde que se pasa del plazo.
-    El umbral solo separa lo atrasado de lo que va en tiempo; no mueve el
-    contador de dinero."""
+    No calcula dinero. El costo de la demora no se estima con una tarifa por día
+    —varía por naviera, terminal, volumen y espacio— sino que se observa
+    comparando el monto estimado con el realmente pagado; eso vive en el módulo
+    de Estatus de Pago. Aquí solo se cuentan días, que es lo que sí se sabe con
+    certeza desde tránsito."""
     cfg = costos_puerto()
-    vacio = {"n_puerto": 0, "n_atrasados": 0, "n_pendiente_pago": 0,
-             "dias_excedidos": 0, "costo_total": 0.0, "costo_atrasados": 0.0,
-             "costo_promedio": 0.0, "umbral": cfg["umbral"], "moneda": cfg["moneda"],
-             "hay_tarifa": False, "detalle": []}
+    vacio = {"n_puerto": 0, "n_atrasados": 0, "n_sin_declarar": 0,
+             "dias_excedidos": 0, "dias_promedio": 0.0,
+             "umbral": cfg["umbral"], "detalle": []}
     if df is None or df.empty or "DiasEnPuerto" not in df.columns:
         return vacio
 
-    n_puerto = n_atr = n_pago = dias_exc = 0
-    costo_total = costo_atr = 0.0
+    n_puerto = n_atr = n_sin_dec = dias_exc = 0
+    suma_dias = 0
     detalle = []
     for _, fila in df.iterrows():
         dias = fila.get("DiasEnPuerto")
-        # Congelado = ya se recibió: ese atraso es histórico, no pendiente.
-        if not es_numero(dias) or _lleno(fila.get("F_Almacen")):
+        if not es_numero(dias):
             continue
-        cat = fila.get("Categoria", "")
-        libres = float(cfg["libres_por_cat"].get(cat, cfg["dias_libres"]))
-        tarifa = costo_dia_fila(fila, cfg)
         n_puerto += 1
-        pendiente_pago = _lleno(fila.get("F_Solicitud")) and not _lleno(fila.get("F_Pago"))
-        if pendiente_pago:
-            n_pago += 1
-        cobrables = max(0.0, float(dias) - libres)
-        costo_fila = cobrables * tarifa
-        costo_total += costo_fila
+        suma_dias += int(dias)
+        sin_declarar = not _lleno(fila.get("F_Declaracion"))
+        if sin_declarar:
+            n_sin_dec += 1
         atrasado = dias > cfg["umbral"]
         if atrasado:
             n_atr += 1
             dias_exc += int(dias) - cfg["umbral"]
-            costo_atr += costo_fila
-        # El detalle guarda todo lo que tiene algo que contar: costo, atraso o
-        # pago pendiente. Un embarque sin ninguna de las tres no aporta nada al
-        # filtro de abajo, así que no ocupa espacio en la lista.
-        if costo_fila or atrasado or pendiente_pago:
+        if atrasado or sin_declarar:
             detalle.append({
                 "bl": str(fila.get(COL_BL, "") or ""),
                 "oc": str(fila.get(COL_OC, "") or "").strip(),
-                "cat": cat,
+                "cat": fila.get("Categoria", ""),
                 "dias": int(dias),
                 "exceso": max(0, int(dias) - cfg["umbral"]),
                 "atrasado": atrasado,
-                "pendiente_pago": pendiente_pago,
-                "costo": costo_fila,
-                "tarifa": tarifa,
+                "sin_declarar": sin_declarar,
             })
 
-    detalle.sort(key=lambda d: d["costo"], reverse=True)
+    detalle.sort(key=lambda d: d["dias"], reverse=True)
     return {
-        "n_puerto": n_puerto, "n_atrasados": n_atr, "n_pendiente_pago": n_pago,
-        "dias_excedidos": dias_exc, "costo_total": costo_total,
-        "costo_atrasados": costo_atr,
-        "costo_promedio": (costo_total / n_puerto) if (n_puerto and costo_total) else 0.0,
-        "umbral": cfg["umbral"], "moneda": cfg["moneda"],
-        "hay_tarifa": costo_total > 0, "detalle": detalle,
+        "n_puerto": n_puerto, "n_atrasados": n_atr, "n_sin_declarar": n_sin_dec,
+        "dias_excedidos": dias_exc,
+        "dias_promedio": (suma_dias / n_puerto) if n_puerto else 0.0,
+        "umbral": cfg["umbral"], "detalle": detalle,
     }
-
-
-def _monto(valor: float, moneda: str) -> str:
-    return f"{moneda}{valor:,.0f}"
 
 
 def formato_corto(f) -> str:
@@ -368,16 +293,26 @@ def analizar_eta(valor) -> dict:
 # ---------------------------------------------------------------------------
 # LÓGICA DE ESTADO
 # ---------------------------------------------------------------------------
-def estado_embarque(eta_valor, hoy: date = None):
-    """Devuelve (estado, dias_relativos): atraso en días si está En Puerto, días
-    que faltan si está Próximo a llegar, None si no aplica. 'hoy' se recibe por
-    parámetro para no consultar el reloj una vez por fila."""
+def estado_embarque(eta_valor, llego=None, hoy: date = None):
+    """Devuelve (estado, dias_relativos).
+
+    El ETA por sí solo no dice si la carga llegó: solo que la fecha pasó. Quien
+    lo decide es la casilla '¿Llegó? SI/NO':
+      SI     -> la carga está en puerto; los días se cuentan desde el ETA
+      NO     -> se verificó que no llegó: retrasado
+      vacío  -> nadie ha revisado: 'En Puerto' es en realidad 'por confirmar'
+    """
     eta = parsear_fecha(eta_valor)
     if eta is None:
         return EST_SIN_FECHA, None
     dias = (eta - (hoy or hoy_rd())).days
     if dias < 0:
+        if es_llego_no(llego):
+            return EST_RETRASADO, abs(dias)
         return EST_PUERTO, abs(dias)
+    if es_llego_si(llego):
+        # Confirmada con ETA de hoy: ya está en puerto aunque no haya días.
+        return EST_PUERTO, 0
     if dias <= UMBRAL_PROXIMO:
         return EST_PROXIMO, dias
     return EST_TRANSITO, None
@@ -400,7 +335,7 @@ def texto_estado(estado: str, dias, categoria="") -> str:
 
 
 def _etapa_de_fechas(fechas) -> str:
-    """fechas = 5 valores (date o None) en el orden de ETAPAS_PUERTO. Devuelve la
+    """fechas = valores (date o None) en el orden de ETAPAS_PUERTO. Devuelve la
     última etapa con fecha, o "" si ninguna la tiene. Es la ÚNICA fuente de
     verdad de en qué etapa está un embarque: no hay columna de texto que pueda
     desincronizarse de las fechas reales."""
@@ -423,9 +358,9 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     completa; las vistas por categoría son rebanadas de este resultado."""
     df = df.copy()
     calculadas = ["EstadoTexto", "DiasRel", "ETAFecha", "Prioridad", "OrdenSec", "ValorNum",
-                  "DiasTransito", "DiasSolicitudPago", "DiasPagoDespacho", "DiasEnPuerto",
-                  "DiasEnEtapa", "EtapaActual", "EtapaIdx", "Alerta", "AlertaDias", "Buscar",
-                  "F_Salida", "F_Puerto", "F_Declaracion", "F_Solicitud", "F_Pago", "F_Almacen"]
+                  "DiasTransito", "DiasEnPuerto", "DiasEnEtapa", "EtapaActual", "EtapaIdx",
+                  "Alerta", "AlertaDias", "Buscar", "F_Salida", "F_Puerto", "F_Declaracion",
+                  "BLRepetido", "FlujoRaro"]
     if df.empty:
         for c in calculadas:
             df[c] = []
@@ -434,70 +369,48 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     hoy = hoy_rd()
     sla = sla_etapas()
 
+    llegos = list(df[COL_LLEGO]) if COL_LLEGO in df.columns else [""] * len(df)
     etas = [parsear_fecha(v) for v in df[COL_ETA]]
-    calculado = [estado_embarque(f, hoy) for f in etas]
+    calculado = [estado_embarque(f, l, hoy) for f, l in zip(etas, llegos)]
     df["ETAFecha"] = etas
-    estados = [c[0] for c in calculado]
-    if COL_ESTATUS_LLEGADA in df.columns:
-        estados = [
-            EST_RETRASADO if (e == EST_PUERTO and _norm(f) == _norm(VALOR_RETRASADO)) else e
-            for e, f in zip(estados, df[COL_ESTATUS_LLEGADA])
-        ]
-    df["EstadoTexto"] = estados
+    df["EstadoTexto"] = [c[0] for c in calculado]
     df["DiasRel"] = [c[1] for c in calculado]
     df["Prioridad"] = df["EstadoTexto"].map(PRIORIDAD_ESTADO).fillna(9).astype(int)
 
     salidas = _columna_fechas(df, COL_FECHA_SALIDA)
-    puertos = _columna_fechas(df, COL_FECHA_LLEGADA_PUERTO)
+    # La llegada NO es una columna de fecha propia: es el ETA, y solo cuenta si
+    # alguien confirmó con SI. Mientras nadie confirme, no hay llegada y ningún
+    # contador de puerto arranca — que es justo lo que evita medir días de
+    # almacenaje sobre carga que todavía está navegando.
+    puertos = [
+        parsear_fecha(eta) if es_llego_si(l) else None
+        for eta, l in zip(df[COL_ETA], llegos)
+    ]
     declaraciones = _columna_fechas(df, COL_FECHA_DECLARACION)
-    solicitudes = _columna_fechas(df, COL_FECHA_SOLICITUD_PAGO)
-    pagos = _columna_fechas(df, COL_FECHA_PAGO)
-    almacenes = _columna_fechas(df, COL_FECHA_ALMACEN)
     df["F_Salida"], df["F_Puerto"], df["F_Declaracion"] = salidas, puertos, declaraciones
-    df["F_Solicitud"], df["F_Pago"], df["F_Almacen"] = solicitudes, pagos, almacenes
 
-    fechas_por_fila = list(zip(puertos, declaraciones, solicitudes, pagos, almacenes))
+    fechas_por_fila = list(zip(puertos, declaraciones))
     df["EtapaActual"] = [_etapa_de_fechas(f) for f in fechas_por_fila]
     df["EtapaIdx"] = [INDICE_ETAPA.get(e, -1) for e in df["EtapaActual"]]
 
-    # Dos avisos que antes solo salían en Herramientas y que cuestan tiempo real:
-    # editar el embarque equivocado porque dos filas comparten BL, y confiar en
-    # contadores calculados sobre fechas que van al revés.
+    # Dos avisos que cuestan tiempo real: editar el embarque equivocado porque
+    # dos filas comparten BL, y confiar en contadores calculados sobre fechas
+    # que van al revés.
     bls_norm = df[COL_BL].astype(str).str.strip().str.upper()
     veces = bls_norm.value_counts().to_dict()
     df["BLRepetido"] = [bool(b) and veces.get(b, 0) > 1 for b in bls_norm]
-    df["FlujoRaro"] = [
-        _validar_orden_flujo(dict(zip(ETAPAS_PUERTO, t))) for t in fechas_por_fila
-    ]
+    df["FlujoRaro"] = [_validar_orden_flujo(p, d) for p, d in fechas_por_fila]
 
-    # Contador 1: salida -> llegada a puerto. Congelado en cuanto llegó, para que
-    # el número diga "cuánto tardó" y no "cuánto lleva sin llegar" una vez llegó.
+    # Contador 1: salida -> llegada confirmada. Congelado en cuanto llegó, para
+    # que el número diga "cuánto tardó" y no "cuánto lleva sin llegar".
     df["DiasTransito"] = [
         (ll - sal).days if (sal and ll) else ((hoy - sal).days if sal else None)
         for sal, ll in zip(salidas, puertos)
     ]
-    # Contador 2: solicitud de pago -> pago realizado. Se congela al pagar.
-    df["DiasSolicitudPago"] = [
-        (pg - sol).days if (sol and pg) else ((hoy - sol).days if sol else None)
-        for sol, pg in zip(solicitudes, pagos)
-    ]
-    # Contador 3: pago realizado -> retiro del almacén. Se congela al recibirse,
-    # igual que los dos anteriores; mientras no se retire, corre contra hoy.
-    # Antes solo corría contra hoy, así que al archivar seguía creciendo y por eso
-    # la pantalla lo escondía: el dato de cuánto se tardó en retirar tras pagar
-    # —el que se le reclama a almacén— nunca llegaba a existir.
-    df["DiasPagoDespacho"] = [
-        (al - pg).days if (pg and al) else ((hoy - pg).days if pg else None)
-        for pg, al in zip(pagos, almacenes)
-    ]
-    # Días en puerto: desde la llegada física hasta el retiro, sin importar la
-    # etapa. Es lo que la columna "Dias en puerto" del Sheet nunca llegó a tener.
-    # Congelado al recibirse: ahí deja de ser "cuánto lleva" y pasa a ser el
-    # ciclo total de despacho de ese embarque.
-    df["DiasEnPuerto"] = [
-        (al - p).days if (p and al) else ((hoy - p).days if p else None)
-        for p, al in zip(puertos, almacenes)
-    ]
+    # Contador 2: días en puerto desde la llegada confirmada. Corre contra hoy
+    # porque al archivar el embarque sale del tablero activo; el ciclo cerrado
+    # queda en el histórico.
+    df["DiasEnPuerto"] = [(hoy - p).days if p else None for p in puertos]
 
     dias_etapa, alertas, alerta_dias = [], [], []
     cats = df["Categoria"] if "Categoria" in df.columns else [""] * len(df)
@@ -511,14 +424,17 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
 
         texto, dias_alerta = "", None
         limite = sla.get(etapa)
-        if etapa and etapa != ETAPAS_PUERTO[-1] and d_etapa is not None and limite is not None \
-                and d_etapa > limite:
+        if etapa and d_etapa is not None and limite is not None and d_etapa > limite:
             base = TEXTO_ALERTA_ETAPA.get(etapa, "detenido").format(lugar=lugar_de(cat))
             texto = f"{base[0].upper()}{base[1:]} hace {texto_dias(d_etapa)}"
             dias_alerta = d_etapa
         elif not etapa and estado == EST_RETRASADO and dias_rel is not None \
                 and dias_rel > sla["__retraso__"]:
             texto = f"Retrasado {texto_dias(dias_rel)} y sin ETA nuevo"
+            dias_alerta = int(dias_rel)
+        elif not etapa and estado == EST_PUERTO and dias_rel is not None \
+                and dias_rel > sla["__retraso__"]:
+            texto = f"ETA vencido hace {texto_dias(dias_rel)} y nadie ha confirmado si llegó"
             dias_alerta = int(dias_rel)
         alertas.append(texto)
         alerta_dias.append(dias_alerta)
@@ -536,14 +452,13 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
 
     # Columna de búsqueda precalculada: antes cada tecla disparaba un .apply que
     # normalizaba tres campos por fila; ahora es un contains sobre texto ya listo.
-    oc = df[COL_OC] if COL_OC in df.columns else [""] * len(df)
-    ee = df[COL_EE] if COL_EE in df.columns else [""] * len(df)
-    cliente = df[COL_CLIENTE] if COL_CLIENTE in df.columns else [""] * len(df)
-    stock = df[COL_STOCK] if COL_STOCK in df.columns else [""] * len(df)
+    def _col(nombre):
+        return df[nombre] if nombre in df.columns else [""] * len(df)
+    modelo, oc, ee, cliente = _col(COL_MODELO), _col(COL_OC), _col(COL_EE), _col(COL_CLIENTE_STOCK)
     df["Buscar"] = [
-        _norm(f"{bl} {desc} {modelo} {pais} {o} {e} {c} {s}")
-        for bl, desc, modelo, pais, o, e, c, s in zip(df[COL_BL], df[COL_DESC], df[COL_MODELO],
-                                                       df[COL_PAIS], oc, ee, cliente, stock)
+        _norm(f"{bl} {desc} {m} {pais} {o} {e} {c}")
+        for bl, desc, m, pais, o, e, c in zip(df[COL_BL], df[COL_DESC], modelo,
+                                              df[COL_PAIS], oc, ee, cliente)
     ]
     return df.sort_values(["Prioridad", "OrdenSec"], kind="stable").reset_index(drop=True)
 
@@ -577,9 +492,6 @@ def fechas_flujo_de_fila(fila) -> dict:
     return {
         "Llegada a puerto": fila.get("F_Puerto"),
         "Recepción y declaración": fila.get("F_Declaracion"),
-        "Solicitud de pago a finanzas": fila.get("F_Solicitud"),
-        "Pago realizado": fila.get("F_Pago"),
-        "Recibido en almacén": fila.get("F_Almacen"),
     }
 
 

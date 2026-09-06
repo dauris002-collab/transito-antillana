@@ -18,8 +18,8 @@ from sheets_io import (
     COL_BL, COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_EMPRESA, COL_ETA,
     COL_FECHA_DECLARACION, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL,
     COL_FECHA_SALIDA, COL_FECHA_SIN_MORA, COL_LLEGO, COL_MODELO, COL_OC,
-    COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS, COL_SINMORA_DOP,
-    COL_SINMORA_USD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO, ETAPAS_PUERTO,
+    COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS, COL_ESTADO_PAGO, ESTADO_PAGO_PAGADO,
+    CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO, ETAPAS_PUERTO,
     INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
     _fecha_de_tokens, _interpretar_tokens, _norm, _slug_css, _tokenizar_fecha,
     a_numero, columna_de_valor, costos_puerto, es_llego_no, es_llego_si,
@@ -543,17 +543,14 @@ def totales_conceptos(fila) -> dict | None:
 
 
 def monto_extra(fila) -> dict:
-    """Pago Realizado menos SIN MORA, por moneda. Ninguno de los dos se
-    recalcula aquí: son los totales YA CONGELADOS al momento de registrar cada
-    ventana, así que esto es una resta simple entre lo guardado."""
-    extra = {}
-    for moneda, col_sm, col_pr in (
-        ("USD", COL_SINMORA_USD, COL_PAGOREAL_USD),
-        ("DOP", COL_SINMORA_DOP, COL_PAGOREAL_DOP),
-    ):
-        sm, pr = a_numero(fila.get(col_sm)), a_numero(fila.get(col_pr))
-        extra[moneda] = (pr - sm) if (sm is not None and pr is not None) else None
-    return extra
+    """El EXTRA pagado de más sobre los conceptos originales — lo escribe
+    Logística a mano en PagoRealizado_USD/DOP (0 si no hubo diferencia). Ya no
+    es una resta entre dos totales congelados: es el número que Logística
+    puso, leído tal cual."""
+    return {
+        "USD": a_numero(fila.get(COL_PAGOREAL_USD)),
+        "DOP": a_numero(fila.get(COL_PAGOREAL_DOP)),
+    }
 
 
 def _llegadas_confirmadas(activos: pd.DataFrame, historico: pd.DataFrame) -> dict:
@@ -586,10 +583,10 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
                      historico: pd.DataFrame) -> pd.DataFrame:
     """Agrega al DataFrame de Pagos lo que no vive directamente en sus celdas:
     si el BL sigue existiendo en tránsito, el total ACTUAL de lo que está
-    lleno en los conceptos (en vivo, no depende de haber 'congelado' SIN
-    MORA), el contador de días sin pagar (desde la llegada CONFIRMADA hasta
-    hoy o hasta que se pague), y los totales/mora derivados de las ventanas
-    SIN MORA / Pago Realizado ya congeladas.
+    lleno en los conceptos (en vivo), el contador de días sin pagar (desde la
+    llegada CONFIRMADA hasta hoy o hasta que se pague), si el expediente ya
+    está Pagado o sigue Pendiente, y — para los ya pagados — el costo final
+    (conceptos + el extra que Logística escribió a mano).
 
     Descripción, Cantidad y Llegada NO se cruzan aquí: viven en la propia hoja
     Pagos, sincronizadas por sincronizar_pagos_con_transito() — se leen tal
@@ -599,8 +596,8 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     llegada se confirma después."""
     df = df_pagos.copy()
     calculadas = ["BLSinTransito", "TieneMontos", "TotalActual", "DiasSinPagar",
-                  "EmpresaEfectiva", "SinMoraTotales", "PagoRealTotales", "MontoExtra",
-                  "DiasMora", "FechaSinMoraParsed", "FechaPagoRealParsed"]
+                  "EmpresaEfectiva", "EstadoEfectivo", "MontoExtra",
+                  "TotalPagado", "DiasMora", "FechaSinMoraParsed", "FechaPagoRealParsed"]
     if df.empty:
         for c in calculadas:
             df[c] = []
@@ -646,6 +643,16 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     df["FechaSinMoraParsed"] = [parsear_fecha(v) for v in df.get(COL_FECHA_SIN_MORA, [])]
     df["FechaPagoRealParsed"] = [parsear_fecha(v) for v in df.get(COL_FECHA_PAGO_REAL, [])]
 
+    # Pagado si Logística lo marcó así O si ya tiene fecha de pago real puesta
+    # (que es como de verdad se trabaja: se teclea la fecha directo en el
+    # Sheet, sin pasar por un botón aparte para "marcar como pagado").
+    estados_crudos = (df[COL_ESTADO_PAGO].astype(str).str.strip() if COL_ESTADO_PAGO in df.columns
+                      else pd.Series([""] * len(df), index=df.index))
+    df["EstadoEfectivo"] = [
+        ESTADO_PAGO_PAGADO if (estado == ESTADO_PAGO_PAGADO or fecha_pago is not None) else "Pendiente"
+        for estado, fecha_pago in zip(estados_crudos, df["FechaPagoRealParsed"])
+    ]
+
     llegadas_confirmadas = _llegadas_confirmadas(activos, historico)
     hoy = hoy_rd()
     dias_sin_pagar = []
@@ -658,15 +665,23 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
         dias_sin_pagar.append((referencia - llegada).days)
     df["DiasSinPagar"] = dias_sin_pagar
 
-    df["SinMoraTotales"] = [
-        {"USD": a_numero(r.get(COL_SINMORA_USD)), "DOP": a_numero(r.get(COL_SINMORA_DOP))}
-        for _, r in df.iterrows()
-    ]
-    df["PagoRealTotales"] = [
-        {"USD": a_numero(r.get(COL_PAGOREAL_USD)), "DOP": a_numero(r.get(COL_PAGOREAL_DOP))}
-        for _, r in df.iterrows()
-    ]
     df["MontoExtra"] = [monto_extra(r) for _, r in df.iterrows()]
+    # Costo final = conceptos + el extra que Logística escribió a mano. Solo
+    # tiene sentido una vez pagado; para lo pendiente queda en None, porque
+    # todavía no hay un extra que sumar.
+    total_pagado = []
+    for pagado, total, extra in zip(df["EstadoEfectivo"] == ESTADO_PAGO_PAGADO,
+                                    df["TotalActual"], df["MontoExtra"]):
+        if not pagado:
+            total_pagado.append(None)
+            continue
+        base = total or {"USD": 0.0, "DOP": 0.0}
+        total_pagado.append({
+            "USD": (base.get("USD") or 0.0) + (extra.get("USD") or 0.0),
+            "DOP": (base.get("DOP") or 0.0) + (extra.get("DOP") or 0.0),
+        })
+    df["TotalPagado"] = total_pagado
+
     # Positivo = mora (se pagó después del límite saludable). Negativo o cero =
     # a tiempo o antes. Solo se calcula cuando AMBAS fechas existen: mientras
     # falte una, "días transcurridos" todavía no significa nada.
@@ -679,24 +694,24 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
 
 def resumen_pagos(df: pd.DataFrame) -> dict:
     """Estadística objetivo del módulo: de los expedientes con montos, cuántos
-    quedaron cerrados (SIN MORA y Pago Realizado ya registrados) y cuántos
-    siguen abiertos, cuánto suma lo que TODAVÍA se debe (los abiertos), cuántos
-    de los cerrados se pagaron dentro de la ventana saludable, el promedio de
-    días de mora, y el sobrecosto acumulado por moneda (solo se suma cuando el
-    extra es positivo; un pago más barato que lo estimado no "resta"
-    sobrecosto, simplemente no genera ninguno)."""
+    ya están Pagados y cuántos siguen Pendientes, cuánto suma lo que TODAVÍA
+    se debe (los pendientes), cuántos de los pagados se pagaron dentro de la
+    ventana saludable, el promedio de días de mora, y el sobrecosto acumulado
+    por moneda (el extra que Logística escribió a mano; solo se suma cuando es
+    positivo — un pago más barato que lo estimado no "resta" sobrecosto,
+    simplemente no genera ninguno)."""
     vacio = {"n_pagados": 0, "n_abiertos": 0, "n_a_tiempo": 0, "dias_mora_promedio": None,
              "sobrecosto": {"USD": 0.0, "DOP": 0.0}, "total_por_pagar": {"USD": 0.0, "DOP": 0.0}}
-    if df is None or df.empty or "FechaPagoRealParsed" not in df.columns:
+    if df is None or df.empty or "EstadoEfectivo" not in df.columns:
         return vacio
 
-    cerrado_mask = df["FechaPagoRealParsed"].notna() & df["FechaSinMoraParsed"].notna()
+    cerrado_mask = df["EstadoEfectivo"] == ESTADO_PAGO_PAGADO
     cerrados = df[cerrado_mask]
     abiertos = df[~cerrado_mask]
     vacio["n_abiertos"] = int((~cerrado_mask).sum())
 
-    # "Total por pagar" solo suma lo ABIERTO: un expediente ya cerrado ya se
-    # pagó, así que su monto no es algo que "todavía se deba".
+    # "Total por pagar" solo suma lo ABIERTO (Pendiente): un expediente ya
+    # pagado no es algo que "todavía se deba".
     total_por_pagar = {"USD": 0.0, "DOP": 0.0}
     for total in abiertos.get("TotalActual", []):
         total = total or {}

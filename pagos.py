@@ -24,10 +24,11 @@ import streamlit as st
 from sheets_io import (
     CATEGORIAS, COL_BL, COL_CANT, COL_DESC, COL_ESTADO_PAGO, COL_ETA,
     COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA,
-    CONCEPTOS_PAGO, ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE, MONEDA_CONCEPTO,
-    a_numero, fecha_llegada_fila, formato_eta, guardar_pago, hoy_rd,
-    invalidar_caches, marcar_estado_pago, parsear_fecha, registrar_log,
-    registrar_pago_realizado, registrar_sin_mora,
+    COL_PAGO_LLEGADA, CONCEPTOS_PAGO, ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE,
+    MONEDA_CONCEPTO, _norm, a_numero, fecha_llegada_fila, formato_eta,
+    guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago, parsear_fecha,
+    registrar_log, registrar_pago_realizado, registrar_sin_mora,
+    sincronizar_pagos_con_transito,
 )
 from logica import enriquecer_pagos, resumen_pagos, totales_conceptos
 from ui_componentes import COLOR_RECIBIDAS_MES, COLOR_TOTAL, CUSTOM_CSS, tarjeta_kpi
@@ -70,8 +71,10 @@ def _opciones_categoria(activos: pd.DataFrame, historico: pd.DataFrame) -> list:
 
 def _embarques_de_categoria(categoria: str, activos: pd.DataFrame, historico: pd.DataFrame) -> list:
     """BL, Descripción, Cantidad y Llegada de tránsito para elegir de una lista
-    — nada de esto se vuelve a teclear. Ordenado por BL para que la lista sea
-    estable entre refrescos."""
+    — nada de esto se vuelve a teclear. 'llegada_iso' viaja aparte (AAAA-MM-DD)
+    para poder guardarla si hay que crear la fila de Pagos desde aquí, antes de
+    que la sincronización automática la alcance. Ordenado por BL para que la
+    lista sea estable entre refrescos."""
     filas = []
     if categoria == CATEGORIA_RECIBIDOS:
         for _, r in historico.iterrows():
@@ -82,6 +85,7 @@ def _embarques_de_categoria(categoria: str, activos: pd.DataFrame, historico: pd
                 "desc": str(r.get(COL_DESC, "")),
                 "cant": str(r.get(COL_CANT, "")),
                 "llegada_txt": formato_eta(llegada) if llegada else "—",
+                "llegada_iso": llegada.isoformat() if llegada else "",
             })
     else:
         sub = activos[activos["Categoria"] == categoria]
@@ -92,17 +96,34 @@ def _embarques_de_categoria(categoria: str, activos: pd.DataFrame, historico: pd
             else:
                 # Todavía sin confirmar: se muestra el ETA igual, marcado como
                 # estimado, para no dejar la lista en blanco.
-                eta = parsear_fecha(r.get(COL_ETA, ""))
-                llegada_txt = f"{formato_eta(eta)} (ETA, sin confirmar)" if eta else "sin ETA"
+                llegada = parsear_fecha(r.get(COL_ETA, ""))
+                llegada_txt = f"{formato_eta(llegada)} (ETA, sin confirmar)" if llegada else "sin ETA"
             filas.append({
                 "bl": str(r.get(COL_BL, "")).strip(),
                 "desc": str(r.get(COL_DESC, "")),
                 "cant": str(r.get(COL_CANT, "")),
                 "llegada_txt": llegada_txt,
+                "llegada_iso": llegada.isoformat() if llegada else "",
             })
     filas = [f for f in filas if f["bl"]]
     filas.sort(key=lambda f: f["bl"])
     return filas
+
+
+def _hay_bls_sin_sincronizar(activos: pd.DataFrame, historico: pd.DataFrame, pagos_actual: pd.DataFrame) -> bool:
+    """Comparación en memoria contra lo que ya cargó cargar_todo() — cero
+    llamadas extra a la API. Solo cuando esto da True vale la pena pagar el
+    costo de sincronizar_pagos_con_transito() (que sí lee y escribe de verdad)."""
+    existentes = ({_norm(b) for b in pagos_actual[COL_BL] if str(b).strip()}
+                 if pagos_actual is not None and not pagos_actual.empty else set())
+    for fuente in (activos, historico):
+        if fuente is None or fuente.empty:
+            continue
+        for b in fuente[COL_BL]:
+            b = str(b).strip()
+            if b and _norm(b) not in existentes:
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -129,12 +150,11 @@ def _tabla_pagos(df: pd.DataFrame) -> pd.DataFrame:
         sm = r.get("SinMoraTotales") or {}
         pr = r.get("PagoRealTotales") or {}
         extra = r.get("MontoExtra") or {}
-        desc = r.get("Descripcion_T", "")
-        if r.get("BLSinTransito"):
-            desc = "⚠ BL sin datos de tránsito"
         filas.append({
             "BL": r.get(COL_BL, ""),
-            "Descripción": desc,
+            "Descripción": r.get(COL_DESC, ""),
+            "Cantidad": r.get(COL_CANT, ""),
+            "Llegada": r.get(COL_PAGO_LLEGADA, ""),
             "Estado": str(r.get(COL_ESTADO_PAGO, "")).strip() or ESTADO_PAGO_PENDIENTE,
             "SIN MORA (fecha)": r.get(COL_FECHA_SIN_MORA, ""),
             "SIN MORA US$": sm.get("USD"),
@@ -156,15 +176,27 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
                "fijó como pago saludable (SIN MORA) y lo que realmente se terminó pagando.")
 
     if enriquecido.empty:
-        st.info("Todavía no hay expedientes con conceptos de pago registrados.")
+        st.info("Todavía no hay expedientes sincronizados desde tránsito.")
         return
+
+    con_montos = enriquecido[enriquecido["TieneMontos"]]
+    sin_montos = len(enriquecido) - len(con_montos)
 
     sin_transito = int(enriquecido["BLSinTransito"].sum())
     if sin_transito:
-        st.warning(f"{sin_transito} expediente(s) de Pagos no tienen un BL coincidente en tránsito "
-                   "(activo ni histórico). Se muestran igual, pero verifica que el BL esté bien escrito.")
+        st.warning(f"{sin_transito} expediente(s) de Pagos ya no tienen un BL coincidente en tránsito "
+                   "(activo ni histórico) — puede que se hayan eliminado o cambiado de BL ahí.")
 
-    st.dataframe(_tabla_pagos(enriquecido), width="stretch", hide_index=True)
+    if con_montos.empty:
+        st.info(f"Hay {len(enriquecido)} expediente(s) sincronizados desde tránsito, pero ninguno tiene "
+                "montos cargados todavía. Se muestran aquí solo cuando tengan al menos un concepto lleno.")
+        return
+
+    if sin_montos:
+        st.caption(f"Mostrando {len(con_montos)} expediente(s) con montos cargados · "
+                  f"{sin_montos} más ya están en la hoja esperando que se les llenen los conceptos.")
+
+    st.dataframe(_tabla_pagos(con_montos), width="stretch", hide_index=True)
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +261,9 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
         # aplica" no es lo mismo que "cero", y así solo se suma lo que de
         # verdad tiene el expediente.
         datos = {c: (montos[c] if c in conceptos_aplican else "") for c in CONCEPTOS_PAGO}
-        ok, mensaje = guardar_pago(bl, datos)
+        referencia = {COL_DESC: elegido["desc"], COL_CANT: elegido["cant"],
+                     COL_PAGO_LLEGADA: elegido["llegada_iso"]}
+        ok, mensaje = guardar_pago(bl, datos, referencia=referencia)
         if ok:
             registrar_log("Conceptos de pago guardados", bl, "", ", ".join(conceptos_aplican) or "(ninguno)")
             invalidar_caches()
@@ -323,6 +357,19 @@ def panel_pagos(datos: dict, es_admin: bool):
     activos = datos.get("activos", pd.DataFrame())
     historico = datos.get("historico", pd.DataFrame())
     df_pagos = datos.get("pagos", pd.DataFrame())
+
+    # Sincronización automática: solo admin (los viewers nunca deben disparar
+    # escrituras), y solo cuando la comparación en memoria encuentra un BL de
+    # tránsito que Pagos todavía no tiene — así la mayoría de las veces esto no
+    # cuesta ninguna llamada extra a la API.
+    if es_admin and _hay_bls_sin_sincronizar(activos, historico, df_pagos):
+        ok, mensaje = sincronizar_pagos_con_transito(activos, historico)
+        if ok:
+            invalidar_caches()
+            st.rerun()
+        else:
+            st.warning(f"No se pudo sincronizar Pagos con tránsito automáticamente: {mensaje}")
+
     enriquecido = enriquecer_pagos(df_pagos, activos, historico)
 
     mostrar_dashboard_pagos(enriquecido)

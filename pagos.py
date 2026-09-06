@@ -71,7 +71,10 @@ PAGOS_CSS = """
 
 
 def _fmt(monto, moneda: str) -> str:
-    simbolo = "US$" if moneda == "USD" else "RD$"
+    # \$ escapado a propósito: Streamlit interpreta texto entre dos signos $
+    # sueltos como fórmula matemática (LaTeX). Sin escapar, "US$ 1,000 · RD$ 2,000"
+    # renderiza todo lo que hay ENTRE el primer $ y el segundo como una fórmula.
+    simbolo = "US\\$" if moneda == "USD" else "RD\\$"
     return f"{simbolo} {monto:,.2f}"
 
 
@@ -186,7 +189,7 @@ def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
         ("Expedientes abiertos", str(resumen["n_abiertos"]), COLOR_ABIERTOS, "abiertos"),
         ("Pagados a tiempo", str(resumen["n_a_tiempo"]), COLOR_RECIBIDAS_MES, "a_tiempo"),
         ("Mora promedio", f"{prom:.0f} d" if prom is not None else "—", COLOR_MORA_PROMEDIO, "con_mora"),
-        ("Sobrecosto acumulado", f"US$ {sobre['USD']:,.0f} · RD$ {sobre['DOP']:,.0f}",
+        ("Sobrecosto acumulado", f"US\\$ {sobre['USD']:,.0f} · RD\\$ {sobre['DOP']:,.0f}",
          COLOR_SOBRECOSTO, "con_sobrecosto"),
     ]
     estilos = "".join(
@@ -257,9 +260,9 @@ def _html_expediente(r) -> str:
         f'<div class="pago-meta">{desc} · {cant} · Llegada: {llegada}</div>'
         f'<div class="pago-conceptos">{"".join(chips)}</div>'
         '<div class="pago-totales">'
-        f'<div><span class="pago-total-etq">Total a pagar US$</span>'
+        f'<div><span class="pago-total-etq">Total a pagar US\\$</span>'
         f'<span class="pago-total-val">{_fmt(total.get("USD") or 0.0, "USD")}</span></div>'
-        f'<div><span class="pago-total-etq">Total a pagar RD$</span>'
+        f'<div><span class="pago-total-etq">Total a pagar RD\\$</span>'
         f'<span class="pago-total-val">{_fmt(total.get("DOP") or 0.0, "DOP")}</span></div>'
         f'<div><span class="pago-total-etq">Fecha saludable</span>'
         f'<span class="pago-total-val" style="font-size:0.95rem;">{fecha_saludable}</span></div>'

@@ -226,6 +226,69 @@ COLUMNAS_RECIBIDO = [
 COLUMNAS_LOG = ["Fecha_Hora", "Usuario", "Accion", "BL", "Categoria", "Detalle"]
 
 
+# --- Estatus de Pago ---------------------------------------------------------
+# Pestaña aparte, una fila por BL/expediente (no por concepto): un expediente
+# no siempre trae los mismos cargos, así que cada fila solo llena las columnas
+# de concepto que de verdad aplican; el resto queda vacío, nunca en cero.
+PAGOS_SHEET = "Pagos"
+
+
+# Lista cerrada de conceptos. Moneda FIJA por columna: así el monto se guarda
+# como número puro (sin "dolares"/"pesos" pegado al texto) y no hay que parsear
+# texto libre para saber en qué moneda está cada celda.
+CONCEPTOS_PAGO = ["ADUANAS", "DPH", "DPW", "TRANSPORTE", "HIT", "FDA", "VECONINTER", "ALMACENAJE"]
+
+
+MONEDA_CONCEPTO = {
+    "ADUANAS": "DOP", "DPH": "USD", "DPW": "DOP", "TRANSPORTE": "DOP",
+    "HIT": "DOP", "FDA": "DOP", "VECONINTER": "USD", "ALMACENAJE": "DOP",
+}
+
+
+# Pendiente/Pagado: campo MANUAL que marca Logística a criterio propio. No se
+# deriva de si hay fecha de Pago Realizado, porque son preguntas distintas
+# ("¿ya se pagó?" no siempre coincide con "¿ya quedó todo conciliado?").
+COL_ESTADO_PAGO = "Estado_Pago"
+
+
+ESTADO_PAGO_PENDIENTE = "Pendiente"
+
+
+ESTADO_PAGO_PAGADO = "Pagado"
+
+
+# Ventana "SIN MORA": la fecha límite saludable que fija Logística a criterio
+# propio, y la suma (congelada en ese instante, por moneda) de los conceptos
+# que estuvieran llenos. Es la línea base contra la que se mide el pago.
+COL_FECHA_SIN_MORA = "Fecha_SinMora"
+
+
+COL_SINMORA_USD = "SinMora_USD"
+
+
+COL_SINMORA_DOP = "SinMora_DOP"
+
+
+# "Pago Realizado": misma mecánica, en el momento en que el pago de verdad
+# ocurre. Ambas ventanas se pueden corregir después (fecha y/o monto) si algo
+# cambia — no son de una sola vez y ya.
+COL_FECHA_PAGO_REAL = "Fecha_PagoRealizado"
+
+
+COL_PAGOREAL_USD = "PagoRealizado_USD"
+
+
+COL_PAGOREAL_DOP = "PagoRealizado_DOP"
+
+
+COLUMNAS_PAGOS = [
+    COL_BL, *CONCEPTOS_PAGO, COL_ESTADO_PAGO,
+    COL_FECHA_SIN_MORA, COL_SINMORA_USD, COL_SINMORA_DOP,
+    COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
+    COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
+]
+
+
 CACHE_TTL = 45              # segundos de caché de lectura
 
 
@@ -877,6 +940,7 @@ def cargar_todo() -> dict:
     vacio = {
         "activos": pd.DataFrame(columns=ALL_COLUMNS + ["Categoria", "FilaSheet"]),
         "historico": pd.DataFrame(columns=COLUMNAS_RECIBIDO),
+        "pagos": pd.DataFrame(columns=COLUMNAS_PAGOS + ["FilaSheet"]),
         "hora": ahora_rd(), "ultima_carga": None, "ultima_persona": "", "avisos": [], "error": None,
     }
     try:
@@ -893,6 +957,11 @@ def cargar_todo() -> dict:
     ws_rec = indice.get(_norm(RECIBIDO_SHEET))
     if ws_rec is not None:
         objetivos.append((RECIBIDO_SHEET, ws_rec.title))
+    # Pagos es opcional a propósito: si nadie ha registrado un cargo todavía,
+    # la pestaña ni existe. Se crea sola con el primer guardar_pago().
+    ws_pagos = indice.get(_norm(PAGOS_SHEET))
+    if ws_pagos is not None:
+        objetivos.append((PAGOS_SHEET, ws_pagos.title))
 
     if not objetivos:
         return {**vacio, "error": "El Google Sheet no tiene ninguna de las pestañas esperadas."}
@@ -905,6 +974,7 @@ def cargar_todo() -> dict:
 
     bloques = respuesta.get("valueRanges", [])
     frames, historico, avisos = [], pd.DataFrame(columns=COLUMNAS_RECIBIDO), []
+    pagos = pd.DataFrame(columns=COLUMNAS_PAGOS)
 
     for (etiqueta, _titulo), bloque in zip(objetivos, bloques):
         valores = bloque.get("values", [])
@@ -917,6 +987,10 @@ def cargar_todo() -> dict:
         if etiqueta == RECIBIDO_SHEET:
             historico = _df_desde_valores(valores, COLUMNAS_RECIBIDO)
             historico["FilaSheet"] = range(2, len(historico) + 2)
+            continue
+        if etiqueta == PAGOS_SHEET:
+            pagos = _df_desde_valores(valores, COLUMNAS_PAGOS)
+            pagos["FilaSheet"] = range(2, len(pagos) + 2)
             continue
         df_cat = _df_desde_valores(valores, ALL_COLUMNS)
         df_cat["Categoria"] = etiqueta
@@ -937,6 +1011,9 @@ def cargar_todo() -> dict:
 
     if not historico.empty:
         historico = historico[historico[COL_BL].astype(str).str.strip() != ""].reset_index(drop=True)
+
+    if not pagos.empty:
+        pagos = pagos[pagos[COL_BL].astype(str).str.strip() != ""].reset_index(drop=True)
 
     # "Última carga" = la marca más reciente escrita por alguien al agregar,
     # editar, cargar en masa o archivar. Es distinto de "última lectura".
@@ -963,7 +1040,7 @@ def cargar_todo() -> dict:
             if ultima_persona:
                 break
 
-    return {"activos": activos, "historico": historico, "hora": ahora_rd(),
+    return {"activos": activos, "historico": historico, "pagos": pagos, "hora": ahora_rd(),
             "ultima_carga": ultima_carga, "ultima_persona": ultima_persona,
             "avisos": avisos, "error": None}
 
@@ -1471,3 +1548,163 @@ def normalizar_etas(cambios: list):
             total += len(cuerpo)
     extra = f" {saltadas} se saltaron porque el Sheet cambió; actualiza y repite." if saltadas else ""
     return True, f"{total} fecha(s) normalizada(s) a formato AAAA-MM-DD.{extra}"
+
+
+# --- Escrituras: Estatus de Pago --------------------------------------------
+def _buscar_fila_pago(ws, bl: str):
+    """Ubica la fila de un BL en la pestaña Pagos. Devuelve (fila, ambiguo).
+
+    A propósito NO reusa _localizar_fila(): esa función trata 'no encontrado'
+    como un error, porque en tránsito toda fila ya existe de antemano. Aquí
+    'no encontrado' es el caso normal la primera vez que se registra un
+    expediente, así que se resuelve aparte en vez de forzar ese significado."""
+    headers = _headers(ws.title)
+    columna = _columna_indice(headers, COL_BL)
+    if columna is None:
+        return None, False
+    valores = _con_reintento(lambda: ws.col_values(columna)) or []
+    objetivo = _norm(bl)
+    coincidencias = [i + 1 for i, v in enumerate(valores) if i >= 1 and _norm(v) == objetivo]
+    if not coincidencias:
+        return None, False
+    if len(coincidencias) == 1:
+        return coincidencias[0], False
+    return None, True
+
+
+def _obtener_o_crear_ws_pagos():
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is not None:
+        return ws
+    ss = get_spreadsheet()
+    ws = ss.add_worksheet(title=PAGOS_SHEET, rows=2000, cols=len(COLUMNAS_PAGOS))
+    _con_reintento(lambda: ws.update(range_name="A1", values=[COLUMNAS_PAGOS], value_input_option="RAW"))
+    _refrescar_estructura()
+    return get_worksheet(PAGOS_SHEET)
+
+
+@_con_manejo_apierror
+def guardar_pago(bl: str, conceptos: dict, estado: str = None):
+    """Crea o actualiza la fila de Pagos de un BL. `conceptos` trae únicamente
+    los que aplican a este expediente (los que no, se guardan vacíos: 'no
+    aplica' no es lo mismo que 'cero'). No toca las ventanas SIN MORA ni Pago
+    Realizado — esas se fijan aparte, con registrar_sin_mora() y
+    registrar_pago_realizado()."""
+    bl = str(bl or "").strip()
+    if not bl:
+        return False, "Falta el BL."
+
+    ws = _obtener_o_crear_ws_pagos()
+    fila, ambiguo = _buscar_fila_pago(ws, bl)
+    if ambiguo:
+        return False, (f"Hay más de un registro de pago para el BL '{bl}'. Corrígelo a mano en el "
+                       f"Sheet '{PAGOS_SHEET}' antes de continuar.")
+
+    headers = _asegurar_columnas(ws, COLUMNAS_PAGOS)
+    datos = {c: v for c, v in conceptos.items() if c in CONCEPTOS_PAGO}
+    if estado:
+        datos[COL_ESTADO_PAGO] = estado
+    datos[COL_ACTUALIZACION] = marca_ahora()
+    datos[COL_ACTUALIZADO_POR] = usuario_actual()
+
+    if fila is None:
+        nuevo = {COL_BL: bl, **datos}
+        _con_reintento(lambda: ws.append_row(_fila_desde_dict(headers, nuevo), value_input_option="RAW"))
+        return True, ""
+
+    combinado = _leer_fila(ws, fila, headers)
+    combinado.update(datos)
+    rango = f"{rowcol_to_a1(fila, 1)}:{rowcol_to_a1(fila, len(headers))}"
+    _con_reintento(lambda: ws.update(range_name=rango, values=[_fila_desde_dict(headers, combinado)],
+                                     value_input_option="RAW"))
+    return True, ""
+
+
+def _escribir_ventana_pago(bl: str, col_fecha: str, col_usd: str, col_dop: str,
+                           fecha, totales: dict, sobrescribir: bool):
+    """Mecánica común a SIN MORA y Pago Realizado: exige que el expediente ya
+    tenga conceptos registrados, no pisa un registro previo salvo que se pida
+    explícitamente corregir, y congela fecha + totales por moneda en un solo
+    batch_update."""
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}'. Registra primero los conceptos del expediente."
+    fila, ambiguo = _buscar_fila_pago(ws, bl)
+    if ambiguo:
+        return False, f"Hay más de un registro de pago para el BL '{bl}'."
+    if fila is None:
+        return False, f"El BL '{bl}' no tiene conceptos registrados todavía en '{PAGOS_SHEET}'."
+
+    headers = _asegurar_columnas(ws, [col_fecha, col_usd, col_dop, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    actual = _leer_fila(ws, fila, headers)
+    ya_registrado = str(actual.get(col_fecha, "")).strip()
+    if ya_registrado and not sobrescribir:
+        return False, (f"Este expediente ya tiene una fecha registrada aquí ({ya_registrado}). "
+                       "Marca la casilla de corrección si cambió el monto o la fecha.")
+
+    indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm(col_fecha)]), "values": [[fecha.isoformat()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(col_usd)]), "values": [[totales.get("USD", 0.0)]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(col_dop)]), "values": [[totales.get("DOP", 0.0)]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+    ]
+    _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    return True, ""
+
+
+@_con_manejo_apierror
+def registrar_sin_mora(bl: str, fecha, totales: dict, sobrescribir: bool = False):
+    """Congela la ventana SIN MORA: la fecha límite saludable que fija
+    Logística a criterio propio, y la suma de lo que esté lleno en los
+    conceptos EN ESE MOMENTO, por moneda. Es la línea base contra la que se
+    mide el pago. Con sobrescribir=True se corrige un registro ya hecho."""
+    return _escribir_ventana_pago(bl, COL_FECHA_SIN_MORA, COL_SINMORA_USD, COL_SINMORA_DOP,
+                                  fecha, totales, sobrescribir)
+
+
+@_con_manejo_apierror
+def registrar_pago_realizado(bl: str, fecha, totales: dict, sobrescribir: bool = False):
+    """Congela 'Pago Realizado': la fecha en que de verdad se pagó y la suma de
+    los conceptos en ese momento (ya con lo que haya cambiado por mora). Exige
+    que SIN MORA exista, porque es la referencia con la que se compara."""
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}'."
+    fila, ambiguo = _buscar_fila_pago(ws, bl)
+    if ambiguo:
+        return False, f"Hay más de un registro de pago para el BL '{bl}'."
+    if fila is None:
+        return False, f"El BL '{bl}' no tiene conceptos registrados todavía en '{PAGOS_SHEET}'."
+    headers = _headers(ws.title)
+    actual = _leer_fila(ws, fila, headers)
+    if not str(actual.get(COL_FECHA_SIN_MORA, "")).strip():
+        return False, ("Este expediente todavía no tiene la ventana SIN MORA registrada. "
+                       "Regístrala primero: es la referencia contra la que se mide el pago.")
+    return _escribir_ventana_pago(bl, COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
+                                  fecha, totales, sobrescribir)
+
+
+@_con_manejo_apierror
+def marcar_estado_pago(bl: str, estado: str):
+    """Pendiente/Pagado: campo manual, lo marca Logística a criterio propio."""
+    if estado not in (ESTADO_PAGO_PENDIENTE, ESTADO_PAGO_PAGADO):
+        return False, f"Estado '{estado}' no reconocido."
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}'."
+    fila, ambiguo = _buscar_fila_pago(ws, bl)
+    if ambiguo:
+        return False, f"Hay más de un registro de pago para el BL '{bl}'."
+    if fila is None:
+        return False, f"El BL '{bl}' no tiene conceptos registrados todavía."
+    headers = _asegurar_columnas(ws, [COL_ESTADO_PAGO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ESTADO_PAGO)]), "values": [[estado]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+    ]
+    _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    return True, ""

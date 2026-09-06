@@ -15,20 +15,20 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from sheets_io import (
-    CATEGORIAS, COL_ACTUALIZACION, COL_BL, COL_CANT, COL_CLIENTE, COL_DESC,
-    COL_EE, COL_ETA,
-    COL_FECHA_ALMACEN, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO, COL_FECHA_SALIDA,
-    COL_FECHA_SOLICITUD_PAGO, COL_MODELO, COL_OC, COL_PAIS, COL_STOCK, MESES_ES,
-    MESES_ES_CORTO,
-    NO_ESPECIFICADO, REQUIRED_COLUMNS, _con_reintento, _leer_log, _norm,
-    _refrescar_estructura, _validar_orden_flujo, actualizar_embarque, ahora_rd,
-    append_row, append_rows_bulk, es_numero, get_spreadsheet, hoy_rd,
-    invalidar_caches, normalizar_etas, parsear_fecha, quitar_de_recibido,
-    registrar_log, sla_etapas,
+    CATEGORIAS, COL_ACTUALIZACION, COL_BL, COL_CANT, COL_CLIENTE_STOCK, COL_DESC,
+    COL_EE, COL_ETA, COL_FECHA_ALMACEN, COL_FECHA_DECLARACION,
+    COL_FECHA_LLEGADA_PUERTO, COL_FECHA_SALIDA, COL_LLEGO, COL_MODELO, COL_OC,
+    COL_PAIS, MESES_ES, MESES_ES_CORTO, NO_ESPECIFICADO, REQUIRED_COLUMNS,
+    _con_reintento, _leer_log, _norm, _refrescar_estructura, _validar_orden_flujo,
+    actualizar_embarque, ahora_rd, append_row, append_rows_bulk, es_llego_si,
+    es_numero, get_spreadsheet, hoy_rd, invalidar_caches, normalizar_etas,
+    parsear_fecha, quitar_de_recibido, registrar_log, sla_etapas,
+    validar_eta_confirmado,
 )
 from logica import (
-    CATEGORIAS_CON_OC_EE, EST_SIN_FECHA, ETIQUETA_CORTA_ETAPA, _columna_fechas,
-    _etiquetas_desambiguadas, analizar_eta, enriquecer, fechas_flujo_de_fila,
+    CATEGORIAS_CON_CLIENTE_STOCK, CATEGORIAS_CON_MODELO, CATEGORIAS_CON_OC_EE,
+    EST_SIN_FECHA, ETIQUETA_CORTA_ETAPA, _columna_fechas, _etiquetas_desambiguadas,
+    analizar_eta, enriquecer,
 )
 from ui_componentes import (
     COLOR_RECIBIDAS_MES, COLOR_TOTAL, CUSTOM_CSS, VERSION_APP, _df_a_excel,
@@ -47,17 +47,22 @@ def _bls_existentes(datos: dict) -> set:
 
 def form_alta_manual(datos: dict):
     st.subheader("Agregar embarque")
-    # La Categoría vive FUERA del form: así, al elegir Aéreos o Carga Suelta, la
-    # app puede mostrar los campos OC/EE de una vez (dentro de un st.form los
-    # demás widgets no reaccionan hasta el submit).
+    # La Categoría vive FUERA del form: así, al elegirla, la app puede mostrar
+    # solo los campos que esa categoría usa de verdad (dentro de un st.form los
+    # demás widgets no reaccionan hasta el submit). No todas traen Modelo/Serie,
+    # OC/EE ni Cliente/Stock, y pedir campos que nadie llena solo genera
+    # columnas vacías en el Sheet.
     categoria = st.selectbox("Categoría", CATEGORIAS, key="alta_categoria")
     con_oc_ee = categoria in CATEGORIAS_CON_OC_EE
+    con_modelo = categoria in CATEGORIAS_CON_MODELO
+    con_cliente = categoria in CATEGORIAS_CON_CLIENTE_STOCK
+
     with st.form("form_embarque", clear_on_submit=True):
         c1, c2 = st.columns(2)
         bl = c1.text_input("BL *")
         descripcion = c2.text_input("Descripción del producto *")
         c3, c4 = st.columns(2)
-        modelo = c3.text_input("Modelo o serie")
+        modelo = c3.text_input("Modelo o serie") if con_modelo else ""
         cantidad = c4.text_input("Cantidad", placeholder="Ej.: 4 unidades, 2 pallets, 113 bultos")
         c5, c6 = st.columns(2)
         pais = c5.text_input("País de origen")
@@ -67,11 +72,11 @@ def form_alta_manual(datos: dict):
             c7, c8 = st.columns(2)
             oc = c7.text_input("OC")
             ee = c8.text_input("EE")
-        c9, c10 = st.columns(2)
-        cliente = c9.text_input("Cliente")
-        stock = c10.text_input("Stock")
+        cliente = st.text_input("Cliente / Stock") if con_cliente else ""
         salida = st.date_input("Fecha de salida (opcional)", value=None, format="DD/MM/YYYY",
                                help="Si no la sabes, déjala vacía y agrégala después desde 'Editar'.")
+        st.caption("El embarque entra sin confirmar. Cuando llegue, se confirma desde el tablero: "
+                   "ahí el ETA pasa a valer como fecha de llegada.")
         enviado = st.form_submit_button("Guardar embarque", type="primary")
 
     if not enviado:
@@ -92,11 +97,12 @@ def form_alta_manual(datos: dict):
     datos_nuevos = {
         COL_BL: bl.strip(),
         COL_DESC: descripcion.strip(),
-        COL_MODELO: modelo.strip(),
         COL_CANT: cantidad.strip(),
         COL_PAIS: pais.strip(),
         COL_ETA: eta.isoformat(),
     }
+    if con_modelo and modelo.strip():
+        datos_nuevos[COL_MODELO] = modelo.strip()
     if salida:
         datos_nuevos[COL_FECHA_SALIDA] = salida.isoformat()
     if con_oc_ee:
@@ -104,10 +110,8 @@ def form_alta_manual(datos: dict):
             datos_nuevos[COL_OC] = oc.strip()
         if ee.strip():
             datos_nuevos[COL_EE] = ee.strip()
-    if cliente.strip():
-        datos_nuevos[COL_CLIENTE] = cliente.strip()
-    if stock.strip():
-        datos_nuevos[COL_STOCK] = stock.strip()
+    if con_cliente and cliente.strip():
+        datos_nuevos[COL_CLIENTE_STOCK] = cliente.strip()
 
     ok, mensaje = append_row(datos_nuevos, categoria)
     if ok:
@@ -154,7 +158,16 @@ def form_editar(datos: dict):
     eta_actual = parsear_fecha(fila[COL_ETA]) or hoy_rd()
     salida_actual = parsear_fecha(fila.get(COL_FECHA_SALIDA, ""))
     sello = str(fila.get(COL_ACTUALIZACION, "")).strip()
+    llego_actual = str(fila.get(COL_LLEGO, "") or "").strip()
+    confirmado = es_llego_si(llego_actual)
     con_oc_ee = categoria in CATEGORIAS_CON_OC_EE
+    con_modelo = categoria in CATEGORIAS_CON_MODELO
+    con_cliente = categoria in CATEGORIAS_CON_CLIENTE_STOCK
+
+    if confirmado:
+        st.info("Este embarque tiene la llegada confirmada, así que su ETA **es** la fecha de "
+                "llegada a puerto: cambiarlo cambia los días en puerto. No puede quedar en el "
+                "futuro ni después de la declaración.")
 
     with st.form("form_editar"):
         c0, c1 = st.columns(2)
@@ -162,7 +175,7 @@ def form_editar(datos: dict):
                                  help="Solo cámbialo si venía mal escrito. Es el identificador del embarque.")
         descripcion = c1.text_input("Descripción", value=str(fila[COL_DESC]))
         c2, c3 = st.columns(2)
-        modelo = c2.text_input("Modelo o serie", value=str(fila[COL_MODELO]))
+        modelo = c2.text_input("Modelo o serie", value=str(fila.get(COL_MODELO, ""))) if con_modelo else ""
         cantidad = c3.text_input("Cantidad", value=str(fila[COL_CANT]))
         c4, c5 = st.columns(2)
         pais = c4.text_input("País de origen", value=str(fila[COL_PAIS]))
@@ -173,10 +186,10 @@ def form_editar(datos: dict):
             c6, c7 = st.columns(2)
             oc = c6.text_input("OC", value=str(fila.get(COL_OC, "")))
             ee = c7.text_input("EE", value=str(fila.get(COL_EE, "")))
-        c8, c9 = st.columns(2)
-        cliente = c8.text_input("Cliente", value=str(fila.get(COL_CLIENTE, "")))
-        stock = c9.text_input("Stock", value=str(fila.get(COL_STOCK, "")))
-        st.caption(f"Fila {n_fila} de '{categoria}' · ETA actual en el Sheet: {fila[COL_ETA] or '(vacío)'}")
+        cliente = (st.text_input("Cliente / Stock", value=str(fila.get(COL_CLIENTE_STOCK, "")))
+                   if con_cliente else "")
+        st.caption(f"Fila {n_fila} de '{categoria}' · ETA actual en el Sheet: {fila[COL_ETA] or '(vacío)'} "
+                   f"· ¿Llegó?: {llego_actual or 'sin revisar'}")
         forzar = st.checkbox("Sobrescribir aunque otra persona lo haya cambiado mientras tanto")
         guardar = st.form_submit_button("Guardar cambios", type="primary")
 
@@ -192,21 +205,29 @@ def form_editar(datos: dict):
     if bl_nuevo.strip() != bl_original and bl_nuevo.strip() in _bls_existentes(datos):
         st.error(f"Ya existe otro embarque con el BL '{bl_nuevo.strip()}'.")
         return
+    # Se valida aquí además de en sheets_io para dar el mensaje antes de gastar
+    # una escritura y para que el usuario lo vea junto al campo que lo causó.
+    if confirmado:
+        problema = validar_eta_confirmado(eta.isoformat(), fila.get("F_Declaracion"))
+        if problema:
+            st.error(problema)
+            return
 
     cambios = {
         COL_BL: bl_nuevo.strip(),
         COL_DESC: descripcion.strip(),
-        COL_MODELO: modelo.strip(),
         COL_CANT: cantidad.strip(),
         COL_PAIS: pais.strip(),
         COL_ETA: eta.isoformat(),
         COL_FECHA_SALIDA: salida.isoformat() if salida else "",
     }
+    if con_modelo:
+        cambios[COL_MODELO] = modelo.strip()
     if con_oc_ee:
         cambios[COL_OC] = oc.strip()
         cambios[COL_EE] = ee.strip()
-    cambios[COL_CLIENTE] = cliente.strip()
-    cambios[COL_STOCK] = stock.strip()
+    if con_cliente:
+        cambios[COL_CLIENTE_STOCK] = cliente.strip()
 
     ok, mensaje = actualizar_embarque(bl_original, categoria, cambios, fila_sugerida=n_fila,
                                       sello_esperado=sello, forzar=forzar)
@@ -230,19 +251,19 @@ def form_editar(datos: dict):
 @st.cache_data(show_spinner=False)
 def _plantilla_excel() -> bytes:
     buffer = io.BytesIO()
+    columnas = REQUIRED_COLUMNS + [COL_MODELO, COL_FECHA_SALIDA, COL_CLIENTE_STOCK]
     ejemplo = pd.DataFrame(
         [{
             COL_BL: "EGLV142653674620",
             COL_DESC: "Montacargas",
-            COL_MODELO: "ERP3.0MXLG / ERP20UXTL",
             COL_CANT: "4 unidades",
             COL_PAIS: "China",
             COL_ETA: "2026-08-25",
+            COL_MODELO: "ERP3.0MXLG / ERP20UXTL",
             COL_FECHA_SALIDA: "",
-            COL_CLIENTE: "",
-            COL_STOCK: "",
+            COL_CLIENTE_STOCK: "",
         }],
-        columns=REQUIRED_COLUMNS + [COL_FECHA_SALIDA, COL_CLIENTE, COL_STOCK],
+        columns=columnas,
     )
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         ejemplo.to_excel(writer, index=False, sheet_name="Embarques")
@@ -258,12 +279,16 @@ def form_carga_masiva(datos: dict):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     categoria = st.selectbox("Categoría de destino (todo el archivo se carga aquí)", CATEGORIAS)
-    con_oc_ee = categoria in CATEGORIAS_CON_OC_EE
-    columnas_opcionales = [COL_FECHA_SALIDA, COL_CLIENTE, COL_STOCK] + ([COL_OC, COL_EE] if con_oc_ee else [])
-    extra_txt = f", '{COL_OC}' y '{COL_EE}'" if con_oc_ee else ""
+    columnas_opcionales = [COL_FECHA_SALIDA]
+    if categoria in CATEGORIAS_CON_MODELO:
+        columnas_opcionales.append(COL_MODELO)
+    if categoria in CATEGORIAS_CON_CLIENTE_STOCK:
+        columnas_opcionales.append(COL_CLIENTE_STOCK)
+    if categoria in CATEGORIAS_CON_OC_EE:
+        columnas_opcionales += [COL_OC, COL_EE]
     st.caption("Columnas obligatorias: " + ", ".join(REQUIRED_COLUMNS) +
-               f". '{COL_FECHA_SALIDA}', '{COL_CLIENTE}', '{COL_STOCK}'{extra_txt} son opcionales. "
-               "El ETA puede venir en cualquier formato reconocible; se guarda como AAAA-MM-DD.")
+               ". Opcionales para esta categoría: " + ", ".join(f"'{c}'" for c in columnas_opcionales) +
+               ". El ETA puede venir en cualquier formato reconocible; se guarda como AAAA-MM-DD.")
 
     archivo = st.file_uploader("Archivo .xlsx", type=["xlsx"])
     if archivo is None:
@@ -351,7 +376,11 @@ def _preparar_historico(historico: pd.DataFrame) -> pd.DataFrame:
     """Histórico crudo -> DataFrame con fecha parseada, año, mes y tiempos de
     ciclo. Nada se borra nunca de la pestaña 'Recibido (Mes)': cada recepción
     queda ahí con su fecha, así que en noviembre se puede consultar julio del año
-    pasado igual que el mes en curso."""
+    pasado igual que el mes en curso.
+
+    La llegada que se lee aquí es la CONGELADA al archivar
+    (Fecha_Llegada_Puerto), no el ETA vivo: si alguien mueve un ETA meses
+    después, los ciclos ya medidos no cambian."""
     df = historico.copy()
     if df.empty:
         return df
@@ -368,14 +397,13 @@ def _preparar_historico(historico: pd.DataFrame) -> pd.DataFrame:
 
     salida = _columna_fechas(df, COL_FECHA_SALIDA)
     puerto = _columna_fechas(df, COL_FECHA_LLEGADA_PUERTO)
-    solicitud = _columna_fechas(df, COL_FECHA_SOLICITUD_PAGO)
-    pago = _columna_fechas(df, COL_FECHA_PAGO)
+    declaracion = _columna_fechas(df, COL_FECHA_DECLARACION)
     almacen = _columna_fechas(df, COL_FECHA_ALMACEN)
-    df["F_Puerto"], df["F_Almacen"] = puerto, almacen
+    df["F_Puerto"], df["F_Declaracion"], df["F_Almacen"] = puerto, declaracion, almacen
     df["CicloPuertoAlmacen"] = [(a - p).days if (a and p and a >= p) else None
                                 for p, a in zip(puerto, almacen)]
-    df["CicloSolicitudPago"] = [(pg - s).days if (s and pg and pg >= s) else None
-                                for s, pg in zip(solicitud, pago)]
+    df["CicloLlegadaDeclaracion"] = [(d - p).days if (p and d and d >= p) else None
+                                     for p, d in zip(puerto, declaracion)]
     df["CicloTotal"] = [(a - s).days if (s and a and a >= s) else None
                         for s, a in zip(salida, almacen)]
     return df.sort_values("FechaParsed").reset_index(drop=True)
@@ -417,20 +445,20 @@ def _grafico_anual(df_anio: pd.DataFrame, anio: int):
 def _tabla_detalle(df: pd.DataFrame) -> pd.DataFrame:
     """Vista legible del histórico, con la fecha ya formateada en español."""
     if df.empty:
-        return pd.DataFrame(columns=["BL", "Descripción", "Modelo/Serie", "Cliente", "Stock",
-                                     "Cantidad", "Origen", "Fecha recibido", "Categoría", "Registrado por"])
+        return pd.DataFrame(columns=["BL", "Descripción", "Modelo/Serie", "Cliente / Stock",
+                                     "Cantidad", "Origen", "Fecha recibido", "Categoría",
+                                     "Registrado por"])
     salida = pd.DataFrame({
         "BL": df.get(COL_BL, ""),
         "Descripción": df.get(COL_DESC, ""),
         "Modelo/Serie": df.get(COL_MODELO, ""),
-        "Cliente": df.get(COL_CLIENTE, ""),
-        "Stock": df.get(COL_STOCK, ""),
+        "Cliente / Stock": df.get(COL_CLIENTE_STOCK, ""),
         "Cantidad": df.get(COL_CANT, ""),
         "Origen": df.get(COL_PAIS, ""),
         "Fecha recibido": [f"{f.day:02d} {MESES_ES_CORTO[f.month]} {f.year}" for f in df["FechaParsed"]],
         "Categoría": df.get("Categoria_Origen", ""),
         "Días puerto→almacén": df.get("CicloPuertoAlmacen", ""),
-        "Días solicitud→pago": df.get("CicloSolicitudPago", ""),
+        "Días llegada→declaración": df.get("CicloLlegadaDeclaracion", ""),
         "Días salida→almacén": df.get("CicloTotal", ""),
         "Registrado por": df.get("Registrado_Por", ""),
     })
@@ -502,11 +530,12 @@ def mostrar_historico(datos: dict, rol: str):
     # La pregunta que sigue a "¿cuántos recibimos?" es "¿en cuánto tiempo?".
     # Se usa la mediana y no el promedio: un embarque trancado tres meses en
     # puerto le mueve el promedio a todo el año y no representa la operación.
-    if df_anio[["CicloPuertoAlmacen", "CicloSolicitudPago", "CicloTotal"]].notna().any().any():
+    ciclos = ["CicloPuertoAlmacen", "CicloLlegadaDeclaracion", "CicloTotal"]
+    if df_anio[ciclos].notna().any().any():
         st.markdown(f"**Tiempos de ciclo {anio_sel} (mediana)**")
         t1, t2, t3 = st.columns(3)
         t1.metric("Puerto → almacén", _mediana(df_anio["CicloPuertoAlmacen"]))
-        t2.metric("Solicitud → pago", _mediana(df_anio["CicloSolicitudPago"]))
+        t2.metric("Llegada → declaración", _mediana(df_anio["CicloLlegadaDeclaracion"]))
         t3.metric("Salida → almacén", _mediana(df_anio["CicloTotal"]))
         st.caption("Solo cuenta embarques que tengan ambas fechas registradas. Mientras más completo "
                    "esté el flujo, más confiable es este número — hoy es indicativo, no un estándar.")
@@ -557,7 +586,7 @@ def mostrar_historico(datos: dict, rol: str):
         q = _norm(busqueda)
         filtrado = filtrado[filtrado.apply(
             lambda r: q in _norm(f"{r.get(COL_BL,'')} {r.get(COL_DESC,'')} {r.get(COL_MODELO,'')} "
-                                 f"{r.get(COL_CLIENTE,'')}"), axis=1
+                                 f"{r.get(COL_CLIENTE_STOCK,'')}"), axis=1
         )]
 
     etiqueta_mes = f"{MESES_ES[mes_sel]} {anio_sel}"
@@ -588,7 +617,8 @@ def mostrar_historico(datos: dict, rol: str):
 
         if guardada in CATEGORIAS:
             categoria = guardada
-            st.caption(f"Se devolverá a la pestaña '{categoria}' con sus fechas del flujo intactas.")
+            st.caption(f"Se devolverá a la pestaña '{categoria}' con la llegada confirmada y su "
+                       "fecha de declaración intactas.")
         else:
             st.caption("Este registro se archivó sin categoría de origen. Elige a dónde devolverlo:")
             categoria = st.selectbox("Categoría de destino", CATEGORIAS, key="cat_revertir")
@@ -613,7 +643,8 @@ def _herramienta_fechas(df: pd.DataFrame):
         "Google Sheets interpreta las fechas según el locale del archivo, así que una celda escrita "
         "como 06/08/2026 puede quedar guardada como 6 de agosto o como 8 de junio, y quien la lea "
         "después no tiene forma de saber cuál era. Guardar el ETA como texto AAAA-MM-DD elimina el "
-        "problema de raíz."
+        "problema de raíz — y aquí importa el doble, porque en los embarques confirmados el ETA ES "
+        "la fecha de llegada a puerto."
     )
     pendientes = []
     for _, r in df.iterrows():
@@ -714,6 +745,21 @@ def _herramienta_salud(df: pd.DataFrame, historico: pd.DataFrame):
                                     for _, r in sin_eta.head(10).iterrows()),
                           "Quedan fuera de todos los conteos por fecha. Arriba tienes el normalizador."))
 
+    # Un embarque confirmado con ETA futuro es una contradicción: dice que llegó
+    # en una fecha que aún no ocurre, y los días en puerto salen negativos.
+    confirmados_futuros = []
+    for _, r in df.iterrows():
+        if es_llego_si(r.get(COL_LLEGO, "")):
+            problema = validar_eta_confirmado(r[COL_ETA], r.get("F_Declaracion"))
+            if problema:
+                confirmados_futuros.append(f"{r[COL_BL] or '(sin BL)'} ({r['Categoria']} fila {r['FilaSheet']})")
+    if confirmados_futuros:
+        problemas.append((f"{len(confirmados_futuros)} embarque(s) confirmados con un ETA imposible",
+                          ", ".join(confirmados_futuros[:12]),
+                          "El ETA quedó en el futuro o después de la declaración. Como en los "
+                          "confirmados el ETA ES la fecha de llegada, los contadores de esos "
+                          "embarques no son confiables hasta corregirlo."))
+
     for columna, nombre in ((COL_PAIS, "país de origen"), (COL_DESC, "descripción"),
                             (COL_CANT, "cantidad")):
         vacios = df[df[columna].astype(str).str.strip().isin(["", NO_ESPECIFICADO])]
@@ -740,8 +786,7 @@ def _herramienta_salud(df: pd.DataFrame, historico: pd.DataFrame):
                            for _, r in sin_ref.head(12).iterrows())
                  + " · Total por categoría: "
                  + ", ".join(f"{c}: {n}" for c, n in por_cat.items()),
-                 "La app sí lee esas columnas: están vacías en el Sheet. Suelen faltar en las "
-                 "filas cargadas a mano o importadas sin las columnas OC/EE. Complétalas desde "
+                 "La app sí lee esas columnas: están vacías en el Sheet. Complétalas desde "
                  "'Editar' o vuelve a importar el lote incluyendo ambas columnas.")
             )
 
@@ -753,13 +798,13 @@ def _herramienta_salud(df: pd.DataFrame, historico: pd.DataFrame):
 
     inconsistentes = []
     for _, r in df.iterrows():
-        problema = _validar_orden_flujo(fechas_flujo_de_fila(r))
+        problema = _validar_orden_flujo(r.get("F_Puerto"), r.get("F_Declaracion"))
         if problema:
             inconsistentes.append(f"{r[COL_BL]} ({r['Categoria']} fila {r['FilaSheet']})")
     if inconsistentes:
         problemas.append((f"{len(inconsistentes)} embarque(s) con fechas del flujo fuera de orden",
                           ", ".join(inconsistentes[:10]),
-                          "Ej.: pago anterior a la declaración. Corrígelo desde 'Corregir fecha' "
+                          "Ej.: declaración anterior a la llegada. Corrígelo desde 'Corregir fecha' "
                           "en el panel de proceso."))
 
     if not historico.empty:
@@ -857,7 +902,7 @@ def herramientas(datos: dict):
 
     st.markdown("**Bitácora**")
     st.caption("Últimos movimientos registrados en la pestaña 'Log' del Sheet: quién cargó, editó, "
-               "avanzó una etapa, archivó o borró, y cuándo.")
+               "confirmó una llegada, archivó o borró, y cuándo.")
     if st.button("Ver bitácora"):
         st.session_state["ver_log"] = True
     if st.session_state.get("ver_log"):

@@ -24,12 +24,13 @@ import streamlit as st
 from sheets_io import (
     CATEGORIAS, COL_BL, COL_CANT, COL_DESC, COL_EMPRESA, COL_ESTADO_PAGO,
     COL_ETA, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA,
-    COL_PAGO_LLEGADA, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO,
-    ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE, MONEDA_CONCEPTO, _norm,
-    a_numero, aplicar_selectores_pagos, fecha_llegada_fila, formato_eta,
-    guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago,
-    mover_empresa_primera_columna, parsear_fecha, registrar_log,
-    registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
+    COL_PAGO_LLEGADA, COL_PAGOREAL_DOP, COL_PAGOREAL_USD, CONCEPTOS_PAGO,
+    EMPRESA_ANTILLANA, EMPRESAS_PAGO, ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE,
+    MONEDA_CONCEPTO, _norm, a_numero, aplicar_selectores_pagos,
+    fecha_llegada_fila, formato_eta, guardar_pago, hoy_rd, invalidar_caches,
+    marcar_estado_pago, mover_empresa_primera_columna, parsear_fecha,
+    registrar_log, registrar_pago_realizado, registrar_sin_mora,
+    sincronizar_pagos_con_transito,
 )
 from logica import PALETA_PAISES, enriquecer_pagos, esc, resumen_pagos, totales_conceptos
 from ui_componentes import COLOR_TOTAL, CUSTOM_CSS
@@ -160,20 +161,18 @@ def _aplicar_filtro_kpi(df: pd.DataFrame, filtro: str) -> pd.DataFrame:
     poder filtrar la lista de tarjetas según qué KPI se haya clickeado."""
     if df.empty or filtro == "todos":
         return df
-    cerrado = df["FechaPagoRealParsed"].notna() & df["FechaSinMoraParsed"].notna()
+    pagado = df["EstadoEfectivo"] == ESTADO_PAGO_PAGADO
     if filtro == "cerrados":
-        return df[cerrado]
+        return df[pagado]
     if filtro == "abiertos":
-        return df[~cerrado]
-    if filtro == "a_tiempo":
-        return df[cerrado & (df["DiasMora"] <= 0)]
+        return df[~pagado]
     if filtro == "con_mora":
-        return df[cerrado & (df["DiasMora"] > 0)]
+        return df[pagado & (df["DiasMora"] > 0)]
     if filtro == "con_sobrecosto":
         def _tiene_extra(e):
             e = e or {}
             return any(v is not None and v > 0 for v in e.values())
-        return df[cerrado & df["MontoExtra"].apply(_tiene_extra)]
+        return df[pagado & df["MontoExtra"].apply(_tiene_extra)]
     return df
 
 
@@ -204,8 +203,8 @@ def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
     prom = resumen["dias_mora_promedio"]
     sobre = resumen["sobrecosto"]
     kpis = [
-        ("Expedientes cerrados", str(resumen["n_pagados"]), COLOR_TOTAL, "cerrados"),
-        ("Expedientes abiertos", str(resumen["n_abiertos"]), COLOR_ABIERTOS, "abiertos"),
+        ("Pagados", str(resumen["n_pagados"]), COLOR_TOTAL, "cerrados"),
+        ("Pendientes", str(resumen["n_abiertos"]), COLOR_ABIERTOS, "abiertos"),
         ("Mora promedio", f"{prom:.0f} d" if prom is not None else "—", COLOR_MORA_PROMEDIO, "con_mora"),
         ("Sobrecosto acumulado", f"USD {sobre['USD']:,.0f} · DOP {sobre['DOP']:,.0f}",
          COLOR_SOBRECOSTO, "con_sobrecosto"),
@@ -245,8 +244,12 @@ def _html_expediente(r) -> str:
     cant = esc(r.get(COL_CANT, ""))
     llegada = esc(r.get(COL_PAGO_LLEGADA, "")) or "—"
     empresa = esc(r.get("EmpresaEfectiva", "")) or EMPRESA_ANTILLANA
-    estado = str(r.get(COL_ESTADO_PAGO, "")).strip() or ESTADO_PAGO_PENDIENTE
-    color_estado = "#B45309" if estado == ESTADO_PAGO_PENDIENTE else "#2E7D32"
+    # El estado que se muestra es el EFECTIVO: Pagado en cuanto hay fecha de
+    # pago real, así se haya tecleado directo en el Sheet sin pasar por el
+    # botón de "Marcar estado".
+    estado = r.get("EstadoEfectivo") or ESTADO_PAGO_PENDIENTE
+    pagado = estado == ESTADO_PAGO_PAGADO
+    color_estado = "#2E7D32" if pagado else "#B45309"
 
     # Un concepto vacío NO sale — solo los que de verdad tiene el expediente.
     chips = []
@@ -265,12 +268,22 @@ def _html_expediente(r) -> str:
     dias_sin_pagar_txt = "—" if dias_sin_pagar is None or pd.isna(dias_sin_pagar) else str(int(dias_sin_pagar))
     fecha_saludable = esc(r.get(COL_FECHA_SIN_MORA, "")) or "sin fijar"
 
+    if pagado:
+        # Ya pagado: lo que importa es el costo FINAL (conceptos + el extra
+        # que Logística escribió a mano — 0 si no hubo diferencia).
+        total_pagado = r.get("TotalPagado") or total
+        etiqueta_usd, etiqueta_dop = "Total pagado US$", "Total pagado RD$"
+        valor_usd, valor_dop = total_pagado.get("USD") or 0.0, total_pagado.get("DOP") or 0.0
+    else:
+        etiqueta_usd, etiqueta_dop = "Total a pagar US$", "Total a pagar RD$"
+        valor_usd, valor_dop = total.get("USD") or 0.0, total.get("DOP") or 0.0
+
     pie_cerrado = ""
     fecha_pago = str(r.get(COL_FECHA_PAGO_REAL, "")).strip()
-    if fecha_pago:
+    if pagado and fecha_pago:
         extra = r.get("MontoExtra") or {}
         partes = [_fmt(v, m) for m, v in extra.items() if v is not None and abs(v) > 0.005]
-        extra_txt = " · Extra sobre lo saludable: " + " y ".join(partes) if partes else ""
+        extra_txt = " · Extra pagado de más: " + " y ".join(partes) if partes else " · Sin diferencia sobre lo saludable"
         pie_cerrado = f'<div class="pago-cerrado">Pagado el {esc(fecha_pago)}{extra_txt}</div>'
 
     return (
@@ -280,10 +293,10 @@ def _html_expediente(r) -> str:
         f'<div class="pago-meta">{desc} · {cant} · Llegada: {llegada}</div>'
         f'<div class="pago-conceptos">{"".join(chips)}</div>'
         '<div class="pago-totales">'
-        f'<div><span class="pago-total-etq">Total a pagar US$</span>'
-        f'<span class="pago-total-val">{_fmt(total.get("USD") or 0.0, "USD")}</span></div>'
-        f'<div><span class="pago-total-etq">Total a pagar RD$</span>'
-        f'<span class="pago-total-val">{_fmt(total.get("DOP") or 0.0, "DOP")}</span></div>'
+        f'<div><span class="pago-total-etq">{etiqueta_usd}</span>'
+        f'<span class="pago-total-val">{_fmt(valor_usd, "USD")}</span></div>'
+        f'<div><span class="pago-total-etq">{etiqueta_dop}</span>'
+        f'<span class="pago-total-val">{_fmt(valor_dop, "DOP")}</span></div>'
         f'<div><span class="pago-total-etq">Fecha saludable</span>'
         f'<span class="pago-total-val" style="font-size:0.95rem;">{fecha_saludable}</span></div>'
         f'<div><span class="pago-total-etq">Días sin pagar</span>'
@@ -417,54 +430,88 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
             st.error(mensaje)
 
 
-def form_ventana_pago(enriquecido: pd.DataFrame, tipo: str):
-    """tipo = 'sin_mora' o 'pago_real'. Comparte la misma mecánica: elegir el
-    expediente, fijar una fecha, congelar el total de lo que esté lleno en los
-    conceptos EN ESE MOMENTO. Corregible después con la casilla de abajo."""
-    es_sin_mora = tipo == "sin_mora"
-    st.markdown(f"**{'Registrar ventana SIN MORA' if es_sin_mora else 'Registrar Pago Realizado'}**")
+def form_sin_mora(enriquecido: pd.DataFrame):
+    """Fecha límite saludable de pago, a criterio de Logística. Ya no calcula
+    ni guarda montos — el total sale en vivo de los conceptos."""
+    st.markdown("**Registrar fecha saludable (SIN MORA)**")
 
     if enriquecido.empty:
         st.info("Todavía no hay expedientes con conceptos registrados.")
         return
 
     opciones = sorted(enriquecido[COL_BL].astype(str).str.strip().unique())
-    bl = st.selectbox("Expediente (BL)", opciones, key=f"sel_bl_{tipo}")
+    bl = st.selectbox("Expediente (BL)", opciones, key="sel_bl_sin_mora")
     fila = enriquecido[enriquecido[COL_BL].astype(str).str.strip() == bl].iloc[0]
 
-    totales = totales_conceptos(fila)
-    if totales is None:
-        st.warning("Este expediente no tiene ningún concepto con monto todavía.")
-        return
-    st.caption(f"Suma de los conceptos llenos ahora mismo: {_fmt(totales['USD'], 'USD')} · "
-              f"{_fmt(totales['DOP'], 'DOP')}")
-
-    col_fecha = COL_FECHA_SIN_MORA if es_sin_mora else COL_FECHA_PAGO_REAL
-    ya_registrado = str(fila.get(col_fecha, "")).strip()
+    ya_registrado = str(fila.get(COL_FECHA_SIN_MORA, "")).strip()
     corregir = False
     if ya_registrado:
         st.info(f"Ya registrado: {ya_registrado}.")
-        corregir = st.checkbox("Corregir fecha y/o monto", key=f"corregir_{tipo}")
+        corregir = st.checkbox("Corregir fecha", key="corregir_sin_mora")
         if not corregir:
             return
 
-    if not es_sin_mora and not str(fila.get(COL_FECHA_SIN_MORA, "")).strip():
-        st.warning("Este expediente todavía no tiene la ventana SIN MORA registrada. "
-                  "Es la referencia contra la que se mide el pago; regístrala primero.")
-        return
+    fecha = st.date_input("Fecha límite saludable de pago", value=hoy_rd(), format="DD/MM/YYYY",
+                          key="fecha_sin_mora")
 
-    etiqueta_fecha = "Fecha límite saludable de pago" if es_sin_mora else "Fecha en que se pagó"
-    fecha = st.date_input(etiqueta_fecha, value=hoy_rd(), format="DD/MM/YYYY", key=f"fecha_{tipo}")
-
-    if st.button("Confirmar", type="primary", key=f"btn_{tipo}"):
-        fn = registrar_sin_mora if es_sin_mora else registrar_pago_realizado
-        ok, mensaje = fn(bl, fecha, totales, sobrescribir=corregir)
+    if st.button("Confirmar", type="primary", key="btn_sin_mora"):
+        ok, mensaje = registrar_sin_mora(bl, fecha, sobrescribir=corregir)
         if ok:
-            titulo = "Ventana SIN MORA" if es_sin_mora else "Pago Realizado"
-            registrar_log(f"{titulo} registrado", bl, "",
-                         f"{fecha.isoformat()} · {_fmt(totales['USD'], 'USD')} · {_fmt(totales['DOP'], 'DOP')}")
+            registrar_log("Fecha saludable registrada", bl, "", fecha.isoformat())
             invalidar_caches()
             st.success("Guardado.")
+            st.rerun()
+        else:
+            st.error(mensaje)
+
+
+def form_pago_realizado(enriquecido: pd.DataFrame):
+    """Fecha real de pago + el EXTRA pagado de más sobre los conceptos
+    originales (0 si no hubo diferencia) — lo escribe Logística a mano, no se
+    calcula solo. Marca el expediente como Pagado."""
+    st.markdown("**Registrar Pago Realizado**")
+
+    if enriquecido.empty:
+        st.info("Todavía no hay expedientes con conceptos registrados.")
+        return
+
+    opciones = sorted(enriquecido[COL_BL].astype(str).str.strip().unique())
+    bl = st.selectbox("Expediente (BL)", opciones, key="sel_bl_pago_real")
+    fila = enriquecido[enriquecido[COL_BL].astype(str).str.strip() == bl].iloc[0]
+
+    total = totales_conceptos(fila)
+    if total is None:
+        st.warning("Este expediente no tiene ningún concepto con monto todavía.")
+        return
+    st.caption(f"Total de los conceptos: {_fmt(total['USD'], 'USD')} · {_fmt(total['DOP'], 'DOP')}. "
+              "El extra que pongas abajo se le suma a esto para mostrar el costo final.")
+
+    ya_registrado = str(fila.get(COL_FECHA_PAGO_REAL, "")).strip()
+    corregir = False
+    if ya_registrado:
+        st.info(f"Ya registrado: {ya_registrado}.")
+        corregir = st.checkbox("Corregir fecha y/o extra", key="corregir_pago_real")
+        if not corregir:
+            return
+
+    fecha = st.date_input("Fecha en que se pagó", value=hoy_rd(), format="DD/MM/YYYY",
+                          key="fecha_pago_real")
+    c1, c2 = st.columns(2)
+    extra_previo_usd = a_numero(fila.get(COL_PAGOREAL_USD, "")) or 0.0
+    extra_previo_dop = a_numero(fila.get(COL_PAGOREAL_DOP, "")) or 0.0
+    extra_usd = c1.number_input("Extra pagado de más (USD) — 0 si no hubo diferencia", min_value=0.0,
+                                value=float(extra_previo_usd), step=100.0, key="extra_usd_pago_real")
+    extra_dop = c2.number_input("Extra pagado de más (DOP) — 0 si no hubo diferencia", min_value=0.0,
+                                value=float(extra_previo_dop), step=100.0, key="extra_dop_pago_real")
+
+    if st.button("Confirmar", type="primary", key="btn_pago_real"):
+        extra = {"USD": extra_usd, "DOP": extra_dop}
+        ok, mensaje = registrar_pago_realizado(bl, fecha, extra, sobrescribir=corregir)
+        if ok:
+            registrar_log("Pago Realizado registrado", bl, "",
+                         f"{fecha.isoformat()} · extra {_fmt(extra_usd, 'USD')} · {_fmt(extra_dop, 'DOP')}")
+            invalidar_caches()
+            st.success("Guardado — expediente marcado como Pagado.")
             st.rerun()
         else:
             st.error(mensaje)
@@ -524,10 +571,10 @@ def panel_pagos(datos: dict, es_admin: bool):
     st.divider()
     with st.expander("Registrar / editar conceptos de un expediente"):
         form_registrar_conceptos(enriquecido, activos, historico)
-    with st.expander("Registrar ventana SIN MORA"):
-        form_ventana_pago(enriquecido, "sin_mora")
+    with st.expander("Registrar fecha saludable (SIN MORA)"):
+        form_sin_mora(enriquecido)
     with st.expander("Registrar Pago Realizado"):
-        form_ventana_pago(enriquecido, "pago_real")
+        form_pago_realizado(enriquecido)
     with st.expander("Marcar estado (Pendiente/Pagado)"):
         form_estado_pago(enriquecido)
     with st.expander("Activar selectores en Sheets (fechas y Empresa)"):

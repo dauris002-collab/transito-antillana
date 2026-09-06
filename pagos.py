@@ -27,9 +27,9 @@ from sheets_io import (
     COL_PAGO_LLEGADA, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO,
     ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE, MONEDA_CONCEPTO, _norm,
     a_numero, aplicar_selectores_pagos, fecha_llegada_fila, formato_eta,
-    guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago, parsear_fecha,
-    registrar_log, registrar_pago_realizado, registrar_sin_mora,
-    sincronizar_pagos_con_transito,
+    guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago,
+    mover_empresa_primera_columna, parsear_fecha, registrar_log,
+    registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
 )
 from logica import PALETA_PAISES, enriquecer_pagos, esc, resumen_pagos, totales_conceptos
 from ui_componentes import COLOR_RECIBIDAS_MES, COLOR_TOTAL, CUSTOM_CSS, tarjeta_kpi
@@ -296,6 +296,16 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
     valores_previos = {c: fila_existente.get(c, "") for c in CONCEPTOS_PAGO} if fila_existente is not None else {}
     seleccionados_previos = [c for c in CONCEPTOS_PAGO if str(valores_previos.get(c, "")).strip()]
 
+    # Empresa no sale de tránsito (ese concepto no existe ahí) — la fija
+    # Logística a mano, cada vez. Sin default automático: "Elige..." obliga a
+    # una decisión consciente en vez de asumir Antillana solo porque el
+    # expediente vino del selector de tránsito.
+    empresa_previa = str(fila_existente.get(COL_EMPRESA, "")).strip() if fila_existente is not None else ""
+    opciones_empresa = ["— Elige —"] + EMPRESAS_PAGO
+    idx_empresa = opciones_empresa.index(empresa_previa) if empresa_previa in opciones_empresa else 0
+    empresa_elegida = st.selectbox("Empresa (a quién se le debe este expediente)", opciones_empresa,
+                                   index=idx_empresa, key="pago_empresa_sel")
+
     conceptos_aplican = st.multiselect(
         "Conceptos que aplican a este expediente (deja fuera los que no apliquen — vacío no es cero)",
         CONCEPTOS_PAGO, default=seleccionados_previos, key="pago_conceptos_sel",
@@ -317,13 +327,16 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
         if not bl:
             st.error("Falta el BL.")
             return
+        if empresa_elegida == "— Elige —":
+            st.error("Selecciona a qué empresa se le debe este expediente antes de guardar.")
+            return
         # Los conceptos NO seleccionados se guardan vacíos a propósito: "no
         # aplica" no es lo mismo que "cero", y así solo se suma lo que de
         # verdad tiene el expediente.
         datos = {c: (montos[c] if c in conceptos_aplican else "") for c in CONCEPTOS_PAGO}
         referencia = {COL_DESC: elegido["desc"], COL_CANT: elegido["cant"],
-                     COL_PAGO_LLEGADA: elegido["llegada_iso"], COL_EMPRESA: EMPRESA_ANTILLANA}
-        ok, mensaje = guardar_pago(bl, datos, referencia=referencia)
+                     COL_PAGO_LLEGADA: elegido["llegada_iso"]}
+        ok, mensaje = guardar_pago(bl, datos, empresa=empresa_elegida, referencia=referencia)
         if ok:
             registrar_log("Conceptos de pago guardados", bl, "", ", ".join(conceptos_aplican) or "(ninguno)")
             invalidar_caches()
@@ -452,4 +465,10 @@ def panel_pagos(datos: dict, es_admin: bool):
                   "vez de teclear.")
         if st.button("Activar selectores", key="btn_selector_fecha"):
             ok, mensaje = aplicar_selectores_pagos()
+            (st.success if ok else st.error)(mensaje)
+        st.divider()
+        st.caption("Puramente cosmético — la app siempre busca las columnas por nombre, nunca por "
+                  "posición. Esto solo cambia cómo se VE la hoja al trabajar directo en Sheets.")
+        if st.button("Mover 'Empresa' antes de BL", key="btn_mover_empresa"):
+            ok, mensaje = mover_empresa_primera_columna()
             (st.success if ok else st.error)(mensaje)

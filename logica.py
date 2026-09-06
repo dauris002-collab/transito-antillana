@@ -665,16 +665,20 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
 
 
 def resumen_pagos(df: pd.DataFrame) -> dict:
-    """Estadística objetivo del módulo: de los expedientes con SIN MORA y Pago
-    Realizado registrados, cuántos se pagaron dentro de la ventana saludable,
-    el promedio de días de mora, y el sobrecosto acumulado por moneda (solo se
-    suma cuando el extra es positivo; un pago más barato que lo estimado no
-    "resta" sobrecosto, simplemente no genera ninguno)."""
-    vacio = {"n_pagados": 0, "n_a_tiempo": 0, "dias_mora_promedio": None,
+    """Estadística objetivo del módulo: de los expedientes con montos, cuántos
+    quedaron cerrados (SIN MORA y Pago Realizado ya registrados) y cuántos
+    siguen abiertos, cuántos de los cerrados se pagaron dentro de la ventana
+    saludable, el promedio de días de mora, y el sobrecosto acumulado por
+    moneda (solo se suma cuando el extra es positivo; un pago más barato que
+    lo estimado no "resta" sobrecosto, simplemente no genera ninguno)."""
+    vacio = {"n_pagados": 0, "n_abiertos": 0, "n_a_tiempo": 0, "dias_mora_promedio": None,
              "sobrecosto": {"USD": 0.0, "DOP": 0.0}}
     if df is None or df.empty or "FechaPagoRealParsed" not in df.columns:
         return vacio
-    cerrados = df[df["FechaPagoRealParsed"].notna() & df["FechaSinMoraParsed"].notna()]
+
+    cerrado_mask = df["FechaPagoRealParsed"].notna() & df["FechaSinMoraParsed"].notna()
+    cerrados = df[cerrado_mask]
+    vacio["n_abiertos"] = int((~cerrado_mask).sum())
     if cerrados.empty:
         return vacio
 
@@ -689,6 +693,7 @@ def resumen_pagos(df: pd.DataFrame) -> dict:
 
     return {
         "n_pagados": len(cerrados),
+        "n_abiertos": vacio["n_abiertos"],
         "n_a_tiempo": a_tiempo,
         "dias_mora_promedio": (sum(dias) / len(dias)) if dias else None,
         "sobrecosto": sobrecosto,

@@ -15,11 +15,12 @@ from datetime import date, datetime
 import pandas as pd
 
 from sheets_io import (
-    COL_BL, COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_FECHA_DECLARACION,
-    COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL, COL_FECHA_SALIDA,
-    COL_FECHA_SIN_MORA, COL_LLEGO, COL_MODELO, COL_OC, COL_PAGOREAL_DOP,
-    COL_PAGOREAL_USD, COL_PAIS, COL_SINMORA_DOP, COL_SINMORA_USD,
-    CONCEPTOS_PAGO, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
+    COL_BL, COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_EMPRESA, COL_ETA,
+    COL_FECHA_DECLARACION, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL,
+    COL_FECHA_SALIDA, COL_FECHA_SIN_MORA, COL_LLEGO, COL_MODELO, COL_OC,
+    COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS, COL_SINMORA_DOP,
+    COL_SINMORA_USD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, ETAPAS_PUERTO,
+    INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
     _fecha_de_tokens, _interpretar_tokens, _norm, _slug_css, _tokenizar_fecha,
     a_numero, columna_de_valor, costos_puerto, es_llego_no, es_llego_si,
     es_numero, fecha_llegada_fila, hoy_rd, parsear_fecha, sla_etapas,
@@ -598,20 +599,31 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     llegada se confirma después."""
     df = df_pagos.copy()
     calculadas = ["BLSinTransito", "TieneMontos", "TotalActual", "DiasSinPagar",
-                  "SinMoraTotales", "PagoRealTotales", "MontoExtra", "DiasMora",
-                  "FechaSinMoraParsed", "FechaPagoRealParsed"]
+                  "EmpresaEfectiva", "SinMoraTotales", "PagoRealTotales", "MontoExtra",
+                  "DiasMora", "FechaSinMoraParsed", "FechaPagoRealParsed"]
     if df.empty:
         for c in calculadas:
             df[c] = []
         return df
 
+    # Filas sincronizadas ANTES de que existiera la columna Empresa quedan en
+    # blanco; como tránsito solo trackea Antillana, blanco vale como Antillana
+    # sin necesidad de corregir nada a mano en el Sheet.
+    empresas_efectivas = (df[COL_EMPRESA].fillna("").astype(str).str.strip() if COL_EMPRESA in df.columns
+                          else pd.Series([""] * len(df), index=df.index))
+    empresas_efectivas = empresas_efectivas.replace("", EMPRESA_ANTILLANA)
+    df["EmpresaEfectiva"] = empresas_efectivas.tolist()
+
     bls_transito = set()
     for fuente in (activos, historico):
         if fuente is not None and not fuente.empty:
             bls_transito |= {str(b).strip() for b in fuente[COL_BL] if str(b).strip()}
+    # Tecnicaribe y Motor Ibérico nunca van a estar en tránsito (esta app solo
+    # trackea embarques de Antillana): avisar "sin tránsito" para ellos sería
+    # una alarma falsa, no un dato útil.
     df["BLSinTransito"] = [
-        bool(bl) and bl not in bls_transito
-        for bl in df[COL_BL].astype(str).str.strip()
+        bool(bl) and emp == EMPRESA_ANTILLANA and bl not in bls_transito
+        for bl, emp in zip(df[COL_BL].astype(str).str.strip(), empresas_efectivas)
     ]
 
     totales_actuales = [totales_conceptos(r) for _, r in df.iterrows()]

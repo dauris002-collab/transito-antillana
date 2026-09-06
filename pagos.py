@@ -32,7 +32,7 @@ from sheets_io import (
     registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
 )
 from logica import PALETA_PAISES, enriquecer_pagos, esc, resumen_pagos, totales_conceptos
-from ui_componentes import COLOR_RECIBIDAS_MES, COLOR_TOTAL, CUSTOM_CSS
+from ui_componentes import COLOR_TOTAL, CUSTOM_CSS
 
 
 COLOR_SOBRECOSTO = "#991B1B"
@@ -188,7 +188,7 @@ def _tarjeta_por_pagar(total: dict) -> str:
         f'display:flex; flex-direction:column; align-items:center; justify-content:center; '
         f'padding:14px 10px; box-shadow:0 2px 8px rgba(17,24,39,0.12);">'
         f'<div style="font-size:0.68rem; font-weight:700; letter-spacing:0.05em; '
-        f'text-transform:uppercase; opacity:0.92;">Total por pagar (abiertos)</div>'
+        f'text-transform:uppercase; opacity:0.92;">Total por pagar</div>'
         f'<div style="font-size:1.35rem; font-weight:800; margin-top:6px;">'
         f'{_fmt(total.get("USD", 0.0), "USD")} · {_fmt(total.get("DOP", 0.0), "DOP")}</div>'
         f'</div>'
@@ -206,7 +206,6 @@ def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
     kpis = [
         ("Expedientes cerrados", str(resumen["n_pagados"]), COLOR_TOTAL, "cerrados"),
         ("Expedientes abiertos", str(resumen["n_abiertos"]), COLOR_ABIERTOS, "abiertos"),
-        ("Pagados a tiempo", str(resumen["n_a_tiempo"]), COLOR_RECIBIDAS_MES, "a_tiempo"),
         ("Mora promedio", f"{prom:.0f} d" if prom is not None else "—", COLOR_MORA_PROMEDIO, "con_mora"),
         ("Sobrecosto acumulado", f"USD {sobre['USD']:,.0f} · DOP {sobre['DOP']:,.0f}",
          COLOR_SOBRECOSTO, "con_sobrecosto"),

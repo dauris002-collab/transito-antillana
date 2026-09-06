@@ -281,8 +281,15 @@ COL_PAGOREAL_USD = "PagoRealizado_USD"
 COL_PAGOREAL_DOP = "PagoRealizado_DOP"
 
 
+# Descripción y Cantidad reusan las mismas columnas canónicas de tránsito
+# (mismo significado, mismo nombre). Llegada es propia de Pagos: guarda la
+# fecha ya resuelta (confirmada si existe, ETA si no) para no repetir la
+# lógica de COL_LLEGO + ETA en una hoja que no la necesita.
+COL_PAGO_LLEGADA = "Llegada"
+
+
 COLUMNAS_PAGOS = [
-    COL_BL, *CONCEPTOS_PAGO, COL_ESTADO_PAGO,
+    COL_BL, COL_DESC, COL_CANT, COL_PAGO_LLEGADA, *CONCEPTOS_PAGO, COL_ESTADO_PAGO,
     COL_FECHA_SIN_MORA, COL_SINMORA_USD, COL_SINMORA_DOP,
     COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
     COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
@@ -1584,12 +1591,15 @@ def _obtener_o_crear_ws_pagos():
 
 
 @_con_manejo_apierror
-def guardar_pago(bl: str, conceptos: dict, estado: str = None):
+def guardar_pago(bl: str, conceptos: dict, estado: str = None, referencia: dict = None):
     """Crea o actualiza la fila de Pagos de un BL. `conceptos` trae únicamente
     los que aplican a este expediente (los que no, se guardan vacíos: 'no
-    aplica' no es lo mismo que 'cero'). No toca las ventanas SIN MORA ni Pago
-    Realizado — esas se fijan aparte, con registrar_sin_mora() y
-    registrar_pago_realizado()."""
+    aplica' no es lo mismo que 'cero'). `referencia` (Descripción/Cantidad/
+    Llegada) solo se usa AL CREAR la fila — si ya existe, no se toca, porque
+    esos tres campos son de sincronizar_pagos_con_transito(), no de este
+    formulario, y no hay que pisar lo que ya se sincronizó. No toca las
+    ventanas SIN MORA ni Pago Realizado — esas se fijan aparte, con
+    registrar_sin_mora() y registrar_pago_realizado()."""
     bl = str(bl or "").strip()
     if not bl:
         return False, "Falta el BL."
@@ -1608,7 +1618,7 @@ def guardar_pago(bl: str, conceptos: dict, estado: str = None):
     datos[COL_ACTUALIZADO_POR] = usuario_actual()
 
     if fila is None:
-        nuevo = {COL_BL: bl, **datos}
+        nuevo = {COL_BL: bl, **(referencia or {}), **datos}
         _con_reintento(lambda: ws.append_row(_fila_desde_dict(headers, nuevo), value_input_option="RAW"))
         return True, ""
 
@@ -1708,3 +1718,55 @@ def marcar_estado_pago(bl: str, estado: str):
     ]
     _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
     return True, ""
+
+
+@_con_manejo_apierror
+def sincronizar_pagos_con_transito(activos: pd.DataFrame, historico: pd.DataFrame):
+    """Agrega a Pagos, con BL/Descripción/Cantidad/Llegada ya llenos, los
+    expedientes de tránsito (activos + histórico) que todavía no tienen fila
+    ahí. Pensado para que Logística pueda abrir el Google Sheet directamente y
+    encontrar la fila ya lista para escribir los montos, sin tener que crearla
+    a mano ni pasar por la app.
+
+    No pisa ni borra nada de lo que ya exista en Pagos: un BL que ya tiene
+    fila se deja tal cual, aunque su descripción o llegada haya cambiado en
+    tránsito después de sincronizado. Sincronizar solo AGREGA lo que falta."""
+    ws = _obtener_o_crear_ws_pagos()
+    headers = _asegurar_columnas(ws, COLUMNAS_PAGOS)
+    columna_bl = _columna_indice(headers, COL_BL)
+    existentes = set()
+    if columna_bl:
+        valores = _con_reintento(lambda: ws.col_values(columna_bl)) or []
+        existentes = {_norm(v) for v in valores[1:] if str(v).strip()}
+
+    sello, autor = marca_ahora(), usuario_actual()
+    nuevas, vistos = [], set()
+    for fuente, es_hist in ((activos, False), (historico, True)):
+        if fuente is None or fuente.empty:
+            continue
+        for _, r in fuente.iterrows():
+            bl = str(r.get(COL_BL, "")).strip()
+            clave = _norm(bl)
+            if not bl or clave in existentes or clave in vistos:
+                continue
+            if es_hist:
+                llegada = (parsear_fecha(r.get(COL_FECHA_LLEGADA_PUERTO, ""))
+                          or parsear_fecha(r.get(COL_ETA, "")))
+            else:
+                llegada = fecha_llegada_fila(r) or parsear_fecha(r.get(COL_ETA, ""))
+            nuevas.append({
+                COL_BL: bl,
+                COL_DESC: str(r.get(COL_DESC, "")),
+                COL_CANT: str(r.get(COL_CANT, "")),
+                COL_PAGO_LLEGADA: llegada.isoformat() if llegada else "",
+                COL_ACTUALIZACION: sello,
+                COL_ACTUALIZADO_POR: autor,
+            })
+            vistos.add(clave)
+
+    if not nuevas:
+        return True, "0 expedientes nuevos: Pagos ya tenía todos los BL de tránsito."
+
+    filas = [_fila_desde_dict(headers, n) for n in nuevas]
+    _con_reintento(lambda: ws.append_rows(filas, value_input_option="RAW"))
+    return True, f"{len(nuevas)} expediente(s) agregado(s) a Pagos desde tránsito."

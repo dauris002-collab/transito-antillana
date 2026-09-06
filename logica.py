@@ -19,7 +19,7 @@ from sheets_io import (
     COL_FECHA_DECLARACION, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL,
     COL_FECHA_SALIDA, COL_FECHA_SIN_MORA, COL_LLEGO, COL_MODELO, COL_OC,
     COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS, COL_SINMORA_DOP,
-    COL_SINMORA_USD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, ETAPAS_PUERTO,
+    COL_SINMORA_USD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO, ETAPAS_PUERTO,
     INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
     _fecha_de_tokens, _interpretar_tokens, _norm, _slug_css, _tokenizar_fecha,
     a_numero, columna_de_valor, costos_puerto, es_llego_no, es_llego_si,
@@ -609,9 +609,22 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     # Filas sincronizadas ANTES de que existiera la columna Empresa quedan en
     # blanco; como tránsito solo trackea Antillana, blanco vale como Antillana
     # sin necesidad de corregir nada a mano en el Sheet.
-    empresas_efectivas = (df[COL_EMPRESA].fillna("").astype(str).str.strip() if COL_EMPRESA in df.columns
-                          else pd.Series([""] * len(df), index=df.index))
-    empresas_efectivas = empresas_efectivas.replace("", EMPRESA_ANTILLANA)
+    #
+    # Se canoniza contra EMPRESAS_PAGO sin importar mayúsculas/acentos: quien
+    # escriba "TECNICARIBE" o "Tecnicaribe" a mano en el Sheet (antes de que
+    # el selector de lista estuviera activo) tiene que calzar igual contra el
+    # filtro de la app, que compara con el nombre canónico exacto.
+    _empresas_norm = {_norm(e): e for e in EMPRESAS_PAGO}
+
+    def _canonizar_empresa(v):
+        v = str(v or "").strip()
+        if not v:
+            return EMPRESA_ANTILLANA
+        return _empresas_norm.get(_norm(v), v)
+
+    empresas_crudas = (df[COL_EMPRESA].fillna("").astype(str) if COL_EMPRESA in df.columns
+                       else pd.Series([""] * len(df), index=df.index))
+    empresas_efectivas = empresas_crudas.apply(_canonizar_empresa)
     df["EmpresaEfectiva"] = empresas_efectivas.tolist()
 
     bls_transito = set()

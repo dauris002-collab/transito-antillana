@@ -34,16 +34,33 @@ COL_BL = "BL"
 COL_DESC = "Descripcion"
 
 
-COL_MODELO = "Modelo_Serie"
-
-
 COL_CANT = "Cantidad"
 
 
 COL_PAIS = "Pais_Origen"
 
 
+# El ETA es la fecha que el equipo mantiene actualizada y la que todos conocen.
+# Es ESTIMADA mientras nadie confirme la llegada; una vez confirmada (ver
+# COL_LLEGO) pasa a valerse como la fecha real de llegada a puerto.
 COL_ETA = "Llegada a Puerto (ETA)"
+
+
+# Confirmación de llegada: "SI" (llegó), "NO" (se verificó que NO llegó) o vacío
+# (nadie ha revisado). Sustituye a la vieja columna Estatus_Llegada.
+#
+# La fecha de llegada NO se teclea aparte: cuando esto dice SI, la fecha de
+# llegada es el ETA. Así nadie escribe la misma fecha dos veces. El precio es
+# que si el ETA se mueve DESPUÉS de confirmar, la fecha de llegada se mueve con
+# él; por eso al archivar se congela en Fecha_Llegada_Puerto (ver
+# marcar_como_recibido), que es lo que después se lee como histórico.
+COL_LLEGO = "¿Llegó? SI/NO"
+
+
+LLEGO_SI = "SI"
+
+
+LLEGO_NO = "NO"
 
 
 COL_DIAS_PUERTO = "Dias en puerto"     # existe en el Sheet; la app lo calcula en vivo y no lo escribe
@@ -55,84 +72,62 @@ COL_ACTUALIZACION = "Fecha_Actualizacion"  # el Sheet lo tiene con tilde; _norm 
 COL_ACTUALIZADO_POR = "Actualizado_Por"    # la app la crea sola la primera vez que escribe
 
 
-COL_ESTATUS_LLEGADA = "Estatus_Llegada"    # vacío = sin confirmar; "Retrasado" = se verificó que NO llegó
+# --- Columnas opcionales por categoría --------------------------------------
+# Ninguna de estas aplica a las 5 pestañas, y por eso NO están en
+# REQUIRED_COLUMNS: si la pestaña no la trae, la app ni la pide ni la crea.
+COL_MODELO = "Modelo_Serie"          # Equipos, Generadores, Consolidados
 
 
-# Fecha de salida del origen: opcional, la trae quien la conoce (booking del
-# forwarder/naviera). Alimenta el Contador 1 (salida -> puerto). Aplica a
-# cualquier categoría, no solo a las marítimas.
-COL_FECHA_SALIDA = "Fecha_Salida"
+COL_FECHA_SALIDA = "Fecha_Salida"    # la trae quien la conoce (booking del forwarder/naviera)
 
 
-# Flujo detallado de 5 etapas, para TODAS las categorías. No hay una columna de
-# texto "Estado_Puerto": la etapa activa se calcula sola como la última de estas
-# 5 fechas que esté llena (ver _etapa_de_fechas). Vacío en las 5 = todavía no se
-# confirmó la llegada, aunque el ETA ya haya vencido. Elegir una etapa ANTERIOR
-# vacía las fechas posteriores (es la forma de corregir/retroceder).
-COL_FECHA_LLEGADA_PUERTO = "Fecha_Llegada_Puerto"    # llegada física a puerto/aeropuerto
+COL_OC = "OC"                        # Aéreos y Carga Suelta
 
 
-COL_FECHA_DECLARACION = "Fecha_Declaracion"          # inicia la recepción y declaración
+COL_EE = "EE"                        # Aéreos y Carga Suelta
 
 
-COL_FECHA_SOLICITUD_PAGO = "Fecha_Solicitud_Pago"    # cuándo se le pidió el pago a Finanzas
+COL_CLIENTE_STOCK = "CLIENTE / STOCK"   # Equipos, Generadores, Aéreos
 
 
-COL_FECHA_PAGO = "Fecha_Pago"                        # Finanzas confirma que ya pagó
+OPCIONALES_CATEGORIA = [COL_MODELO, COL_FECHA_SALIDA, COL_OC, COL_EE, COL_CLIENTE_STOCK]
 
 
-# Reutiliza la columna "Fecha_Despacho" que ya existía sin usar en el Sheet real
-# (Generadores y Carga Suelta) — "despachado" y "recibido en almacén" son la
-# misma acción, así que no hizo falta crear una columna nueva.
-COL_FECHA_ALMACEN = "Fecha_Despacho"                 # entrada a almacén = "Marcar como recibido"
+# Congelado de la llegada. Esta columna NO vive en las pestañas de categoría
+# (ahí la llegada es COL_LLEGO + el ETA): solo se escribe al archivar, para que
+# el histórico conserve la fecha que valía en ese momento aunque el ETA se
+# mueva después.
+COL_FECHA_LLEGADA_PUERTO = "Fecha_Llegada_Puerto"
 
 
-# OC (orden de compra) y EE (entrega entrante): propias de Aéreos y Carga
-# Suelta, tal como vienen en el formulario/Sheet real de esas dos categorías.
-COL_OC = "OC"
+COL_FECHA_DECLARACION = "Fecha_Declaracion"          # recepción y declaración ante Aduanas
 
 
-COL_EE = "EE"
+# Entrada a almacén. Tampoco es una etapa del tablero activo: es el sello del
+# momento de archivar, y por eso vive únicamente en "Recibido (Mes)".
+COL_FECHA_ALMACEN = "Fecha_Almacen"
 
 
-# Cliente al que pertenece el embarque y stock restante/disponible. Aplican a
-# las 5 categorías (a diferencia de OC/EE, que son solo de Aéreos y Carga
-# Suelta): en Equipos y Generadores se agregan junto al Modelo/Serie, y en
-# Aéreos, Carga Suelta y Consolidados reemplazan esa columna en la lista,
-# porque ahí el modelo/serie no es el dato que se usa para rastrear la carga.
-COL_CLIENTE = "Cliente"
-
-
-COL_STOCK = "Stock"
-
-
-# Tarifa de demora por embarque, escrita a mano en el Sheet. Opcional: si la
-# columna no existe, o la celda está vacía, se usa la tarifa de Secrets. Manda
-# siempre la del Sheet, porque la tarifa real la fija el contrato de cada
-# naviera y no un promedio de la app. Acepta entero o decimal, con o sin
-# separadores de miles ("2000", "2,500.50", "RD$ 3.000").
-COL_COSTO_DIA = "Costo_Por_Dia"
-
-
-# Columnas opcionales: si existen en el Sheet, la app las usa; si no, ni se
-# mencionan. Así se pueden agregar Orden_Compra, Cliente, Puerto_Destino o
-# Valor_USD desde Google Sheets sin tocar una línea de código.
+# Columnas opcionales libres: si existen en el Sheet, la app las usa; si no, ni
+# se mencionan. Así se puede agregar Puerto_Destino o Valor_USD desde Google
+# Sheets sin tocar una línea de código.
 NOMBRES_VALOR = {"valor_usd", "valor", "monto", "valor_cif", "monto_usd", "valor us$", "valor us"}
 
 
 MAX_FILAS_LECTURA = 20000
 
 
-REQUIRED_COLUMNS = [COL_BL, COL_DESC, COL_MODELO, COL_CANT, COL_PAIS, COL_ETA]
+# Lo único que TODA pestaña de categoría debe traer.
+REQUIRED_COLUMNS = [COL_BL, COL_DESC, COL_CANT, COL_PAIS, COL_ETA]
 
 
-COLUMNAS_FLUJO = [COL_FECHA_LLEGADA_PUERTO, COL_FECHA_DECLARACION,
-                  COL_FECHA_SOLICITUD_PAGO, COL_FECHA_PAGO, COL_FECHA_ALMACEN]
+# Fechas del flujo que sí se escriben en la pestaña de categoría. La llegada no
+# está aquí porque no tiene columna de fecha propia: es COL_LLEGO + el ETA.
+COLUMNAS_FLUJO = [COL_FECHA_DECLARACION]
 
 
 ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
-                                  COL_ESTATUS_LLEGADA, COL_FECHA_SALIDA,
-                                  *COLUMNAS_FLUJO, COL_OC, COL_EE, COL_CLIENTE, COL_STOCK]
+                                  COL_LLEGO, *COLUMNAS_FLUJO, *OPCIONALES_CATEGORIA]
 
 
 # Columnas que la app calcula o gestiona internamente y que no se muestran como
@@ -141,8 +136,8 @@ ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, COL_ACTUALIZACION, COL_ACTUAL
 COLUMNAS_INTERNAS = {
     "Categoria", "FilaSheet", "EstadoTexto", "DiasRel", "ETAFecha", "Prioridad", "OrdenSec",
     "ValorNum", "Buscar", "EtapaActual", "EtapaIdx", "Alerta", "AlertaDias",
-    "DiasTransito", "DiasSolicitudPago", "DiasPagoDespacho", "DiasEnPuerto", "DiasEnEtapa",
-    "F_Salida", "F_Puerto", "F_Declaracion", "F_Solicitud", "F_Pago", "F_Almacen",
+    "DiasTransito", "DiasEnPuerto", "DiasEnEtapa",
+    "F_Salida", "F_Puerto", "F_Declaracion",
     "BLRepetido", "FlujoRaro",
     COL_DIAS_PUERTO,
 }
@@ -151,29 +146,33 @@ COLUMNAS_INTERNAS = {
 CATEGORIAS = ["Equipos", "Generadores", "Aéreos", "Carga Suelta", "Consolidados"]
 
 
-# 3 contadores operativos:
-#   1) Salida -> Llegada a puerto (tránsito; se congela al confirmar la llegada)
-#   2) Solicitud de pago -> Pago realizado (se congela al pagar)
-#   3) Pago realizado -> hoy (espera de despacho; deja de verse al archivar)
+# 2 contadores operativos:
+#   1) Salida -> Llegada confirmada (tránsito; se congela al confirmar)
+#   2) Llegada confirmada -> Declaración (y de ahí a hoy, hasta archivar)
+# El reloj del dinero (días en puerto) arranca en la LLEGADA CONFIRMADA, nunca
+# en el ETA sin confirmar: mientras nadie diga SI, la carga puede seguir en agua.
 ETAPAS_PUERTO = [
     "Llegada a puerto",
     "Recepción y declaración",
-    "Solicitud de pago a finanzas",
-    "Pago realizado",
-    "Recibido en almacén",
 ]
 
 
 INDICE_ETAPA = {e: i for i, e in enumerate(ETAPAS_PUERTO)}
 
 
+# Solo las etapas que tienen columna de fecha propia. "Llegada a puerto" no está
+# aquí a propósito: se resuelve con COL_LLEGO + el ETA (ver fecha_llegada_fila).
 COLUMNA_FECHA_ETAPA = {
-    "Llegada a puerto": COL_FECHA_LLEGADA_PUERTO,
     "Recepción y declaración": COL_FECHA_DECLARACION,
-    "Solicitud de pago a finanzas": COL_FECHA_SOLICITUD_PAGO,
-    "Pago realizado": COL_FECHA_PAGO,
-    "Recibido en almacén": COL_FECHA_ALMACEN,
 }
+
+
+ETAPA_LLEGADA = ETAPAS_PUERTO[0]
+
+
+# Etiqueta de la acción de archivar. No está en ETAPAS_PUERTO a propósito: no es
+# una etapa del tablero activo, es la salida del tablero.
+ETAPA_ALMACEN = "Recibido en almacén"
 
 
 # Días tolerados en cada etapa antes de considerar que hay un cuello de botella.
@@ -183,34 +182,28 @@ COLUMNA_FECHA_ETAPA = {
 SLA_ETAPA_DEFECTO = {
     "Llegada a puerto": 3,
     "Recepción y declaración": 2,
-    "Solicitud de pago a finanzas": 5,
-    "Pago realizado": 3,
 }
 
 
 SLA_RETRASO_DEFECTO = 7   # días de retraso sin actualizar el ETA antes de avisar
 
 
-# Atraso en puerto y su costo. Son DOS umbrales distintos y confundirlos falsea
-# el número: UMBRAL_ATRASO_PUERTO es a partir de cuándo TÚ consideras que un
-# embarque está atrasado (criterio interno), y DIAS_LIBRES es a partir de cuándo
-# la naviera o la terminal EMPIEZAN A COBRAR (criterio del proveedor, viene en el
-# contrato). El conteo de atrasados usa el primero; el costo usa el segundo.
+# Atraso en puerto. Son DOS umbrales distintos y confundirlos falsea el número:
+# UMBRAL_ATRASO_PUERTO es a partir de cuándo TÚ consideras que un embarque está
+# atrasado (criterio interno), y DIAS_LIBRES es a partir de cuándo la naviera o
+# la terminal EMPIEZAN A COBRAR (criterio del proveedor, viene en el contrato).
+# El conteo de atrasados usa el primero; el módulo de pagos usará el segundo.
 UMBRAL_ATRASO_PUERTO_DEFECTO = 5   # alerta a partir de 5 días en puerto/aeropuerto
 
 
-DIAS_LIBRES_DEFECTO = 0   # el costo corre desde la llegada a puerto, no desde el día 8
+DIAS_LIBRES_DEFECTO = 0   # sin días libres declarados, el reloj corre desde la llegada
 
 
-# Sin tarifa de respaldo: el costo de demora sale ÚNICA y EXCLUSIVAMENTE de
-# Costo_Por_Dia en el Sheet, embarque por embarque — a pedido explícito, para
-# no promediar una tarifa que en realidad varía por naviera, terminal y
-# cantidad de contenedores. Sin esa celda llena, ese embarque no suma dinero.
 MONEDA_DEFECTO = "RD$"
 
 
 # Qué fecha manda para decidir a qué mes pertenece un embarque recibido:
-#   "llegada" -> fecha real de llegada a puerto (respaldo: ETA)
+#   "llegada" -> fecha de llegada confirmada (respaldo: ETA)
 #   "almacen" -> fecha de entrada a almacén
 # Cambia esta sola línea si el criterio del negocio es el otro.
 BASE_FECHA_RECIBIDO = "almacen"
@@ -223,10 +216,10 @@ LOG_SHEET = "Log"
 
 
 COLUMNAS_RECIBIDO = [
-    COL_BL, COL_DESC, COL_MODELO, COL_CANT, COL_PAIS, COL_ETA,
+    COL_BL, COL_DESC, COL_CANT, COL_PAIS, COL_ETA,
     "Fecha_Recibido", "Categoria_Origen", "Registrado_Por", COL_ACTUALIZACION,
-    COL_ACTUALIZADO_POR, COL_FECHA_SALIDA, *COLUMNAS_FLUJO, COL_OC, COL_EE,
-    COL_CLIENTE, COL_STOCK,
+    COL_ACTUALIZADO_POR, COL_FECHA_LLEGADA_PUERTO, *COLUMNAS_FLUJO, COL_FECHA_ALMACEN,
+    *OPCIONALES_CATEGORIA,
 ]
 
 
@@ -237,9 +230,6 @@ CACHE_TTL = 45              # segundos de caché de lectura
 
 
 REINTENTOS_API = 3
-
-
-VALOR_RETRASADO = "Retrasado"
 
 
 MESES_ES = {
@@ -278,9 +268,9 @@ def _norm_cache(texto: str) -> str:
 
 def _norm(texto) -> str:
     """Normaliza un nombre de columna/pestaña: sin acentos, sin dobles espacios,
-    sin distinguir mayúsculas. Es lo que evita que 'Fecha_Actualización' y
-    'Fecha_Actualizacion' se traten como columnas distintas. Con caché porque se
-    llama miles de veces por refresco (búsqueda, mapeo de columnas, etapas)."""
+    sin distinguir mayúsculas. Es lo que hace que '¿Llegó? SI/NO' y
+    '¿Llego? Si/No' se traten como la misma columna. Con caché porque se llama
+    miles de veces por refresco (búsqueda, mapeo de columnas, etapas)."""
     return _norm_cache(str(texto))
 
 
@@ -294,10 +284,20 @@ def _slug_css(texto) -> str:
     return limpio.strip("_") or "x"
 
 
+def es_llego_si(valor) -> bool:
+    """True solo si la casilla dice SI. Tolera 'si', 'Sí', 'SÍ', espacios."""
+    return _norm(valor) in {"si", "s", "yes", "y"}
+
+
+def es_llego_no(valor) -> bool:
+    """True solo si se verificó explícitamente que NO llegó. Vacío no es NO:
+    vacío significa que nadie ha revisado, y son cosas distintas."""
+    return _norm(valor) in {"no", "n"}
+
+
 @st.cache_resource
 def costos_puerto() -> dict:
-    """Parámetros del atraso en puerto que NO son la tarifa. Se ajustan desde
-    Secrets:
+    """Parámetros del atraso en puerto. Se ajustan desde Secrets:
 
         [costo_puerto]
         umbral = 5
@@ -307,9 +307,11 @@ def costos_puerto() -> dict:
         [costo_puerto.dias_libres_por_categoria]
         Aéreos = 2
 
-    La tarifa diaria no vive aquí: sale exclusivamente de Costo_Por_Dia en el
-    Sheet (ver costo_dia_fila). No hay tarifa global ni por categoría de
-    respaldo — si esa celda está vacía, ese embarque no suma dinero."""
+    Aquí NO hay tarifa diaria. El costo de la demora no se estima con una tarifa
+    por día — que en la práctica varía por naviera, terminal, volumen y espacio —
+    sino que se observa: se registra el monto estimado con su fecha de pago
+    saludable y luego el monto realmente pagado, y el sobrecosto es la
+    diferencia. Eso vive en el módulo de Estatus de Pago, no en tránsito."""
     cfg = {}
     try:
         cfg = st.secrets.get("costo_puerto", None) or {}
@@ -333,7 +335,7 @@ def costos_puerto() -> dict:
 @st.cache_resource
 def sla_etapas() -> dict:
     """Umbrales de días por etapa. Se pueden ajustar desde Streamlit Secrets sin
-    tocar código:  [sla]  llegada_a_puerto = 4  /  pago_realizado = 2 ..."""
+    tocar código:  [sla]  llegada_a_puerto = 4  /  recepcion_y_declaracion = 3 ..."""
     valores = dict(SLA_ETAPA_DEFECTO)
     valores["__retraso__"] = SLA_RETRASO_DEFECTO
     try:
@@ -508,6 +510,23 @@ def formato_eta(valor) -> str:
     return f"{f.day:02d} {MESES_ES_CORTO[f.month]} {f.year}"
 
 
+def fecha_llegada_fila(fila) -> date | None:
+    """Fecha de llegada a puerto de una fila (dict o Series de pandas).
+
+    Es el ETA, pero SOLO si alguien confirmó la llegada con SI. Sin confirmar
+    devuelve None, y eso es deliberado: es lo que impide que un embarque que
+    todavía está navegando empiece a acumular días en puerto —y, más adelante,
+    sobrecosto por demora— solo porque su ETA ya venció."""
+    try:
+        obtener = fila.get
+    except AttributeError:
+        return None
+    llego = obtener(COL_LLEGO, "")
+    if not es_llego_si(llego):
+        return None
+    return parsear_fecha(obtener(COL_ETA, ""))
+
+
 # ---------------------------------------------------------------------------
 # CAPA GOOGLE SHEETS
 # ---------------------------------------------------------------------------
@@ -612,7 +631,17 @@ def _fila_desde_dict(headers: list, datos: dict) -> list:
 
 def _asegurar_columnas(ws, nombres: list) -> list:
     """Agrega de una sola vez las columnas que falten (una llamada, no una por
-    columna). Devuelve la lista final de encabezados."""
+    columna). Devuelve la lista final de encabezados.
+
+    OJO al mantener el Sheet a mano: si borras una columna que la app escribe,
+    esta función la vuelve a crear (vacía, al final) la próxima vez que alguien
+    guarde. Para eliminar una columna de verdad hay que quitarla también de las
+    constantes de arriba y desplegar, y solo después borrarla del Sheet.
+
+    Por eso las columnas opcionales por categoría (Modelo_Serie, OC, EE,
+    CLIENTE / STOCK, Fecha_Salida) nunca se pasan a esta función 'por si
+    acaso': solo cuando traen un valor real. Así Carga Suelta no termina con una
+    columna Modelo_Serie vacía que nadie pidió."""
     headers = _headers(ws.title)
     existentes = {_norm(h) for h in headers}
     faltan = []
@@ -635,13 +664,12 @@ def _asegurar_columnas(ws, nombres: list) -> list:
 def _localizar_fila(ws, bl: str, fila_sugerida=None):
     """Ubica la fila de un BL dentro de una pestaña. Devuelve (fila, error).
 
-    Este es el corazón del arreglo de esta versión. Antes se usaba ws.find(BL),
-    que devuelve la PRIMERA coincidencia. Con dos embarques parciales del mismo
-    BL, la app editaba, archivaba o borraba la fila equivocada en silencio.
-    Ahora la pantalla manda el número de fila que está mostrando y aquí se
-    verifica contra el Sheet: si esa fila sigue teniendo ese BL, se usa; si el
-    Sheet cambió y solo hay una coincidencia, se usa esa; si hay varias y
-    ninguna es la sugerida, NO se escribe nada y se dice por qué."""
+    Antes se usaba ws.find(BL), que devuelve la PRIMERA coincidencia. Con dos
+    embarques parciales del mismo BL, la app editaba, archivaba o borraba la
+    fila equivocada en silencio. Ahora la pantalla manda el número de fila que
+    está mostrando y aquí se verifica contra el Sheet: si esa fila sigue
+    teniendo ese BL, se usa; si el Sheet cambió y solo hay una coincidencia, se
+    usa esa; si hay varias y ninguna es la sugerida, NO se escribe nada."""
     if ws is None:
         return None, "No se encontró la pestaña en el Google Sheet."
     headers = _headers(ws.title)
@@ -793,7 +821,8 @@ def unificar_paises(serie: pd.Series) -> pd.Series:
 def columnas_extra(df: pd.DataFrame) -> list:
     """Columnas que el usuario agregó en el Sheet y que la app no gestiona."""
     conocidas = set(ALL_COLUMNS) | COLUMNAS_INTERNAS | {"Fecha_Recibido", "Categoria_Origen",
-                                                        "Registrado_Por", "FechaParsed", "Anio", "Mes"}
+                                                        "Registrado_Por", "FechaParsed", "Anio", "Mes",
+                                                        COL_FECHA_ALMACEN, COL_FECHA_LLEGADA_PUERTO}
     return [c for c in df.columns if c not in conocidas]
 
 
@@ -1008,8 +1037,8 @@ def append_row(datos: dict, categoria: str):
     datos = dict(datos)
     datos[COL_ACTUALIZACION] = marca_ahora()
     datos[COL_ACTUALIZADO_POR] = usuario_actual()
-    # Cualquier campo con valor real se asegura como columna, así un campo nuevo
-    # que se agregue más adelante no necesita tocar esta función.
+    # Solo se asegura la columna de los campos que traen valor real: así una
+    # categoría que no usa OC o Modelo_Serie no termina con esa columna vacía.
     columnas_a_asegurar = [c for c, v in datos.items() if str(v).strip()]
     headers = _asegurar_columnas(ws, columnas_a_asegurar)
     _con_reintento(lambda: ws.append_row(_fila_desde_dict(headers, datos), value_input_option="RAW"))
@@ -1021,7 +1050,7 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str):
     ws = get_worksheet(categoria)
     if ws is None:
         return False, f"No existe la pestaña '{categoria}' en el Google Sheet."
-    opcionales = [c for c in (COL_FECHA_SALIDA, COL_OC, COL_EE)
+    opcionales = [c for c in OPCIONALES_CATEGORIA
                   if c in df.columns and df[c].astype(str).str.strip().ne("").any()]
     headers = _asegurar_columnas(ws, [COL_ACTUALIZACION, COL_ACTUALIZADO_POR, *opcionales])
     sello, autor = marca_ahora(), usuario_actual()
@@ -1052,7 +1081,8 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict,
     if error:
         return False, error
 
-    columnas_a_asegurar = [COL_ACTUALIZACION, COL_ACTUALIZADO_POR, *datos.keys()]
+    columnas_a_asegurar = [COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
+                           *[c for c, v in datos.items() if str(v).strip()]]
     headers = _asegurar_columnas(ws, columnas_a_asegurar)
     combinado = _leer_fila(ws, fila, headers)
     combinado_norm = {_norm(k): v for k, v in combinado.items()}
@@ -1067,11 +1097,20 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict,
     combinado.update(datos)
     combinado[COL_ACTUALIZACION] = marca_ahora()
     combinado[COL_ACTUALIZADO_POR] = usuario_actual()
-    # Si el ETA se movió a futuro, el embarque vuelve a estar en tránsito y la
-    # marca de "verificado que no llegó" queda obsoleta.
-    eta_nuevo = parsear_fecha(datos.get(COL_ETA, combinado.get(COL_ETA, "")))
-    if eta_nuevo and eta_nuevo > hoy_rd():
-        combinado[COL_ESTATUS_LLEGADA] = ""
+
+    # Si la fila queda confirmada, el ETA resultante ES la fecha de llegada, así
+    # que tiene que aguantar las mismas reglas que al confirmarla. Se valida
+    # también cuando solo se edita el ETA de una fila ya confirmada: cambiar esa
+    # fecha es cambiar la llegada, aunque la casilla no se toque.
+    #
+    # Antes esto se resolvía vaciando la confirmación cuando el ETA se iba a
+    # futuro. Era peor: el embarque retrocedía de etapa sin que nadie lo supiera.
+    combinado_final = {_norm(k): v for k, v in combinado.items()}
+    if es_llego_si(combinado_final.get(_norm(COL_LLEGO), "")):
+        problema = validar_eta_confirmado(combinado_final.get(_norm(COL_ETA), ""),
+                                          combinado_final.get(_norm(COL_FECHA_DECLARACION), ""))
+        if problema:
+            return False, problema
 
     rango = f"{rowcol_to_a1(fila, 1)}:{rowcol_to_a1(fila, len(headers))}"
     _con_reintento(lambda: ws.update(range_name=rango,
@@ -1081,9 +1120,23 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict,
 
 
 @_con_manejo_apierror
-def marcar_estatus_llegada(bl: str, categoria: str, valor: str, fila_sugerida=None):
-    """Escribe (o limpia) la respuesta a '¿ya llegó?'. valor="" borra la marca,
-    valor="Retrasado" deja constancia de que se verificó que NO llegó."""
+def marcar_llegada(bl: str, categoria: str, valor: str, fila_sugerida=None):
+    """Escribe la respuesta a '¿ya llegó?'.
+
+    valor = "SI"  -> llegó; la fecha de llegada pasa a ser el ETA de la fila
+    valor = "NO"  -> se verificó que NO llegó (deja constancia de la revisión)
+    valor = ""    -> borra la marca, vuelve a 'sin revisar'
+
+    Vacío y "NO" NO son lo mismo: vacío es 'nadie ha mirado', NO es 'miré y
+    sigue sin llegar'. Sin esa distinción no se puede saber si un embarque está
+    atrasado o simplemente desatendido.
+
+    Poner "NO" o vaciar la marca borra también la fecha de declaración: no se
+    puede haber declarado algo que no ha llegado.
+
+    Confirmar con SI valida antes el ETA de la fila (ver validar_eta_confirmado):
+    ese valor pasa a ser la fecha real de llegada, así que no puede ser futuro
+    ni ilegible."""
     ws = get_worksheet(categoria)
     if ws is None:
         return False, f"No existe la pestaña '{categoria}'."
@@ -1091,24 +1144,82 @@ def marcar_estatus_llegada(bl: str, categoria: str, valor: str, fila_sugerida=No
     if error:
         return False, error
 
-    headers = _asegurar_columnas(ws, [COL_ESTATUS_LLEGADA, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    headers = _asegurar_columnas(ws, [COL_LLEGO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
     indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
+
+    if es_llego_si(valor):
+        actual = _leer_fila(ws, fila, headers)
+        actual_norm = {_norm(k): v for k, v in actual.items()}
+        problema = validar_eta_confirmado(actual_norm.get(_norm(COL_ETA), ""),
+                                          actual_norm.get(_norm(COL_FECHA_DECLARACION), ""))
+        if problema:
+            return False, problema
+
     peticiones = [
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ESTATUS_LLEGADA)]), "values": [[valor]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_LLEGO)]), "values": [[valor]]},
         {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
         {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
     ]
+    if not es_llego_si(valor):
+        columna_dec = indices.get(_norm(COL_FECHA_DECLARACION))
+        if columna_dec:
+            peticiones.append({"range": rowcol_to_a1(fila, columna_dec), "values": [[""]]})
     _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
     return True, ""
 
 
-def _validar_orden_flujo(final: dict):
-    """Las 5 fechas del flujo tienen que ir en orden. Devuelve un mensaje de
-    error o "" si todo está bien. Una fecha de pago anterior a la declaración no
-    es un dato válido: son contadores que después alguien lee como desempeño."""
+def confirmar_llegada(bl: str, categoria: str, fila_sugerida=None):
+    """Un clic: 'esta carga ya llegó a puerto'. A partir de aquí el ETA de la
+    fila vale como fecha real de llegada y el reloj de días en puerto arranca."""
+    return marcar_llegada(bl, categoria, LLEGO_SI, fila_sugerida=fila_sugerida)
+
+
+def marcar_no_llego(bl: str, categoria: str, fila_sugerida=None):
+    """'Revisé y todavía no ha llegado'. Deja constancia de la revisión sin
+    arrancar ningún contador."""
+    return marcar_llegada(bl, categoria, LLEGO_NO, fila_sugerida=fila_sugerida)
+
+
+def validar_eta_confirmado(eta_crudo, declaracion=None):
+    """Reglas que debe cumplir el ETA de una fila con la llegada confirmada en SI.
+    Devuelve un mensaje de error o "" si todo está bien.
+
+    Existe porque, con este modelo, el ETA no es solo una estimación: en cuanto
+    alguien confirma la llegada, ESE valor pasa a ser la fecha real de llegada a
+    puerto y con él arrancan los días en puerto. Por eso hay que validarlo
+    cuando se confirma Y cada vez que se edita una fila que ya está confirmada;
+    si no, un ETA movido a futuro dejaría un embarque 'llegado' con fecha que
+    todavía no ocurrió, y los contadores saldrían en negativo.
+
+    La alternativa —borrar la confirmación en silencio cuando el ETA se mueve—
+    es peor: nadie se entera de que el embarque retrocedió de etapa."""
+    fecha = parsear_fecha(eta_crudo)
+    if fecha is None:
+        crudo = str(eta_crudo or "").strip()
+        return ("La llegada está confirmada, pero el ETA "
+                f"({crudo or 'vacío'}) no es una fecha que se pueda leer. Corrige el ETA, "
+                "porque es el que vale como fecha real de llegada.")
+    if fecha > hoy_rd():
+        return (f"No se puede dar por llegada una carga con ETA {formato_eta(fecha)}, que es una "
+                "fecha futura. Si todavía no ha llegado, marca '¿Llegó?' en NO; si ya llegó, "
+                "corrige el ETA a la fecha real.")
+    dec = parsear_fecha(declaracion)
+    if dec and fecha > dec:
+        return (f"El ETA {formato_eta(fecha)} quedaría después de la declaración "
+                f"({formato_eta(dec)}). Corrige una de las dos fechas.")
+    return ""
+
+
+def _validar_orden_flujo(llegada, declaracion, almacen=None):
+    """Las fechas del flujo tienen que ir en orden. Devuelve un mensaje de error
+    o "" si todo está bien. Una declaración anterior a la llegada no es un dato
+    válido: son contadores que después alguien lee como desempeño."""
+    secuencia = [("Llegada a puerto", llegada),
+                 ("Recepción y declaración", declaracion)]
+    if almacen:
+        secuencia.append((ETAPA_ALMACEN, almacen))
     previa_nombre, previa_fecha = None, None
-    for etapa in ETAPAS_PUERTO:
-        f = final.get(etapa)
+    for etapa, f in secuencia:
         if not f:
             continue
         if previa_fecha and f < previa_fecha:
@@ -1119,16 +1230,10 @@ def _validar_orden_flujo(final: dict):
 
 
 @_con_manejo_apierror
-def fijar_fechas_flujo(bl: str, categoria: str, fechas: dict, fila_sugerida=None,
-                       etapa_destino: str = "", sobrescribir: bool = False):
-    """Escribe una o varias fechas del flujo de una sola vez.
-
-    fechas          {nombre_etapa: date}
-    etapa_destino   si viene, vacía las fechas POSTERIORES a esa etapa (es la
-                    forma de retroceder/corregir: como la etapa activa es "la
-                    última fecha llena", retroceder es vaciar lo de después).
-    sobrescribir    False respeta una fecha ya puesta; True la reemplaza.
-    """
+def fijar_fecha_declaracion(bl: str, categoria: str, fecha=None, fila_sugerida=None,
+                            sobrescribir: bool = False):
+    """Registra la recepción y declaración. Exige que la llegada esté confirmada:
+    no se declara una carga que, según el propio Sheet, todavía no llegó."""
     ws = get_worksheet(categoria)
     if ws is None:
         return False, f"No existe la pestaña '{categoria}'."
@@ -1137,61 +1242,53 @@ def fijar_fechas_flujo(bl: str, categoria: str, fechas: dict, fila_sugerida=None
         return False, error
 
     headers = _asegurar_columnas(
-        ws, [*COLUMNAS_FLUJO, COL_ESTATUS_LLEGADA, COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
+        ws, [COL_LLEGO, COL_FECHA_DECLARACION, COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
     )
     indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
     combinado = _leer_fila(ws, fila, headers)
     combinado_norm = {_norm(k): v for k, v in combinado.items()}
 
-    actuales, final = {}, {}
-    for etapa in ETAPAS_PUERTO:
-        columna = COLUMNA_FECHA_ETAPA[etapa]
-        actual = parsear_fecha(combinado_norm.get(_norm(columna), ""))
-        actuales[etapa] = actual
-        propuesta = fechas.get(etapa)
-        final[etapa] = propuesta if (propuesta and (sobrescribir or not actual)) else actual
+    if not es_llego_si(combinado_norm.get(_norm(COL_LLEGO), "")):
+        return False, ("Este embarque todavía no tiene la llegada confirmada. Marca primero "
+                       "'¿Llegó?' en SI y después registra la declaración.")
 
-    if etapa_destino:
-        for etapa in ETAPAS_PUERTO[INDICE_ETAPA[etapa_destino] + 1:]:
-            final[etapa] = None
+    llegada = parsear_fecha(combinado_norm.get(_norm(COL_ETA), ""))
+    actual = parsear_fecha(combinado_norm.get(_norm(COL_FECHA_DECLARACION), ""))
+    nueva = fecha or hoy_rd()
+    final = nueva if (sobrescribir or not actual) else actual
+    if final == actual:
+        return True, "Sin cambios: la declaración ya estaba registrada."
 
-    problema = _validar_orden_flujo(final)
+    problema = _validar_orden_flujo(llegada, final)
     if problema:
         return False, problema
 
-    peticiones = []
-    for etapa in ETAPAS_PUERTO:
-        if final[etapa] == actuales[etapa]:
-            continue
-        columna = COLUMNA_FECHA_ETAPA[etapa]
-        valor = final[etapa].isoformat() if final[etapa] else ""
-        peticiones.append({"range": rowcol_to_a1(fila, indices[_norm(columna)]), "values": [[valor]]})
-
-    if not peticiones:
-        return True, "Sin cambios: las fechas ya estaban así."
-
-    # Si venía marcado "Retrasado" y ahora hay al menos una etapa con fecha,
-    # significa que sí llegó: se limpia para que no quede "Retrasado" para siempre.
-    if any(final.values()) and _norm(combinado_norm.get(_norm(COL_ESTATUS_LLEGADA), "")) == _norm(VALOR_RETRASADO):
-        peticiones.append({"range": rowcol_to_a1(fila, indices[_norm(COL_ESTATUS_LLEGADA)]), "values": [[""]]})
-    peticiones.append({"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]),
-                       "values": [[marca_ahora()]]})
-    peticiones.append({"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]),
-                       "values": [[usuario_actual()]]})
-
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_FECHA_DECLARACION)]),
+         "values": [[final.isoformat()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+    ]
     _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
     return True, ""
 
 
 def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str, fila_sugerida=None,
                           fecha=None, sobrescribir: bool = False):
-    """Fija la fecha de la etapa elegida y vacía las posteriores (retroceso)."""
+    """Mueve el embarque a la etapa indicada. Elegir una etapa ANTERIOR deshace
+    las posteriores, que es la forma de corregir un registro equivocado."""
     if nueva_etapa not in ETAPAS_PUERTO:
         return False, f"Etapa '{nueva_etapa}' no reconocida."
-    return fijar_fechas_flujo(
-        bl, categoria, {nueva_etapa: fecha or hoy_rd()}, fila_sugerida=fila_sugerida,
-        etapa_destino=nueva_etapa, sobrescribir=sobrescribir,
-    )
+    if nueva_etapa == ETAPA_LLEGADA:
+        # Retroceder a 'llegada' implica borrar la declaración: eso lo hace
+        # marcar_llegada al escribir SI de nuevo no es necesario, así que aquí
+        # solo se confirma la llegada y se limpia lo posterior.
+        ok, msg = marcar_llegada(bl, categoria, LLEGO_NO, fila_sugerida=fila_sugerida)
+        if not ok:
+            return ok, msg
+        return marcar_llegada(bl, categoria, LLEGO_SI, fila_sugerida=fila_sugerida)
+    return fijar_fecha_declaracion(bl, categoria, fecha=fecha, fila_sugerida=fila_sugerida,
+                                   sobrescribir=sobrescribir)
 
 
 @_con_manejo_apierror
@@ -1208,17 +1305,16 @@ def eliminar_embarque(bl: str, categoria: str, fila_sugerida=None):
 
 @_con_manejo_apierror
 def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
-                         fechas_faltantes: dict = None, fecha_almacen=None):
+                         fecha_declaracion=None, fecha_almacen=None):
     """Archiva el embarque en 'Recibido (Mes)' y lo saca del tablero activo.
 
-    Candado: no archiva si faltan fechas de las 4 etapas previas. Pero en vez de
-    dejar al usuario en un callejón sin salida, la pantalla le ofrece llenarlas
-    ahí mismo y esas fechas llegan aquí en 'fechas_faltantes' — se registran
-    tal como ocurrieron, no se inventan con la fecha de hoy.
+    Candado: exige llegada confirmada y fecha de declaración. Si falta la
+    declaración, la pantalla la pide ahí mismo y llega en 'fecha_declaracion'
+    —se registra tal como ocurrió, no se inventa con la fecha de hoy.
 
-    El mes al que pertenece el embarque lo decide BASE_FECHA_RECIBIDO: por
-    defecto la fecha REAL de llegada a puerto, con el ETA solo como respaldo
-    cuando esa no existe (antes era siempre el ETA, que es una estimación)."""
+    Aquí se CONGELA la llegada: el ETA vigente en este momento se escribe en
+    Fecha_Llegada_Puerto del archivo. Es lo que protege el histórico de que
+    alguien mueva el ETA meses después y cambie los días en puerto ya medidos."""
     ws_origen = get_worksheet(categoria)
     if ws_origen is None:
         return False, f"No existe la pestaña '{categoria}'."
@@ -1229,29 +1325,27 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
     headers_origen = _headers(ws_origen.title)
     datos = _leer_fila(ws_origen, fila, headers_origen)
     datos_norm = {_norm(k): v for k, v in datos.items()}
-    fechas_faltantes = fechas_faltantes or {}
 
-    final = {}
-    for etapa in ETAPAS_PUERTO:
-        columna = COLUMNA_FECHA_ETAPA[etapa]
-        final[etapa] = parsear_fecha(datos_norm.get(_norm(columna), "")) or fechas_faltantes.get(etapa)
+    if not es_llego_si(datos_norm.get(_norm(COL_LLEGO), "")):
+        return False, "FALTAN_ETAPAS::" + ETAPA_LLEGADA
 
-    faltan = [e for e in ETAPAS_PUERTO[:-1] if not final[e]]
-    if faltan:
-        return False, "FALTAN_ETAPAS::" + "|".join(faltan)
+    eta_crudo = str(datos_norm.get(_norm(COL_ETA), "")).strip()
+    llegada = parsear_fecha(eta_crudo)
+    declaracion = parsear_fecha(datos_norm.get(_norm(COL_FECHA_DECLARACION), "")) or \
+        parsear_fecha(fecha_declaracion)
+    if not declaracion:
+        return False, "FALTAN_ETAPAS::" + "Recepción y declaración"
 
-    final[ETAPAS_PUERTO[-1]] = (fecha_almacen or final[ETAPAS_PUERTO[-1]] or hoy_rd())
-    problema = _validar_orden_flujo(final)
+    almacen = parsear_fecha(fecha_almacen) or hoy_rd()
+    problema = _validar_orden_flujo(llegada, declaracion, almacen)
     if problema:
         return False, problema
 
-    eta_crudo = str(datos_norm.get(_norm(COL_ETA), "")).strip()
-    eta = parsear_fecha(eta_crudo)
-    base = final["Llegada a puerto"] if BASE_FECHA_RECIBIDO == "llegada" else final[ETAPAS_PUERTO[-1]]
-    fecha_recibido = base or eta
+    base = llegada if BASE_FECHA_RECIBIDO == "llegada" else almacen
+    fecha_recibido = base or llegada
     if fecha_recibido is None:
-        return False, (f"El BL '{bl}' no tiene ni fecha de llegada ni un ETA interpretable "
-                       f"('{eta_crudo or 'vacío'}'), así que no se puede saber a qué mes pertenece.")
+        return False, (f"El BL '{bl}' no tiene un ETA interpretable ('{eta_crudo or 'vacío'}'), "
+                       "así que no se puede saber a qué mes pertenece.")
 
     ws_destino = get_worksheet(RECIBIDO_SHEET)
     if ws_destino is None:
@@ -1262,22 +1356,22 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
     registro = {
         COL_BL: datos_norm.get(_norm(COL_BL), bl),
         COL_DESC: datos_norm.get(_norm(COL_DESC), ""),
-        COL_MODELO: datos_norm.get(_norm(COL_MODELO), ""),
         COL_CANT: datos_norm.get(_norm(COL_CANT), ""),
         COL_PAIS: datos_norm.get(_norm(COL_PAIS), ""),
-        COL_ETA: eta.isoformat() if eta else eta_crudo,
+        COL_ETA: llegada.isoformat() if llegada else eta_crudo,
         "Fecha_Recibido": fecha_recibido.isoformat(),
         "Categoria_Origen": categoria,
         "Registrado_Por": usuario_actual(),
         COL_ACTUALIZACION: marca_ahora(),
         COL_ACTUALIZADO_POR: usuario_actual(),
+        COL_FECHA_DECLARACION: declaracion.isoformat(),
+        COL_FECHA_ALMACEN: almacen.isoformat(),
     }
+    if llegada:
+        registro[COL_FECHA_LLEGADA_PUERTO] = llegada.isoformat()
     # Se conserva TODO el rastro: sin esto, archivar borraba la evidencia de por
     # dónde pasó el embarque y con cuánta demora en cada paso.
-    for etapa in ETAPAS_PUERTO:
-        if final[etapa]:
-            registro[COLUMNA_FECHA_ETAPA[etapa]] = final[etapa].isoformat()
-    for columna in (COL_FECHA_SALIDA, COL_OC, COL_EE, COL_CLIENTE, COL_STOCK):
+    for columna in OPCIONALES_CATEGORIA:
         valor = str(datos_norm.get(_norm(columna), "")).strip()
         if valor:
             registro[columna] = valor
@@ -1296,8 +1390,10 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
 @_con_manejo_apierror
 def quitar_de_recibido(bl: str, categoria_manual: str = None, fila_sugerida=None):
     """Reversa de 'Marcar como Recibido': devuelve el embarque a su categoría con
-    TODO lo que traía (fechas del flujo, salida, OC/EE, Cliente/Stock), no pelado
-    como antes."""
+    lo que traía (llegada confirmada, declaración, y las opcionales que tuviera).
+
+    La fecha de almacén no vuelve: justo eso es lo que se está deshaciendo, y
+    esa columna solo existe en la pestaña de archivo."""
     ws_recibido = get_worksheet(RECIBIDO_SHEET)
     if ws_recibido is None:
         return False, f"No existe la pestaña '{RECIBIDO_SHEET}'."
@@ -1312,21 +1408,23 @@ def quitar_de_recibido(bl: str, categoria_manual: str = None, fila_sugerida=None
     if categoria not in CATEGORIAS:
         return False, f"'{categoria or 'vacía'}' no es una categoría válida. Elige una del menú antes de confirmar."
 
+    # El ETA que vuelve es el congelado al archivar, no el que pudiera haberse
+    # movido: es la fecha con la que se midió este embarque.
+    eta_vuelta = (str(datos_norm.get(_norm(COL_FECHA_LLEGADA_PUERTO), "")).strip()
+                  or str(datos_norm.get(_norm(COL_ETA), "")).strip())
+
     devuelto = {
         COL_BL: datos_norm.get(_norm(COL_BL), bl),
         COL_DESC: datos_norm.get(_norm(COL_DESC), ""),
-        COL_MODELO: datos_norm.get(_norm(COL_MODELO), ""),
         COL_CANT: datos_norm.get(_norm(COL_CANT), ""),
         COL_PAIS: datos_norm.get(_norm(COL_PAIS), ""),
-        COL_ETA: datos_norm.get(_norm(COL_ETA), ""),
+        COL_ETA: eta_vuelta,
+        COL_LLEGO: LLEGO_SI,
     }
-    for columna in (COL_FECHA_SALIDA, COL_OC, COL_EE, COL_CLIENTE, COL_STOCK, *COLUMNAS_FLUJO):
+    for columna in (*OPCIONALES_CATEGORIA, COL_FECHA_DECLARACION):
         valor = str(datos_norm.get(_norm(columna), "")).strip()
         if valor:
             devuelto[columna] = valor
-    # Vuelve al tablero activo: la última etapa ("Recibido en almacén") se limpia,
-    # porque justo eso es lo que se está deshaciendo.
-    devuelto[COL_FECHA_ALMACEN] = ""
 
     ok, mensaje = append_row(devuelto, categoria)
     if not ok:

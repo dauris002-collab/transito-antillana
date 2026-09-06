@@ -257,21 +257,18 @@ ESTADO_PAGO_PENDIENTE = "Pendiente"
 ESTADO_PAGO_PAGADO = "Pagado"
 
 
-# Ventana "SIN MORA": la fecha límite saludable que fija Logística a criterio
-# propio, y la suma (congelada en ese instante, por moneda) de los conceptos
-# que estuvieran llenos. Es la línea base contra la que se mide el pago.
+# Fecha límite saludable que fija Logística a criterio propio. Ya NO congela
+# montos: el total se calcula en vivo desde los conceptos (ver TotalActual en
+# logica.py), así que no hace falta guardar una foto de esos números aquí —
+# solo la fecha, para poder medir después si el pago llegó a tiempo.
 COL_FECHA_SIN_MORA = "Fecha_SinMora"
 
 
-COL_SINMORA_USD = "SinMora_USD"
-
-
-COL_SINMORA_DOP = "SinMora_DOP"
-
-
-# "Pago Realizado": misma mecánica, en el momento en que el pago de verdad
-# ocurre. Ambas ventanas se pueden corregir después (fecha y/o monto) si algo
-# cambia — no son de una sola vez y ya.
+# "Pago Realizado": la fecha real en que se pagó, y el EXTRA que se pagó de
+# más sobre los conceptos originales (por mora, ajustes, etc.) — lo escribe
+# Logística a mano, en pesos y/o dólares; 0 si no hubo diferencia. No es un
+# total congelado: es la diferencia, y la plataforma se la suma al total de
+# los conceptos para mostrar el costo final.
 COL_FECHA_PAGO_REAL = "Fecha_PagoRealizado"
 
 
@@ -303,8 +300,7 @@ EMPRESAS_PAGO = [EMPRESA_ANTILLANA, "Tecnicaribe", "Motor Ibérico"]
 
 COLUMNAS_PAGOS = [
     COL_EMPRESA, COL_BL, COL_DESC, COL_CANT, COL_PAGO_LLEGADA, *CONCEPTOS_PAGO, COL_ESTADO_PAGO,
-    COL_FECHA_SIN_MORA, COL_SINMORA_USD, COL_SINMORA_DOP,
-    COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
+    COL_FECHA_SIN_MORA, COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
     COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
 ]
 
@@ -1759,12 +1755,12 @@ def guardar_pago(bl: str, conceptos: dict, estado: str = None, empresa: str = No
     return True, ""
 
 
-def _escribir_ventana_pago(bl: str, col_fecha: str, col_usd: str, col_dop: str,
-                           fecha, totales: dict, sobrescribir: bool):
-    """Mecánica común a SIN MORA y Pago Realizado: exige que el expediente ya
-    tenga conceptos registrados, no pisa un registro previo salvo que se pida
-    explícitamente corregir, y congela fecha + totales por moneda en un solo
-    batch_update."""
+@_con_manejo_apierror
+def registrar_sin_mora(bl: str, fecha, sobrescribir: bool = False):
+    """Fija la fecha límite saludable de pago, a criterio de Logística. Ya NO
+    guarda montos: el total sale en vivo de los conceptos, así que aquí solo
+    hace falta la fecha — sirve para medir después si el pago llegó a tiempo.
+    Con sobrescribir=True se corrige una fecha ya puesta."""
     ws = get_worksheet(PAGOS_SHEET)
     if ws is None:
         return False, f"No existe la pestaña '{PAGOS_SHEET}'. Registra primero los conceptos del expediente."
@@ -1774,18 +1770,16 @@ def _escribir_ventana_pago(bl: str, col_fecha: str, col_usd: str, col_dop: str,
     if fila is None:
         return False, f"El BL '{bl}' no tiene conceptos registrados todavía en '{PAGOS_SHEET}'."
 
-    headers = _asegurar_columnas(ws, [col_fecha, col_usd, col_dop, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    headers = _asegurar_columnas(ws, [COL_FECHA_SIN_MORA, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
     actual = _leer_fila(ws, fila, headers)
-    ya_registrado = str(actual.get(col_fecha, "")).strip()
+    ya_registrado = str(actual.get(COL_FECHA_SIN_MORA, "")).strip()
     if ya_registrado and not sobrescribir:
-        return False, (f"Este expediente ya tiene una fecha registrada aquí ({ya_registrado}). "
-                       "Marca la casilla de corrección si cambió el monto o la fecha.")
+        return False, (f"Este expediente ya tiene una fecha saludable registrada ({ya_registrado}). "
+                       "Marca la casilla de corrección para cambiarla.")
 
     indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
     peticiones = [
-        {"range": rowcol_to_a1(fila, indices[_norm(col_fecha)]), "values": [[fecha.isoformat()]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(col_usd)]), "values": [[totales.get("USD", 0.0)]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(col_dop)]), "values": [[totales.get("DOP", 0.0)]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_FECHA_SIN_MORA)]), "values": [[fecha.isoformat()]]},
         {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
         {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
     ]
@@ -1794,20 +1788,13 @@ def _escribir_ventana_pago(bl: str, col_fecha: str, col_usd: str, col_dop: str,
 
 
 @_con_manejo_apierror
-def registrar_sin_mora(bl: str, fecha, totales: dict, sobrescribir: bool = False):
-    """Congela la ventana SIN MORA: la fecha límite saludable que fija
-    Logística a criterio propio, y la suma de lo que esté lleno en los
-    conceptos EN ESE MOMENTO, por moneda. Es la línea base contra la que se
-    mide el pago. Con sobrescribir=True se corrige un registro ya hecho."""
-    return _escribir_ventana_pago(bl, COL_FECHA_SIN_MORA, COL_SINMORA_USD, COL_SINMORA_DOP,
-                                  fecha, totales, sobrescribir)
-
-
-@_con_manejo_apierror
-def registrar_pago_realizado(bl: str, fecha, totales: dict, sobrescribir: bool = False):
-    """Congela 'Pago Realizado': la fecha en que de verdad se pagó y la suma de
-    los conceptos en ese momento (ya con lo que haya cambiado por mora). Exige
-    que SIN MORA exista, porque es la referencia con la que se compara."""
+def registrar_pago_realizado(bl: str, fecha, extra: dict, sobrescribir: bool = False):
+    """Registra que el expediente ya se pagó: la fecha real y el EXTRA pagado
+    de más sobre los conceptos originales (por mora, ajuste, etc.) — lo
+    escribe Logística a mano, en USD y/o DOP; 0 si no hubo diferencia. No es
+    un total: es la diferencia, y se le suma al total de los conceptos para
+    mostrar el costo final. Marca el expediente como Pagado automáticamente.
+    Con sobrescribir=True se corrige un pago ya registrado."""
     ws = get_worksheet(PAGOS_SHEET)
     if ws is None:
         return False, f"No existe la pestaña '{PAGOS_SHEET}'."
@@ -1816,13 +1803,26 @@ def registrar_pago_realizado(bl: str, fecha, totales: dict, sobrescribir: bool =
         return False, f"Hay más de un registro de pago para el BL '{bl}'."
     if fila is None:
         return False, f"El BL '{bl}' no tiene conceptos registrados todavía en '{PAGOS_SHEET}'."
-    headers = _headers(ws.title)
+
+    headers = _asegurar_columnas(ws, [COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
+                                       COL_ESTADO_PAGO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
     actual = _leer_fila(ws, fila, headers)
-    if not str(actual.get(COL_FECHA_SIN_MORA, "")).strip():
-        return False, ("Este expediente todavía no tiene la ventana SIN MORA registrada. "
-                       "Regístrala primero: es la referencia contra la que se mide el pago.")
-    return _escribir_ventana_pago(bl, COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
-                                  fecha, totales, sobrescribir)
+    ya_registrado = str(actual.get(COL_FECHA_PAGO_REAL, "")).strip()
+    if ya_registrado and not sobrescribir:
+        return False, (f"Este expediente ya tiene un pago registrado ({ya_registrado}). "
+                       "Marca la casilla de corrección para cambiarlo.")
+
+    indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_FECHA_PAGO_REAL)]), "values": [[fecha.isoformat()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_PAGOREAL_USD)]), "values": [[extra.get("USD", 0.0)]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_PAGOREAL_DOP)]), "values": [[extra.get("DOP", 0.0)]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ESTADO_PAGO)]), "values": [[ESTADO_PAGO_PAGADO]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+    ]
+    _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    return True, ""
 
 
 @_con_manejo_apierror

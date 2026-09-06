@@ -1352,12 +1352,14 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     # desde que un botón de KPI lo puso ahí), así que no hace falta esperar a
     # dibujar el selector para saber qué está activo.
     #
-    # Esta sección es, por definición, sobre lo que está EN PUERTO — no tiene
-    # sentido que aparezca primero cuando el usuario pidió ver "En tránsito",
-    # "Retrasados" u otro estado que no es este. Se muestra solo cuando el
-    # filtro es "Todos" o el propio "En Puerto".
+    # Esta sección es, por definición, sobre lo que está EN PUERTO — no debe
+    # aparecer primero por defecto, ni con "Todos": solo cuando el usuario
+    # pide puntualmente ver ese estado con el filtro de abajo.
     estado_filtro_actual = st.session_state.get(f"estado_{tab_key}", "Todos")
-    mostrar_en_proceso = estado_filtro_actual in ("Todos", EST_PUERTO)
+    # Solo se muestra cuando el filtro dice EXPLÍCITAMENTE "En Puerto" — ni
+    # siquiera con "Todos" (el estado por defecto). Así nunca aparece primero
+    # a menos que el usuario haya pedido puntualmente ver eso.
+    mostrar_en_proceso = estado_filtro_actual == EST_PUERTO
     en_proceso = _en_proceso(df)
     if mostrar_en_proceso and not en_proceso.empty:
         st.markdown("**En proceso en puerto**")

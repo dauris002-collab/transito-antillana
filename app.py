@@ -1,32 +1,42 @@
 """
 Antillana Comercial - Visibilidad de embarques en transito
 ===========================================================
-app.py - v3.1
+app.py - v4.0
 
-Cambios estructurales frente a versiones anteriores (resumen para
-mantenimiento):
+Que cambio en v4.0 (resumen para mantenimiento):
 
- 1. Escrituras por numero de fila, no por BL (BLs repetidos ya no arriesgan
-    tocar la fila equivocada).
- 2. Cada etapa se puede fechar en el dia en que REALMENTE ocurrio, con
-    validacion de que las 5 fechas del flujo vayan en orden.
- 3. Diagrama de flujo en HTML/CSS en vez de Plotly (mas rapido en celular).
- 4. Alertas de cuello de botella con SLA por etapa, ajustables desde Secrets.
- 5. Reintentos con espera ante errores 429/500/503 de Google.
- 6. Menos llamadas a la API por accion.
- 7. Archivar conserva Fecha_Salida, OC y EE ademas de las fechas del flujo.
- 8. Fecha_Recibido es la fecha real de llegada a puerto (ETA solo de respaldo).
- 9. Historico con tiempos de ciclo (medianas).
-10. Bloqueo optimista en la edicion.
-11. Ajustes de celular (tipografia 16px, areas tactiles de 44px, KPIs en
-    rejilla de dos columnas).
-12. Panel "Salud de los datos" y "Bitacora" en Herramientas.
-13. Sesion con vida distinta por rol, atada al navegador que la abrio.
-14. Rendimiento de pantalla (busqueda precalculada, caches de Excel y de
-    parseo de fechas).
-15-17. (v3.1) El filtro de arriba y el diagrama de abajo se hablan; la tabla
-    de costo acumulado solo aparece tras clickear un filtro; Aereos y Carga
-    Suelta muestran "Costo por Almacenaje" en vez de "Costo en puerto".
+ 1. El flujo del tablero baja de 5 etapas a 2: "Llegada a puerto" y "Recepcion
+    y declaracion". Las etapas de pago salieron de transito; el dinero se
+    maneja aparte, en el modulo de Estatus de Pago.
+ 2. La llegada ya no tiene columna de fecha propia. Se responde con la casilla
+    "Llego? SI/NO" y, al confirmar con SI, el ETA de la fila pasa a valer como
+    fecha real de llegada — asi nadie teclea la misma fecha dos veces.
+ 3. Vacio y "NO" NO son lo mismo: vacio es "nadie ha revisado", NO es "revise y
+    sigue sin llegar". Sin esa distincion no se sabe si un embarque esta
+    atrasado o simplemente desatendido.
+ 4. El ETA de un embarque confirmado se valida cada vez que se edita: no puede
+    quedar en el futuro ni despues de la declaracion. Antes, mover el ETA a
+    futuro borraba la confirmacion en silencio y el embarque retrocedia de
+    etapa sin que nadie se enterara.
+ 5. Se elimino Costo_Por_Dia y todo el calculo de costo por demora. Nunca se
+    lleno una sola celda, y la tarifa real varia por naviera, terminal, volumen
+    y espacio: estimarla con un promedio daba un numero indefendible. El
+    sobrecosto se observara comparando estimado contra pagado en el modulo de
+    pagos, no se estimara aqui.
+ 6. "Recibido en almacen" deja de ser una etapa del tablero y pasa a ser la
+    accion de archivar. Su fecha vive solo en la pestana "Recibido (Mes)".
+ 7. Al archivar se CONGELA el ETA como Fecha_Llegada_Puerto en el historico:
+    si alguien mueve un ETA meses despues, los ciclos ya medidos no cambian.
+ 8. Modelo_Serie, OC, EE y CLIENTE / STOCK pasan a ser opcionales por
+    categoria. La app solo crea la columna cuando el dato trae valor, asi
+    Carga Suelta no termina con un Modelo_Serie vacio que nadie pidio.
+
+Se conserva de versiones anteriores: escrituras por numero de fila (BLs
+repetidos ya no arriesgan tocar la fila equivocada), diagrama de flujo en
+HTML/CSS en vez de Plotly, alertas de cuello de botella con SLA por etapa
+ajustables desde Secrets, reintentos ante 429/500/503 de Google, bloqueo
+optimista en la edicion, ajustes de celular, panel "Salud de los datos",
+bitacora y sesion con vida distinta por rol.
 
 Este archivo (app.py) es el punto de entrada: configuracion de pagina,
 sesion/login y main(). La logica de negocio vive en logica.py, el acceso a

@@ -22,12 +22,14 @@ import pandas as pd
 import streamlit as st
 
 from sheets_io import (
-    COL_BL, COL_DESC, COL_ESTADO_PAGO, COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA,
+    CATEGORIAS, COL_BL, COL_CANT, COL_DESC, COL_ESTADO_PAGO, COL_ETA,
+    COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA,
     CONCEPTOS_PAGO, ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE, MONEDA_CONCEPTO,
-    a_numero, guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago,
-    registrar_log, registrar_pago_realizado, registrar_sin_mora,
+    a_numero, fecha_llegada_fila, formato_eta, guardar_pago, hoy_rd,
+    invalidar_caches, marcar_estado_pago, parsear_fecha, registrar_log,
+    registrar_pago_realizado, registrar_sin_mora,
 )
-from logica import enriquecer_pagos, esc, resumen_pagos, totales_conceptos
+from logica import enriquecer_pagos, resumen_pagos, totales_conceptos
 from ui_componentes import COLOR_RECIBIDAS_MES, COLOR_TOTAL, CUSTOM_CSS, tarjeta_kpi
 
 
@@ -50,6 +52,57 @@ def _texto_dias_mora(dias) -> str:
     if dias < 0:
         return f"pagado {abs(dias)} día(s) antes"
     return "pagado justo a tiempo"
+
+
+CATEGORIA_RECIBIDOS = "Recibidos (histórico)"
+
+
+def _opciones_categoria(activos: pd.DataFrame, historico: pd.DataFrame) -> list:
+    """Mismo orden de categorías que usa tránsito (Equipos, Generadores,
+    Aéreos, Carga Suelta, Consolidados), y al final los ya archivados: para
+    cuando el pago se registra después de que la carga ya se recibió."""
+    disponibles = [c for c in CATEGORIAS
+                  if activos is not None and not activos.empty and (activos["Categoria"] == c).any()]
+    if historico is not None and not historico.empty:
+        disponibles.append(CATEGORIA_RECIBIDOS)
+    return disponibles
+
+
+def _embarques_de_categoria(categoria: str, activos: pd.DataFrame, historico: pd.DataFrame) -> list:
+    """BL, Descripción, Cantidad y Llegada de tránsito para elegir de una lista
+    — nada de esto se vuelve a teclear. Ordenado por BL para que la lista sea
+    estable entre refrescos."""
+    filas = []
+    if categoria == CATEGORIA_RECIBIDOS:
+        for _, r in historico.iterrows():
+            llegada = (parsear_fecha(r.get(COL_FECHA_LLEGADA_PUERTO, ""))
+                      or parsear_fecha(r.get(COL_ETA, "")))
+            filas.append({
+                "bl": str(r.get(COL_BL, "")).strip(),
+                "desc": str(r.get(COL_DESC, "")),
+                "cant": str(r.get(COL_CANT, "")),
+                "llegada_txt": formato_eta(llegada) if llegada else "—",
+            })
+    else:
+        sub = activos[activos["Categoria"] == categoria]
+        for _, r in sub.iterrows():
+            llegada = fecha_llegada_fila(r)
+            if llegada:
+                llegada_txt = formato_eta(llegada)
+            else:
+                # Todavía sin confirmar: se muestra el ETA igual, marcado como
+                # estimado, para no dejar la lista en blanco.
+                eta = parsear_fecha(r.get(COL_ETA, ""))
+                llegada_txt = f"{formato_eta(eta)} (ETA, sin confirmar)" if eta else "sin ETA"
+            filas.append({
+                "bl": str(r.get(COL_BL, "")).strip(),
+                "desc": str(r.get(COL_DESC, "")),
+                "cant": str(r.get(COL_CANT, "")),
+                "llegada_txt": llegada_txt,
+            })
+    filas = [f for f in filas if f["bl"]]
+    filas.sort(key=lambda f: f["bl"])
+    return filas
 
 
 # ---------------------------------------------------------------------------
@@ -119,30 +172,34 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
 # ---------------------------------------------------------------------------
 def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, historico: pd.DataFrame):
     st.markdown("**Registrar / editar conceptos de un expediente**")
-    bl = st.text_input("BL", key="pago_bl_conceptos",
-                       help="El mismo BL que tiene el expediente en tránsito.").strip()
+
+    categorias_disp = _opciones_categoria(activos, historico)
+    if not categorias_disp:
+        st.info("Todavía no hay embarques en tránsito ni en el histórico para elegir.")
+        return
+
+    categoria = st.selectbox("Categoría", categorias_disp, key="pago_categoria_sel")
+    embarques = _embarques_de_categoria(categoria, activos, historico)
+    if not embarques:
+        st.info(f"No hay embarques con BL en '{categoria}'.")
+        return
+
+    etiquetas = [f"{e['bl']} · {e['desc'][:40] or 'sin descripción'} · {e['cant']} · Llegada: {e['llegada_txt']}"
+                for e in embarques]
+    idx = st.selectbox("Expediente", range(len(embarques)), format_func=lambda i: etiquetas[i],
+                       key="pago_expediente_sel")
+    elegido = embarques[idx]
+    bl = elegido["bl"]
 
     fila_existente = None
-    if bl:
-        coincidencias = enriquecido[enriquecido[COL_BL].astype(str).str.strip() == bl] \
-            if not enriquecido.empty else enriquecido
+    if not enriquecido.empty:
+        coincidencias = enriquecido[enriquecido[COL_BL].astype(str).str.strip() == bl]
         if not coincidencias.empty:
             fila_existente = coincidencias.iloc[0]
-
-        ref = None
-        for fuente in (activos, historico):
-            if fuente is None or fuente.empty:
-                continue
-            m = fuente[fuente[COL_BL].astype(str).str.strip() == bl]
-            if not m.empty:
-                ref = m.iloc[0]
-                break
-        if ref is not None:
-            desc = ref.get(COL_DESC, "")
-            cat = ref.get("Categoria") or ref.get("Categoria_Origen", "")
-            st.caption(f"En tránsito: {esc(desc)} · {esc(cat)}")
-        else:
-            st.caption("⚠ Este BL no aparece en tránsito (activo ni histórico). Puedes registrarlo igual.")
+    if fila_existente is None:
+        st.caption("Expediente nuevo en Pagos — todavía sin conceptos registrados.")
+    else:
+        st.caption("Este expediente ya tiene conceptos registrados; los valores de abajo son los actuales.")
 
     valores_previos = {c: fila_existente.get(c, "") for c in CONCEPTOS_PAGO} if fila_existente is not None else {}
     seleccionados_previos = [c for c in CONCEPTOS_PAGO if str(valores_previos.get(c, "")).strip()]

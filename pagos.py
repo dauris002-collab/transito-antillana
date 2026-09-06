@@ -22,15 +22,16 @@ import pandas as pd
 import streamlit as st
 
 from sheets_io import (
-    CATEGORIAS, COL_BL, COL_CANT, COL_DESC, COL_ESTADO_PAGO, COL_ETA,
-    COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA,
-    COL_PAGO_LLEGADA, CONCEPTOS_PAGO, ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE,
-    MONEDA_CONCEPTO, _norm, a_numero, aplicar_selector_fecha_pagos,
-    fecha_llegada_fila, formato_eta, guardar_pago, hoy_rd, invalidar_caches,
-    marcar_estado_pago, parsear_fecha, registrar_log, registrar_pago_realizado,
-    registrar_sin_mora, sincronizar_pagos_con_transito,
+    CATEGORIAS, COL_BL, COL_CANT, COL_DESC, COL_EMPRESA, COL_ESTADO_PAGO,
+    COL_ETA, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA,
+    COL_PAGO_LLEGADA, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO,
+    ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE, MONEDA_CONCEPTO, _norm,
+    a_numero, aplicar_selectores_pagos, fecha_llegada_fila, formato_eta,
+    guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago, parsear_fecha,
+    registrar_log, registrar_pago_realizado, registrar_sin_mora,
+    sincronizar_pagos_con_transito,
 )
-from logica import enriquecer_pagos, resumen_pagos, totales_conceptos
+from logica import PALETA_PAISES, enriquecer_pagos, esc, resumen_pagos, totales_conceptos
 from ui_componentes import COLOR_RECIBIDAS_MES, COLOR_TOTAL, CUSTOM_CSS, tarjeta_kpi
 
 
@@ -40,19 +41,38 @@ COLOR_SOBRECOSTO = "#991B1B"
 COLOR_MORA_PROMEDIO = "#B45309"
 
 
+# Un color fijo por concepto — reusa la misma paleta "amigable" que ya usan
+# los gráficos de país en tránsito, así no se inventa una gama nueva.
+COLOR_CONCEPTO = dict(zip(CONCEPTOS_PAGO, PALETA_PAISES))
+
+
+PAGOS_CSS = """
+<style>
+.pago-tarjeta { border:1px solid #E5E7EB; border-radius:12px; padding:16px 20px; margin-bottom:14px;
+                background:#fff; box-shadow:0 1px 4px rgba(17,24,39,0.06); }
+.pago-cabeza { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; }
+.pago-bl { font-weight:700; font-size:1.02rem; color:#111827; }
+.pago-empresa { display:inline-block; background:#EEF2FF; color:#3730A3; font-size:0.72rem;
+                font-weight:700; padding:2px 10px; border-radius:999px; margin-left:8px; }
+.pago-estado { display:inline-block; font-size:0.75rem; font-weight:700; color:#fff;
+               padding:3px 12px; border-radius:999px; white-space:nowrap; }
+.pago-meta { color:#6B7280; font-size:0.85rem; margin-top:2px; }
+.pago-conceptos { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:14px 0; }
+.pago-chip { padding:6px 15px; border-radius:999px; color:#fff; font-size:0.83rem; font-weight:700;
+             white-space:nowrap; }
+.pago-totales { display:flex; flex-wrap:wrap; justify-content:center; align-items:baseline; gap:28px;
+                margin-top:6px; }
+.pago-total-etq { font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#6B7280;
+                  display:block; text-align:center; }
+.pago-total-val { font-size:1.2rem; font-weight:800; color:#111827; display:block; text-align:center; }
+.pago-cerrado { text-align:center; color:#9CA3AF; font-size:0.78rem; margin-top:10px; }
+</style>
+"""
+
+
 def _fmt(monto, moneda: str) -> str:
     simbolo = "US$" if moneda == "USD" else "RD$"
     return f"{simbolo} {monto:,.2f}"
-
-
-def _texto_dias_mora(dias) -> str:
-    if dias is None:
-        return "—"
-    if dias > 0:
-        return f"{dias} día(s) de mora"
-    if dias < 0:
-        return f"pagado {abs(dias)} día(s) antes"
-    return "pagado justo a tiempo"
 
 
 CATEGORIA_RECIBIDOS = "Recibidos (histórico)"
@@ -144,69 +164,95 @@ def _tarjetas_resumen(resumen: dict):
                             COLOR_SOBRECOSTO), unsafe_allow_html=True)
 
 
-def _tabla_pagos(df: pd.DataFrame) -> pd.DataFrame:
-    filas = []
-    for _, r in df.iterrows():
-        total = r.get("TotalActual") or {}
-        sm = r.get("SinMoraTotales") or {}
-        pr = r.get("PagoRealTotales") or {}
+def _html_expediente(r) -> str:
+    bl = esc(r.get(COL_BL, "")) or "(sin BL)"
+    desc = esc(r.get(COL_DESC, ""))
+    cant = esc(r.get(COL_CANT, ""))
+    llegada = esc(r.get(COL_PAGO_LLEGADA, "")) or "—"
+    empresa = esc(r.get("EmpresaEfectiva", "")) or EMPRESA_ANTILLANA
+    estado = str(r.get(COL_ESTADO_PAGO, "")).strip() or ESTADO_PAGO_PENDIENTE
+    color_estado = "#B45309" if estado == ESTADO_PAGO_PENDIENTE else "#2E7D32"
+
+    # Un concepto vacío NO sale — solo los que de verdad tiene el expediente.
+    chips = []
+    for concepto in CONCEPTOS_PAGO:
+        valor = a_numero(r.get(concepto, ""))
+        if valor is None:
+            continue
+        color = COLOR_CONCEPTO[concepto]
+        chips.append(
+            f'<span class="pago-chip" style="background:{color};">'
+            f'{esc(concepto)}: {_fmt(valor, MONEDA_CONCEPTO[concepto])}</span>'
+        )
+
+    total = r.get("TotalActual") or {}
+    dias_sin_pagar = r.get("DiasSinPagar")
+    dias_sin_pagar_txt = "—" if dias_sin_pagar is None or pd.isna(dias_sin_pagar) else str(int(dias_sin_pagar))
+    fecha_saludable = esc(r.get(COL_FECHA_SIN_MORA, "")) or "sin fijar"
+
+    pie_cerrado = ""
+    fecha_pago = str(r.get(COL_FECHA_PAGO_REAL, "")).strip()
+    if fecha_pago:
         extra = r.get("MontoExtra") or {}
-        fila = {
-            "BL": r.get(COL_BL, ""),
-            "Descripción": r.get(COL_DESC, ""),
-            "Cantidad": r.get(COL_CANT, ""),
-            "Llegada": r.get(COL_PAGO_LLEGADA, ""),
-            "Estado": str(r.get(COL_ESTADO_PAGO, "")).strip() or ESTADO_PAGO_PENDIENTE,
-        }
-        # Un concepto vacío se muestra vacío, no como 0 — igual que en el Sheet.
-        for concepto in CONCEPTOS_PAGO:
-            valor = a_numero(r.get(concepto, ""))
-            fila[concepto] = valor if valor is not None else None
-        fila["Total a pagar US$"] = total.get("USD")
-        fila["Total a pagar RD$"] = total.get("DOP")
-        fila["Días sin pagar"] = r.get("DiasSinPagar")
-        fila["Fecha saludable"] = r.get(COL_FECHA_SIN_MORA, "")
-        fila["SIN MORA US$ (congelado)"] = sm.get("USD")
-        fila["SIN MORA RD$ (congelado)"] = sm.get("DOP")
-        fila["Pago real (fecha)"] = r.get(COL_FECHA_PAGO_REAL, "")
-        fila["Pago real US$"] = pr.get("USD")
-        fila["Pago real RD$"] = pr.get("DOP")
-        fila["Extra US$"] = extra.get("USD")
-        fila["Extra RD$"] = extra.get("DOP")
-        fila["Días de mora"] = r.get("DiasMora")
-        filas.append(fila)
-    return pd.DataFrame(filas)
+        partes = [_fmt(v, m) for m, v in extra.items() if v is not None and abs(v) > 0.005]
+        extra_txt = " · Extra sobre lo saludable: " + " y ".join(partes) if partes else ""
+        pie_cerrado = f'<div class="pago-cerrado">Pagado el {esc(fecha_pago)}{extra_txt}</div>'
+
+    return (
+        '<div class="pago-tarjeta">'
+        f'<div class="pago-cabeza"><span class="pago-bl">{bl}<span class="pago-empresa">{empresa}</span></span>'
+        f'<span class="pago-estado" style="background:{color_estado};">{esc(estado)}</span></div>'
+        f'<div class="pago-meta">{desc} · {cant} · Llegada: {llegada}</div>'
+        f'<div class="pago-conceptos">{"".join(chips)}</div>'
+        '<div class="pago-totales">'
+        f'<div><span class="pago-total-etq">Total a pagar US$</span>'
+        f'<span class="pago-total-val">{_fmt(total.get("USD") or 0.0, "USD")}</span></div>'
+        f'<div><span class="pago-total-etq">Total a pagar RD$</span>'
+        f'<span class="pago-total-val">{_fmt(total.get("DOP") or 0.0, "DOP")}</span></div>'
+        f'<div><span class="pago-total-etq">Fecha saludable</span>'
+        f'<span class="pago-total-val" style="font-size:0.95rem;">{fecha_saludable}</span></div>'
+        f'<div><span class="pago-total-etq">Días sin pagar</span>'
+        f'<span class="pago-total-val">{dias_sin_pagar_txt}</span></div>'
+        '</div>'
+        f'{pie_cerrado}'
+        '</div>'
+    )
 
 
 def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
-    resumen = resumen_pagos(enriquecido)
-    _tarjetas_resumen(resumen)
-    st.caption("\"Total a pagar\" es lo que hay cargado en los conceptos AHORA MISMO. \"SIN MORA "
-              "(congelado)\" es lo que se fijó como línea base cuando se registró esa ventana desde "
-              "la app — puede diferir del total actual si algún concepto cambió después.")
+    empresa_sel = st.selectbox("Empresa", ["Todas"] + EMPRESAS_PAGO, key="pago_filtro_empresa")
+    vista = enriquecido if empresa_sel == "Todas" or enriquecido.empty \
+        else enriquecido[enriquecido["EmpresaEfectiva"] == empresa_sel]
 
-    if enriquecido.empty:
-        st.info("Todavía no hay expedientes sincronizados desde tránsito.")
+    resumen = resumen_pagos(vista)
+    _tarjetas_resumen(resumen)
+    st.caption("\"Total a pagar\" es lo que hay cargado en los conceptos AHORA MISMO. Lo que aparece "
+              "\"Pagado el...\" al pie de la tarjeta usa la ventana SIN MORA que se haya congelado "
+              "desde la app para calcular el extra sobre lo saludable.")
+
+    if vista.empty:
+        st.info("No hay expedientes de Pagos para esta selección.")
         return
 
-    con_montos = enriquecido[enriquecido["TieneMontos"]]
-    sin_montos = len(enriquecido) - len(con_montos)
+    con_montos = vista[vista["TieneMontos"]]
+    sin_montos = len(vista) - len(con_montos)
 
-    sin_transito = int(enriquecido["BLSinTransito"].sum())
+    sin_transito = int(vista["BLSinTransito"].sum())
     if sin_transito:
         st.warning(f"{sin_transito} expediente(s) de Pagos ya no tienen un BL coincidente en tránsito "
                    "(activo ni histórico) — puede que se hayan eliminado o cambiado de BL ahí.")
 
     if con_montos.empty:
-        st.info(f"Hay {len(enriquecido)} expediente(s) sincronizados desde tránsito, pero ninguno tiene "
-                "montos cargados todavía. Se muestran aquí solo cuando tengan al menos un concepto lleno.")
+        st.info(f"Hay {len(vista)} expediente(s) en esta selección, pero ninguno tiene montos "
+                "cargados todavía. Se muestran aquí solo cuando tengan al menos un concepto lleno.")
         return
 
     if sin_montos:
         st.caption(f"Mostrando {len(con_montos)} expediente(s) con montos cargados · "
                   f"{sin_montos} más ya están en la hoja esperando que se les llenen los conceptos.")
 
-    st.dataframe(_tabla_pagos(con_montos), width="stretch", hide_index=True)
+    st.markdown(PAGOS_CSS, unsafe_allow_html=True)
+    st.markdown("".join(_html_expediente(r) for _, r in con_montos.iterrows()), unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +260,10 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
 # ---------------------------------------------------------------------------
 def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, historico: pd.DataFrame):
     st.markdown("**Registrar / editar conceptos de un expediente**")
+    st.caption("Esta lista sale de tránsito, que solo trackea Antillana Comercial. Para Tecnicaribe o "
+              "Motor Ibérico, agrega la fila directo en la pestaña Pagos del Sheet (BL, Empresa, "
+              "Descripción, Cantidad y Llegada a mano) y luego edítala aquí si quieres usar el resto "
+              "de estos formularios sobre ella.")
 
     categorias_disp = _opciones_categoria(activos, historico)
     if not categorias_disp:
@@ -272,7 +322,7 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
         # verdad tiene el expediente.
         datos = {c: (montos[c] if c in conceptos_aplican else "") for c in CONCEPTOS_PAGO}
         referencia = {COL_DESC: elegido["desc"], COL_CANT: elegido["cant"],
-                     COL_PAGO_LLEGADA: elegido["llegada_iso"]}
+                     COL_PAGO_LLEGADA: elegido["llegada_iso"], COL_EMPRESA: EMPRESA_ANTILLANA}
         ok, mensaje = guardar_pago(bl, datos, referencia=referencia)
         if ok:
             registrar_log("Conceptos de pago guardados", bl, "", ", ".join(conceptos_aplican) or "(ninguno)")
@@ -396,9 +446,10 @@ def panel_pagos(datos: dict, es_admin: bool):
         form_ventana_pago(enriquecido, "pago_real")
     with st.expander("Marcar estado (Pendiente/Pagado)"):
         form_estado_pago(enriquecido)
-    with st.expander("Activar el selector de calendario en Fecha_SinMora / Fecha_PagoRealizado"):
+    with st.expander("Activar selectores en Sheets (fechas y Empresa)"):
         st.caption("Solo hace falta correrlo una vez. Agrega el ícono de calendario nativo de Google "
-                  "Sheets a esas dos columnas para poder elegir la fecha con clic en vez de teclearla.")
-        if st.button("Activar selector de calendario", key="btn_selector_fecha"):
-            ok, mensaje = aplicar_selector_fecha_pagos()
+                  "Sheets en las fechas, y una lista desplegable en Empresa, para elegir con clic en "
+                  "vez de teclear.")
+        if st.button("Activar selectores", key="btn_selector_fecha"):
+            ok, mensaje = aplicar_selectores_pagos()
             (st.success if ok else st.error)(mensaje)

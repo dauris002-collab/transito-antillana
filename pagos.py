@@ -177,11 +177,30 @@ def _aplicar_filtro_kpi(df: pd.DataFrame, filtro: str) -> pd.DataFrame:
     return df
 
 
+COLOR_POR_PAGAR = "#0C447C"
+
+
+def _tarjeta_por_pagar(total: dict) -> str:
+    """Tarjeta estática (no es botón, así que $ normal es seguro aquí — el
+    problema de la 'fórmula' solo pasa en st.button, nunca en HTML)."""
+    return (
+        f'<div style="background:{COLOR_POR_PAGAR}; color:#fff; border-radius:14px; min-height:92px; '
+        f'display:flex; flex-direction:column; align-items:center; justify-content:center; '
+        f'padding:14px 10px; box-shadow:0 2px 8px rgba(17,24,39,0.12);">'
+        f'<div style="font-size:0.68rem; font-weight:700; letter-spacing:0.05em; '
+        f'text-transform:uppercase; opacity:0.92;">Total por pagar (abiertos)</div>'
+        f'<div style="font-size:1.35rem; font-weight:800; margin-top:6px;">'
+        f'{_fmt(total.get("USD", 0.0), "USD")} · {_fmt(total.get("DOP", 0.0), "DOP")}</div>'
+        f'</div>'
+    )
+
+
 def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
     """Las 5 tarjetas de KPI como botones clicables — mismo patrón que las
     categorías de tránsito: un clic filtra la lista de abajo, y clickear la
-    misma que ya está activa la vuelve a 'todos'. Devuelve el filtro que quedó
-    activo después del clic (o el mismo de antes, si no se clickeó nada)."""
+    misma que ya está activa la vuelve a 'todos'. Una 6ta tarjeta, estática,
+    muestra el total que aún se debe. Devuelve el filtro que quedó activo
+    después del clic (o el mismo de antes, si no se clickeó nada)."""
     prom = resumen["dias_mora_promedio"]
     sobre = resumen["sobrecosto"]
     kpis = [
@@ -209,13 +228,15 @@ def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
         for _, _, color, slug in kpis
     )
     st.markdown(f"<style>{estilos}</style>", unsafe_allow_html=True)
-    cols = st.columns(len(kpis))
+    cols = st.columns(len(kpis) + 1)
     for col, (label, valor, _color, slug) in zip(cols, kpis):
         with col:
             with st.container(key=f"pagokpi_{slug}"):
                 if st.button(f"{label.upper()}\n\n{valor}", key=f"btn_pagokpi_{slug}", width="stretch"):
                     st.session_state["pago_filtro_estado"] = "todos" if filtro_activo == slug else slug
                     st.rerun()
+    with cols[-1]:
+        st.markdown(_tarjeta_por_pagar(resumen["total_por_pagar"]), unsafe_allow_html=True)
     return st.session_state.get("pago_filtro_estado", "todos")
 
 

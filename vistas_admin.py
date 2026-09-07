@@ -57,6 +57,8 @@ def form_alta_manual(datos: dict):
     con_oc_ee = categoria in CATEGORIAS_CON_OC_EE
     con_modelo = categoria in CATEGORIAS_CON_MODELO
     con_cliente = categoria in CATEGORIAS_CON_CLIENTE_STOCK
+    opciones_via = [VIA_MARITIMA, VIA_AEREA]
+    indice_via_defecto = opciones_via.index(VIA_AEREA) if categoria == "Aéreos" else 0
 
     with st.form("form_embarque", clear_on_submit=True):
         c1, c2 = st.columns(2)
@@ -67,9 +69,9 @@ def form_alta_manual(datos: dict):
         cantidad = c4.text_input("Cantidad", placeholder="Ej.: 4 unidades, 2 pallets, 113 bultos")
         c5, c6 = st.columns(2)
         pais = c5.text_input("País de origen")
-        via = c6.selectbox("Vía", [VIA_MARITIMA, VIA_AEREA],
+        via = c6.selectbox("Vía", opciones_via, index=indice_via_defecto,
                            help="Decide si el flujo de llegada dice 'Llegada a Puerto' o "
-                                "'Llegada al Aeropuerto'. Ya no depende de la categoría.")
+                                "'Llegada al Aeropuerto'. Se puede cambiar sin importar la categoría.")
         eta = st.date_input("Llegada (ETA)", value=hoy_rd(), format="DD/MM/YYYY")
         oc = ee = ""
         if con_oc_ee:
@@ -823,7 +825,7 @@ def _herramienta_salud(df: pd.DataFrame, historico: pd.DataFrame):
         if not sin_ref.empty:
             por_cat = sin_ref["Categoria"].value_counts().to_dict()
             problemas.append(
-                (f"{len(sin_ref)} embarque(s) de Carga Suelta/General sin OC ni EE",
+                (f"{len(sin_ref)} embarque(s) de Carga Suelta/General/Aéreos sin OC ni EE",
                  ", ".join(f"{r[COL_BL] or '(sin BL)'} ({r['Categoria']} fila {r['FilaSheet']})"
                            for _, r in sin_ref.head(12).iterrows())
                  + " · Total por categoría: "

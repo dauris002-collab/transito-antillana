@@ -18,7 +18,8 @@ from sheets_io import (
     COL_BL, COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_EMPRESA, COL_ETA,
     COL_FECHA_DECLARACION, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL,
     COL_FECHA_SALIDA, COL_FECHA_SIN_MORA, COL_LLEGO, COL_MODELO, COL_OC,
-    COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS, COL_ESTADO_PAGO, ESTADO_PAGO_PAGADO,
+    COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS, COL_ESTADO_PAGO, COL_VIA,
+    ESTADO_PAGO_PAGADO, VIA_AEREA,
     CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO, ETAPAS_PUERTO,
     INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
     _fecha_de_tokens, _interpretar_tokens, _norm, _slug_css, _tokenizar_fecha,
@@ -30,54 +31,44 @@ from sheets_io import (
 
 # OC (orden de compra) y EE: hay áreas que validan la carga por orden de compra
 # en vez de por BL, pero solo estas dos categorías las manejan.
-CATEGORIAS_CON_OC_EE = ["Aéreos", "Carga Suelta"]
+CATEGORIAS_CON_OC_EE = ["Carga Suelta", "General"]
 
 
-# Equipos, Generadores y Consolidados son máquinas o lotes con modelo y número
-# de serie propios; en Aéreos y Carga Suelta ese dato no existe y pedirlo solo
-# genera columnas vacías.
-CATEGORIAS_CON_MODELO = ["Equipos", "Generadores", "Consolidados"]
+# Estas categorías son máquinas o lotes con modelo y número de serie propios;
+# en Carga Suelta y General ese dato no existe y pedirlo solo genera columnas
+# vacías.
+CATEGORIAS_CON_MODELO = ["Montacargas", "Construcción y Minería", "Agrícola", "Elevadores",
+                         "Generadores", "Consolidados"]
 
 
 # Dónde se rastrea la carga por cliente y stock disponible.
-CATEGORIAS_CON_CLIENTE_STOCK = ["Equipos", "Generadores", "Aéreos"]
+CATEGORIAS_CON_CLIENTE_STOCK = ["Montacargas", "Construcción y Minería", "Agrícola", "Elevadores",
+                                "Generadores"]
 
 
-# Estas dos categorías no se despachan desde un puerto marítimo: la carga queda
-# en un almacén (aéreo) o donde la deja el consolidador (carga suelta). Solo
-# cambia el rótulo; los contadores usan exactamente el mismo cálculo.
-CATEGORIAS_ALMACENAJE = ["Aéreos", "Carga Suelta"]
+def es_aereo(via) -> bool:
+    """True si el modo de transporte de ESTA fila es aéreo. Ya NO depende de la
+    categoría del embarque -- antes 'Aéreos' era una categoría/pestaña propia;
+    ahora el modo de transporte es un dato de la fila (columna Via_Transporte,
+    ver COL_VIA), así que cualquier categoría puede tener embarques por avión
+    o por barco. Vacío (filas de antes de que existiera esta columna) se trata
+    como marítimo, no como aéreo."""
+    return str(via).strip() == VIA_AEREA
 
 
-CATEGORIA_AEREA = "Aéreos"
-
-
-def es_aereo(categoria) -> bool:
-    return str(categoria).strip() == CATEGORIA_AEREA
-
-
-def lugar_de(categoria) -> str:
+def lugar_de(via) -> str:
     """"aeropuerto" para carga aérea, "puerto" para todo lo demás. Solo cambia
     textos que ve el usuario: las claves internas (ETAPAS_PUERTO, EST_PUERTO,
     nombres de columnas del Sheet) siguen diciendo "puerto" para no romper los
     datos ya guardados ni los filtros."""
-    return "aeropuerto" if es_aereo(categoria) else "puerto"
+    return "aeropuerto" if es_aereo(via) else "puerto"
 
 
-def etiqueta_etapa(etapa: str, categoria="") -> str:
+def etiqueta_etapa(etapa: str, via="") -> str:
     """Nombre corto de la etapa, con "aeropuerto" cuando el embarque es aéreo."""
-    if etapa == ETAPAS_PUERTO[0] and es_aereo(categoria):
+    if etapa == ETAPAS_PUERTO[0] and es_aereo(via):
         return "Llegada al aeropuerto"
     return ETIQUETA_CORTA_ETAPA.get(etapa, etapa)
-
-
-def columna_referencia(categoria) -> str:
-    """Qué mostrar en la 3ra columna de la lista para esta categoría."""
-    if categoria in CATEGORIAS_CON_MODELO:
-        return COL_MODELO
-    if categoria in CATEGORIAS_CON_CLIENTE_STOCK:
-        return COL_CLIENTE_STOCK
-    return ""
 
 
 ETIQUETA_CORTA_ETAPA = {
@@ -321,11 +312,11 @@ def estado_embarque(eta_valor, llego=None, hoy: date = None):
     return EST_TRANSITO, None
 
 
-def texto_estado(estado: str, dias, categoria="") -> str:
+def texto_estado(estado: str, dias, via="") -> str:
     if estado == EST_RETRASADO and dias is not None:
         return f"Retrasado {texto_dias(dias)}"
     if estado == EST_PUERTO and dias is not None:
-        donde = "Aeropuerto" if es_aereo(categoria) else "Puerto"
+        donde = "Aeropuerto" if es_aereo(via) else "Puerto"
         return f"En {donde} hace {texto_dias(dias)}"
     if estado == EST_PROXIMO and dias is not None:
         d = int(dias)
@@ -416,9 +407,9 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     df["DiasEnPuerto"] = [(hoy - p).days if p else None for p in puertos]
 
     dias_etapa, alertas, alerta_dias = [], [], []
-    cats = df["Categoria"] if "Categoria" in df.columns else [""] * len(df)
-    for etapa, fechas, estado, dias_rel, cat in zip(df["EtapaActual"], fechas_por_fila,
-                                                    df["EstadoTexto"], df["DiasRel"], cats):
+    vias = df[COL_VIA] if COL_VIA in df.columns else [""] * len(df)
+    for etapa, fechas, estado, dias_rel, via in zip(df["EtapaActual"], fechas_por_fila,
+                                                    df["EstadoTexto"], df["DiasRel"], vias):
         d_etapa = None
         if etapa:
             fecha_etapa = fechas[INDICE_ETAPA[etapa]]
@@ -428,7 +419,7 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
         texto, dias_alerta = "", None
         limite = sla.get(etapa)
         if etapa and d_etapa is not None and limite is not None and d_etapa > limite:
-            base = TEXTO_ALERTA_ETAPA.get(etapa, "detenido").format(lugar=lugar_de(cat))
+            base = TEXTO_ALERTA_ETAPA.get(etapa, "detenido").format(lugar=lugar_de(via))
             texto = f"{base[0].upper()}{base[1:]} hace {texto_dias(d_etapa)}"
             dias_alerta = d_etapa
         elif not etapa and estado == EST_RETRASADO and dias_rel is not None \

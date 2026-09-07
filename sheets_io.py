@@ -160,7 +160,7 @@ COLUMNAS_INTERNAS = {
 
 
 CATEGORIAS = ["Montacargas", "Construcción y Minería", "Agrícola", "Elevadores",
-              "Generadores", "Carga Suelta", "Consolidados", "General"]
+              "Generadores", "General", "Aéreos", "Carga Suelta", "Consolidados"]
 
 
 # 2 contadores operativos:

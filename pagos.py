@@ -44,7 +44,11 @@ COLOR_MORA_PROMEDIO = "#B45309"
 
 # Un color fijo por concepto — reusa la misma paleta "amigable" que ya usan
 # los gráficos de país en tránsito, así no se inventa una gama nueva.
-COLOR_CONCEPTO = dict(zip(CONCEPTOS_PAGO, PALETA_PAISES))
+# Cicla la paleta en vez de truncar con zip(): antes, un concepto agregado más
+# allá del largo de PALETA_PAISES (8 colores) se quedaba sin entrada en este
+# diccionario, y buscar su color en _html_expediente() reventaba con KeyError.
+# Con el módulo, el color se repite pero nunca falta.
+COLOR_CONCEPTO = {c: PALETA_PAISES[i % len(PALETA_PAISES)] for i, c in enumerate(CONCEPTOS_PAGO)}
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)

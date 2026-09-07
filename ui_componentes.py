@@ -20,15 +20,15 @@ import streamlit as st
 from sheets_io import (
     CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
     COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_LLEGO, COL_MODELO,
-    COL_OC, COL_PAIS, ETAPA_ALMACEN, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES,
-    MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO,
+    COL_OC, COL_PAIS, COL_VIA, ETAPA_ALMACEN, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES,
+    MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO, VIA_MARITIMA,
     _norm, _slug_css, columnas_extra, confirmar_llegada, costos_puerto,
     eliminar_embarque, es_numero, fijar_fecha_declaracion, formato_dinero,
     formato_eta, hoy_rd, invalidar_caches, marcar_como_recibido, marcar_no_llego,
     registrar_log, sla_etapas,
 )
 from logica import (
-    CATEGORIAS_CON_OC_EE, CATEGORIA_AEREA, EST_PROXIMO,
+    CATEGORIAS_CON_OC_EE, EST_PROXIMO,
     EST_PUERTO, EST_RETRASADO, EST_SIN_FECHA, EST_TRANSITO, ETIQUETA_CORTA_ETAPA,
     ICONO_ALMACEN, ICONO_ETAPA, PALETA_PAISES, SEMANAS_HORIZONTE, STATUS_COLOR,
     STATUS_ORDER, UMBRAL_PROXIMO,
@@ -606,7 +606,7 @@ def html_contadores(fila) -> str:
     if es_numero(dias_puerto):
         # El tiempo total en puerto abarca las dos etapas, así que se compara
         # contra la suma de sus plazos, no contra el de una sola.
-        lugar = lugar_de(fila.get("Categoria", ""))
+        lugar = lugar_de(fila.get(COL_VIA, ""))
         clase = _clase_contador(dias_puerto, sum(v for k, v in sla.items()
                                                  if k in SLA_ETAPA_DEFECTO))
         piezas.append(_chip(clase, f"En {lugar}", dias_puerto))
@@ -663,14 +663,14 @@ def render_lista(df: pd.DataFrame):
     ]
     for _, r in df.iterrows():
         color = STATUS_COLOR.get(r["EstadoTexto"], "#6B7280")
-        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], r.get("Categoria", ""))
+        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], r.get(COL_VIA, ""))
         etapa = str(r.get("EtapaActual", "")).strip()
         badge_etapa = ""
         if etapa:
-            icono = "✈️" if (etapa == ETAPAS_PUERTO[0] and es_aereo(r.get("Categoria", ""))) \
+            icono = "✈️" if (etapa == ETAPAS_PUERTO[0] and es_aereo(r.get(COL_VIA, ""))) \
                 else ICONO_ETAPA[etapa]
             badge_etapa = (f'<span class="badge linea">{icono} '
-                           f'{esc(etiqueta_etapa(etapa, r.get("Categoria", "")))}</span>')
+                           f'{esc(etiqueta_etapa(etapa, r.get(COL_VIA, "")))}</span>')
         alerta = str(r.get("Alerta", "") or "").strip()
         badge_alerta = f'<span class="badge" style="background:{COLOR_ALERTA};">⚠ {esc(alerta)}</span>' if alerta else ""
         if r.get("BLRepetido"):
@@ -805,7 +805,8 @@ def _ficha_embarque(fila):
     """Todos los campos del embarque, incluidas las columnas que alguien haya
     agregado en el Sheet y que la app no gestiona."""
     categoria = fila["Categoria"]
-    es_aerea = categoria == CATEGORIA_AEREA
+    via = str(fila.get(COL_VIA, "") or "").strip()
+    es_aerea = es_aereo(via)
     campos = [
         ("BL", fila[COL_BL]),
         ("Descripción", fila[COL_DESC]),
@@ -816,8 +817,9 @@ def _ficha_embarque(fila):
         ("Cantidad", fila[COL_CANT]),
         ("País de origen", fila[COL_PAIS]),
         ("Categoría", categoria),
+        ("Vía", via or VIA_MARITIMA),
         ("ETA", formato_eta(fila[COL_ETA])),
-        ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"], categoria)),
+        ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"], via)),
     ]
     if categoria in CATEGORIAS_CON_OC_EE:
         if str(fila.get(COL_OC, "")).strip():
@@ -848,7 +850,7 @@ def _ficha_embarque(fila):
             if fecha:
                 campos.append((rotulos[nombre_etapa], formato_eta(fecha)))
         if es_numero(fila.get("DiasEnPuerto")):
-            campos.append((f"En {lugar_de(categoria)}", texto_dias(fila["DiasEnPuerto"])))
+            campos.append((f"En {lugar_de(via)}", texto_dias(fila["DiasEnPuerto"])))
     if str(fila.get("Alerta", "") or "").strip():
         campos.append(("⚠ Atención", fila["Alerta"]))
 
@@ -1060,7 +1062,7 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
         bl = str(fila[COL_BL]).strip()
         categoria = fila["Categoria"]
         etapa = str(fila.get("EtapaActual", "")).strip()
-        es_aerea = categoria == CATEGORIA_AEREA
+        es_aerea = es_aereo(fila.get(COL_VIA, ""))
         clave = clave_fila(contexto, categoria, bl or "sin_bl", fila.get("FilaSheet", ""))
         alerta = str(fila.get("Alerta", "") or "").strip()
         # Con dos filas del mismo BL es fácil trabajar sobre la equivocada y creer
@@ -1176,7 +1178,7 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
             c2.caption("Sin BL: no se puede gestionar")
             return
         clave = clave_fila(tab_key, categoria, bl, r.get("FilaSheet", ""))
-        es_aerea = categoria == CATEGORIA_AEREA
+        es_aerea = es_aereo(r.get(COL_VIA, ""))
         texto_si = "Sí, llegó al aeropuerto" if es_aerea else "Sí, llegó a puerto"
         if c2.button(texto_si, key=f"si_llego_{clave}", type="primary", width="stretch"):
             ok, mensaje = confirmar_llegada(bl, categoria, fila_sugerida=r.get("FilaSheet"))
@@ -1229,10 +1231,13 @@ def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
         "Modelo/Serie": df[COL_MODELO] if COL_MODELO in df.columns else "",
         "Cantidad": df[COL_CANT],
         "País de origen": df[COL_PAIS],
+        "Vía": (df[COL_VIA].replace("", VIA_MARITIMA) if COL_VIA in df.columns
+               else VIA_MARITIMA),
         "ETA": [formato_eta(v) for v in df[COL_ETA]],
         "¿Llegó?": df[COL_LLEGO] if COL_LLEGO in df.columns else "",
-        "Estado": [texto_estado(e, d, c) for e, d, c in
-                   zip(df["EstadoTexto"], df["DiasRel"], df["Categoria"])],
+        "Estado": [texto_estado(e, d, v) for e, d, v in
+                   zip(df["EstadoTexto"], df["DiasRel"],
+                       df[COL_VIA] if COL_VIA in df.columns else [""] * len(df))],
         "Etapa": df["EtapaActual"],
         "Categoría": df["Categoria"],
         "Salida": [formato_eta(f) if f else "" for f in df["F_Salida"]],
@@ -1496,10 +1501,10 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
 
     if etapa:
         st.markdown(html_flujo(fechas_flujo_de_fila(fila), etapa,
-                               es_aerea=(categoria == CATEGORIA_AEREA)) + html_contadores(fila),
+                               es_aerea=es_aereo(fila.get(COL_VIA, ""))) + html_contadores(fila),
                     unsafe_allow_html=True)
     elif fila["EstadoTexto"] in (EST_PUERTO, EST_RETRASADO):
-        texto = "'Sí, llegó al aeropuerto'" if categoria == CATEGORIA_AEREA else "'Sí, llegó a puerto'"
+        texto = "'Sí, llegó al aeropuerto'" if es_aereo(fila.get(COL_VIA, "")) else "'Sí, llegó a puerto'"
         st.caption(f"Llegada sin confirmar todavía — usa {texto} en la sección de confirmación, arriba.")
     st.write("")
 

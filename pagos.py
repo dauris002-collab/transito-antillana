@@ -97,9 +97,9 @@ CATEGORIA_RECIBIDOS = "Recibidos (histórico)"
 
 
 def _opciones_categoria(activos: pd.DataFrame, historico: pd.DataFrame) -> list:
-    """Mismo orden de categorías que usa tránsito (Equipos, Generadores,
-    Aéreos, Carga Suelta, Consolidados), y al final los ya archivados: para
-    cuando el pago se registra después de que la carga ya se recibió."""
+    """Mismo orden de categorías que usa tránsito (ver CATEGORIAS en sheets_io.py),
+    y al final los ya archivados: para cuando el pago se registra después de que
+    la carga ya se recibió."""
     disponibles = [c for c in CATEGORIAS
                   if activos is not None and not activos.empty and (activos["Categoria"] == c).any()]
     if historico is not None and not historico.empty:

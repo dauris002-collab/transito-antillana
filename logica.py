@@ -30,20 +30,20 @@ from sheets_io import (
 
 
 # OC (orden de compra) y EE: hay áreas que validan la carga por orden de compra
-# en vez de por BL, pero solo estas dos categorías las manejan.
-CATEGORIAS_CON_OC_EE = ["Carga Suelta", "General"]
+# en vez de por BL, pero solo estas categorías las manejan.
+CATEGORIAS_CON_OC_EE = ["Carga Suelta", "General", "Aéreos"]
 
 
 # Estas categorías son máquinas o lotes con modelo y número de serie propios;
-# en Carga Suelta y General ese dato no existe y pedirlo solo genera columnas
-# vacías.
+# en Carga Suelta, General y Aéreos ese dato no existe y pedirlo solo genera
+# columnas vacías.
 CATEGORIAS_CON_MODELO = ["Montacargas", "Construcción y Minería", "Agrícola", "Elevadores",
                          "Generadores", "Consolidados"]
 
 
 # Dónde se rastrea la carga por cliente y stock disponible.
 CATEGORIAS_CON_CLIENTE_STOCK = ["Montacargas", "Construcción y Minería", "Agrícola", "Elevadores",
-                                "Generadores"]
+                                "Generadores", "Aéreos"]
 
 
 def es_aereo(via) -> bool:

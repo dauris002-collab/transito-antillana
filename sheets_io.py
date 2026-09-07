@@ -355,6 +355,26 @@ def _norm(texto) -> str:
     return _norm_cache(str(texto))
 
 
+def _norm_encabezado(texto) -> str:
+    """Como _norm(), pero ADEMÁS ignora espacios, guiones bajos y barras, para
+    que 'CLIENTE / STOCK', 'Cliente/Stock' y 'Cliente_Stock' se traten como el
+    mismo encabezado de columna.
+
+    Bug real que esto corrige: COL_CLIENTE_STOCK está escrita en el código como
+    'CLIENTE / STOCK' (con espacios alrededor de la barra), pero si en el Sheet
+    real el encabezado se escribió sin esos espacios (como el resto de las
+    columnas: Modelo_Serie, Pais_Origen), _norm() por sí solo NO los trata como
+    la misma columna -- solo colapsa espacios dobles y quita acentos/mayúsculas,
+    no el espacio pegado a un símbolo. El resultado era que la columna se leía
+    (y se escribía) siempre vacía, sin importar lo que hubiera en el Sheet.
+
+    Úsese SOLO para comparar/emparejar NOMBRES DE COLUMNA contra las constantes
+    canónicas (COL_*). NUNCA para texto libre (el buscador de la lista) ni para
+    valores de datos (BL, país, '¿Llegó?'), donde los espacios sí distinguen
+    palabras y usar esto rompería esas comparaciones."""
+    return re.sub(r"[\s_/]+", "", _norm(texto))
+
+
 def _slug_css(texto) -> str:
     """Convierte un nombre visible ('Aéreos', 'Carga Suelta') en un identificador
     ASCII apto para usarse como clave de widget o clase CSS: 'aereos', 'carga_suelta'."""
@@ -677,8 +697,9 @@ def _headers(titulo_hoja: str) -> list:
 
 
 def _columna_indice(headers: list, nombre: str):
-    """Posición 1-indexada de una columna, tolerando acentos y mayúsculas."""
-    return next((i + 1 for i, h in enumerate(headers) if _norm(h) == _norm(nombre)), None)
+    """Posición 1-indexada de una columna, tolerando acentos, mayúsculas y
+    diferencias de espacios/guion bajo/barra en el nombre."""
+    return next((i + 1 for i, h in enumerate(headers) if _norm_encabezado(h) == _norm_encabezado(nombre)), None)
 
 
 def marca_ahora() -> str:
@@ -705,9 +726,9 @@ def parsear_marca(valor):
 
 def _fila_desde_dict(headers: list, datos: dict) -> list:
     """Arma la fila respetando el orden REAL de columnas de la pestaña y
-    tolerando diferencias de acento/mayúsculas en los encabezados."""
-    normalizado = {_norm(k): v for k, v in datos.items()}
-    return [normalizado.get(_norm(h), "") for h in headers]
+    tolerando diferencias de acento/mayúsculas/espacios en los encabezados."""
+    normalizado = {_norm_encabezado(k): v for k, v in datos.items()}
+    return [normalizado.get(_norm_encabezado(h), "") for h in headers]
 
 
 def _asegurar_columnas(ws, nombres: list) -> list:
@@ -724,10 +745,10 @@ def _asegurar_columnas(ws, nombres: list) -> list:
     acaso': solo cuando traen un valor real. Así Carga Suelta no termina con una
     columna Modelo_Serie vacía que nadie pidió."""
     headers = _headers(ws.title)
-    existentes = {_norm(h) for h in headers}
+    existentes = {_norm_encabezado(h) for h in headers}
     faltan = []
     for n in nombres:
-        if _norm(n) not in existentes and _norm(n) not in {_norm(f) for f in faltan}:
+        if _norm_encabezado(n) not in existentes and _norm_encabezado(n) not in {_norm_encabezado(f) for f in faltan}:
             faltan.append(n)
     if not faltan:
         return headers
@@ -812,7 +833,7 @@ def _df_desde_valores(valores: list, columnas_canonicas: list) -> pd.DataFrame:
     mapa = {}
     for canon in columnas_canonicas:
         for real in df.columns:
-            if _norm(real) == _norm(canon) and real not in mapa:
+            if _norm_encabezado(real) == _norm_encabezado(canon) and real not in mapa:
                 mapa[real] = canon
                 break
     df = df.rename(columns=mapa)
@@ -1180,11 +1201,11 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict,
                            *[c for c, v in datos.items() if str(v).strip()]]
     headers = _asegurar_columnas(ws, columnas_a_asegurar)
     combinado = _leer_fila(ws, fila, headers)
-    combinado_norm = {_norm(k): v for k, v in combinado.items()}
+    combinado_norm = {_norm_encabezado(k): v for k, v in combinado.items()}
 
-    sello_actual = str(combinado_norm.get(_norm(COL_ACTUALIZACION), "")).strip()
+    sello_actual = str(combinado_norm.get(_norm_encabezado(COL_ACTUALIZACION), "")).strip()
     if not forzar and sello_esperado and sello_actual and sello_actual != str(sello_esperado).strip():
-        autor = str(combinado_norm.get(_norm(COL_ACTUALIZADO_POR), "")).strip() or "otra persona"
+        autor = str(combinado_norm.get(_norm_encabezado(COL_ACTUALIZADO_POR), "")).strip() or "otra persona"
         return False, (f"{autor} modificó este embarque el {sello_actual}, después de que abriste esta "
                        "pantalla. Actualiza los datos y revisa antes de guardar, o marca la casilla de "
                        "sobrescritura si estás seguro.")
@@ -1200,10 +1221,10 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict,
     #
     # Antes esto se resolvía vaciando la confirmación cuando el ETA se iba a
     # futuro. Era peor: el embarque retrocedía de etapa sin que nadie lo supiera.
-    combinado_final = {_norm(k): v for k, v in combinado.items()}
-    if es_llego_si(combinado_final.get(_norm(COL_LLEGO), "")):
-        problema = validar_eta_confirmado(combinado_final.get(_norm(COL_ETA), ""),
-                                          combinado_final.get(_norm(COL_FECHA_DECLARACION), ""))
+    combinado_final = {_norm_encabezado(k): v for k, v in combinado.items()}
+    if es_llego_si(combinado_final.get(_norm_encabezado(COL_LLEGO), "")):
+        problema = validar_eta_confirmado(combinado_final.get(_norm_encabezado(COL_ETA), ""),
+                                          combinado_final.get(_norm_encabezado(COL_FECHA_DECLARACION), ""))
         if problema:
             return False, problema
 
@@ -1240,23 +1261,23 @@ def marcar_llegada(bl: str, categoria: str, valor: str, fila_sugerida=None):
         return False, error
 
     headers = _asegurar_columnas(ws, [COL_LLEGO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
-    indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
 
     if es_llego_si(valor):
         actual = _leer_fila(ws, fila, headers)
-        actual_norm = {_norm(k): v for k, v in actual.items()}
-        problema = validar_eta_confirmado(actual_norm.get(_norm(COL_ETA), ""),
-                                          actual_norm.get(_norm(COL_FECHA_DECLARACION), ""))
+        actual_norm = {_norm_encabezado(k): v for k, v in actual.items()}
+        problema = validar_eta_confirmado(actual_norm.get(_norm_encabezado(COL_ETA), ""),
+                                          actual_norm.get(_norm_encabezado(COL_FECHA_DECLARACION), ""))
         if problema:
             return False, problema
 
     peticiones = [
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_LLEGO)]), "values": [[valor]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_LLEGO)]), "values": [[valor]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
     ]
     if not es_llego_si(valor):
-        columna_dec = indices.get(_norm(COL_FECHA_DECLARACION))
+        columna_dec = indices.get(_norm_encabezado(COL_FECHA_DECLARACION))
         if columna_dec:
             peticiones.append({"range": rowcol_to_a1(fila, columna_dec), "values": [[""]]})
     _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
@@ -1339,16 +1360,16 @@ def fijar_fecha_declaracion(bl: str, categoria: str, fecha=None, fila_sugerida=N
     headers = _asegurar_columnas(
         ws, [COL_LLEGO, COL_FECHA_DECLARACION, COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
     )
-    indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
     combinado = _leer_fila(ws, fila, headers)
-    combinado_norm = {_norm(k): v for k, v in combinado.items()}
+    combinado_norm = {_norm_encabezado(k): v for k, v in combinado.items()}
 
-    if not es_llego_si(combinado_norm.get(_norm(COL_LLEGO), "")):
+    if not es_llego_si(combinado_norm.get(_norm_encabezado(COL_LLEGO), "")):
         return False, ("Este embarque todavía no tiene la llegada confirmada. Marca primero "
                        "'¿Llegó?' en SI y después registra la declaración.")
 
-    llegada = parsear_fecha(combinado_norm.get(_norm(COL_ETA), ""))
-    actual = parsear_fecha(combinado_norm.get(_norm(COL_FECHA_DECLARACION), ""))
+    llegada = parsear_fecha(combinado_norm.get(_norm_encabezado(COL_ETA), ""))
+    actual = parsear_fecha(combinado_norm.get(_norm_encabezado(COL_FECHA_DECLARACION), ""))
     nueva = fecha or hoy_rd()
     final = nueva if (sobrescribir or not actual) else actual
     if final == actual:
@@ -1359,10 +1380,10 @@ def fijar_fecha_declaracion(bl: str, categoria: str, fecha=None, fila_sugerida=N
         return False, problema
 
     peticiones = [
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_FECHA_DECLARACION)]),
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_FECHA_DECLARACION)]),
          "values": [[final.isoformat()]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
     ]
     _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
     return True, ""
@@ -1419,14 +1440,14 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
 
     headers_origen = _headers(ws_origen.title)
     datos = _leer_fila(ws_origen, fila, headers_origen)
-    datos_norm = {_norm(k): v for k, v in datos.items()}
+    datos_norm = {_norm_encabezado(k): v for k, v in datos.items()}
 
-    if not es_llego_si(datos_norm.get(_norm(COL_LLEGO), "")):
+    if not es_llego_si(datos_norm.get(_norm_encabezado(COL_LLEGO), "")):
         return False, "FALTAN_ETAPAS::" + ETAPA_LLEGADA
 
-    eta_crudo = str(datos_norm.get(_norm(COL_ETA), "")).strip()
+    eta_crudo = str(datos_norm.get(_norm_encabezado(COL_ETA), "")).strip()
     llegada = parsear_fecha(eta_crudo)
-    declaracion = parsear_fecha(datos_norm.get(_norm(COL_FECHA_DECLARACION), "")) or \
+    declaracion = parsear_fecha(datos_norm.get(_norm_encabezado(COL_FECHA_DECLARACION), "")) or \
         parsear_fecha(fecha_declaracion)
     if not declaracion:
         return False, "FALTAN_ETAPAS::" + "Recepción y declaración"
@@ -1449,10 +1470,10 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
     headers_destino = _asegurar_columnas(ws_destino, COLUMNAS_RECIBIDO)
 
     registro = {
-        COL_BL: datos_norm.get(_norm(COL_BL), bl),
-        COL_DESC: datos_norm.get(_norm(COL_DESC), ""),
-        COL_CANT: datos_norm.get(_norm(COL_CANT), ""),
-        COL_PAIS: datos_norm.get(_norm(COL_PAIS), ""),
+        COL_BL: datos_norm.get(_norm_encabezado(COL_BL), bl),
+        COL_DESC: datos_norm.get(_norm_encabezado(COL_DESC), ""),
+        COL_CANT: datos_norm.get(_norm_encabezado(COL_CANT), ""),
+        COL_PAIS: datos_norm.get(_norm_encabezado(COL_PAIS), ""),
         COL_ETA: llegada.isoformat() if llegada else eta_crudo,
         "Fecha_Recibido": fecha_recibido.isoformat(),
         "Categoria_Origen": categoria,
@@ -1467,7 +1488,7 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
     # Se conserva TODO el rastro: sin esto, archivar borraba la evidencia de por
     # dónde pasó el embarque y con cuánta demora en cada paso.
     for columna in OPCIONALES_CATEGORIA:
-        valor = str(datos_norm.get(_norm(columna), "")).strip()
+        valor = str(datos_norm.get(_norm_encabezado(columna), "")).strip()
         if valor:
             registro[columna] = valor
 
@@ -1497,27 +1518,27 @@ def quitar_de_recibido(bl: str, categoria_manual: str = None, fila_sugerida=None
         return False, error
 
     headers = _headers(ws_recibido.title)
-    datos_norm = {_norm(k): v for k, v in _leer_fila(ws_recibido, fila, headers).items()}
+    datos_norm = {_norm_encabezado(k): v for k, v in _leer_fila(ws_recibido, fila, headers).items()}
 
-    categoria = (categoria_manual or datos_norm.get(_norm("Categoria_Origen"), "")).strip()
+    categoria = (categoria_manual or datos_norm.get(_norm_encabezado("Categoria_Origen"), "")).strip()
     if categoria not in CATEGORIAS:
         return False, f"'{categoria or 'vacía'}' no es una categoría válida. Elige una del menú antes de confirmar."
 
     # El ETA que vuelve es el congelado al archivar, no el que pudiera haberse
     # movido: es la fecha con la que se midió este embarque.
-    eta_vuelta = (str(datos_norm.get(_norm(COL_FECHA_LLEGADA_PUERTO), "")).strip()
-                  or str(datos_norm.get(_norm(COL_ETA), "")).strip())
+    eta_vuelta = (str(datos_norm.get(_norm_encabezado(COL_FECHA_LLEGADA_PUERTO), "")).strip()
+                  or str(datos_norm.get(_norm_encabezado(COL_ETA), "")).strip())
 
     devuelto = {
-        COL_BL: datos_norm.get(_norm(COL_BL), bl),
-        COL_DESC: datos_norm.get(_norm(COL_DESC), ""),
-        COL_CANT: datos_norm.get(_norm(COL_CANT), ""),
-        COL_PAIS: datos_norm.get(_norm(COL_PAIS), ""),
+        COL_BL: datos_norm.get(_norm_encabezado(COL_BL), bl),
+        COL_DESC: datos_norm.get(_norm_encabezado(COL_DESC), ""),
+        COL_CANT: datos_norm.get(_norm_encabezado(COL_CANT), ""),
+        COL_PAIS: datos_norm.get(_norm_encabezado(COL_PAIS), ""),
         COL_ETA: eta_vuelta,
         COL_LLEGO: LLEGO_SI,
     }
     for columna in (*OPCIONALES_CATEGORIA, COL_FECHA_DECLARACION):
-        valor = str(datos_norm.get(_norm(columna), "")).strip()
+        valor = str(datos_norm.get(_norm_encabezado(columna), "")).strip()
         if valor:
             devuelto[columna] = valor
 

@@ -236,12 +236,14 @@ PAGOS_SHEET = "Pagos"
 # Lista cerrada de conceptos. Moneda FIJA por columna: así el monto se guarda
 # como número puro (sin "dolares"/"pesos" pegado al texto) y no hay que parsear
 # texto libre para saber en qué moneda está cada celda.
-CONCEPTOS_PAGO = ["ADUANAS", "DPH", "DPW", "TRANSPORTE", "HIT", "FDA", "VECONINTER", "ALMACENAJE"]
+CONCEPTOS_PAGO = ["ADUANAS", "DPH", "DPW", "TRANSPORTE", "HIT", "FDA", "VECONINTER", "ALMACENAJE",
+                  "PORTCOLLECT", "FLETE"]
 
 
 MONEDA_CONCEPTO = {
     "ADUANAS": "DOP", "DPH": "USD", "DPW": "DOP", "TRANSPORTE": "DOP",
     "HIT": "DOP", "FDA": "DOP", "VECONINTER": "USD", "ALMACENAJE": "DOP",
+    "PORTCOLLECT": "USD", "FLETE": "USD",
 }
 
 

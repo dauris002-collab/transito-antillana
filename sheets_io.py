@@ -72,22 +72,38 @@ COL_ACTUALIZACION = "Fecha_Actualizacion"  # el Sheet lo tiene con tilde; _norm 
 COL_ACTUALIZADO_POR = "Actualizado_Por"    # la app la crea sola la primera vez que escribe
 
 
+# Modo de transporte de ESTE embarque en particular. Antes "Aéreos" era una
+# categoría/pestaña propia y la app deducía avión-vs-barco mirando a qué
+# categoría pertenecía la fila. Ya no: ahora cualquier categoría (Montacargas,
+# Generadores, etc.) puede tener embarques por avión o por barco, así que el
+# modo de transporte es un dato de la FILA, no de la pestaña. Vacío se trata
+# como Marítimo (ver es_aereo() en logica.py) -- así las filas viejas, de
+# antes de que existiera esta columna, no quedan mal clasificadas.
+COL_VIA = "Via_Transporte"
+
+
+VIA_AEREA = "Aéreo"
+
+
+VIA_MARITIMA = "Marítimo"
+
+
 # --- Columnas opcionales por categoría --------------------------------------
-# Ninguna de estas aplica a las 5 pestañas, y por eso NO están en
+# Ninguna de estas aplica a todas las pestañas, y por eso NO están en
 # REQUIRED_COLUMNS: si la pestaña no la trae, la app ni la pide ni la crea.
-COL_MODELO = "Modelo_Serie"          # Equipos, Generadores, Consolidados
+COL_MODELO = "Modelo_Serie"          # Montacargas, Construcción y Minería, Agrícola, Elevadores, Generadores, Consolidados
 
 
 COL_FECHA_SALIDA = "Fecha_Salida"    # la trae quien la conoce (booking del forwarder/naviera)
 
 
-COL_OC = "OC"                        # Aéreos y Carga Suelta
+COL_OC = "OC"                        # Carga Suelta y General
 
 
-COL_EE = "EE"                        # Aéreos y Carga Suelta
+COL_EE = "EE"                        # Carga Suelta y General
 
 
-COL_CLIENTE_STOCK = "CLIENTE / STOCK"   # Equipos, Generadores, Aéreos
+COL_CLIENTE_STOCK = "CLIENTE / STOCK"   # Montacargas, Construcción y Minería, Agrícola, Elevadores, Generadores
 
 
 OPCIONALES_CATEGORIA = [COL_MODELO, COL_FECHA_SALIDA, COL_OC, COL_EE, COL_CLIENTE_STOCK]
@@ -127,7 +143,7 @@ COLUMNAS_FLUJO = [COL_FECHA_DECLARACION]
 
 
 ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
-                                  COL_LLEGO, *COLUMNAS_FLUJO, *OPCIONALES_CATEGORIA]
+                                  COL_LLEGO, COL_VIA, *COLUMNAS_FLUJO, *OPCIONALES_CATEGORIA]
 
 
 # Columnas que la app calcula o gestiona internamente y que no se muestran como
@@ -143,7 +159,8 @@ COLUMNAS_INTERNAS = {
 }
 
 
-CATEGORIAS = ["Equipos", "Generadores", "Aéreos", "Carga Suelta", "Consolidados"]
+CATEGORIAS = ["Montacargas", "Construcción y Minería", "Agrícola", "Elevadores",
+              "Generadores", "Carga Suelta", "Consolidados", "General"]
 
 
 # 2 contadores operativos:
@@ -218,7 +235,7 @@ LOG_SHEET = "Log"
 COLUMNAS_RECIBIDO = [
     COL_BL, COL_DESC, COL_CANT, COL_PAIS, COL_ETA,
     "Fecha_Recibido", "Categoria_Origen", "Registrado_Por", COL_ACTUALIZACION,
-    COL_ACTUALIZADO_POR, COL_FECHA_LLEGADA_PUERTO, *COLUMNAS_FLUJO, COL_FECHA_ALMACEN,
+    COL_ACTUALIZADO_POR, COL_FECHA_LLEGADA_PUERTO, COL_VIA, *COLUMNAS_FLUJO, COL_FECHA_ALMACEN,
     *OPCIONALES_CATEGORIA,
 ]
 
@@ -376,8 +393,9 @@ def _norm_encabezado(texto) -> str:
 
 
 def _slug_css(texto) -> str:
-    """Convierte un nombre visible ('Aéreos', 'Carga Suelta') en un identificador
-    ASCII apto para usarse como clave de widget o clase CSS: 'aereos', 'carga_suelta'."""
+    """Convierte un nombre visible ('Construcción y Minería', 'Carga Suelta') en
+    un identificador ASCII apto para usarse como clave de widget o clase CSS:
+    'construccion_y_mineria', 'carga_suelta'."""
     base = _norm(texto)
     limpio = "".join(c if c.isalnum() else "_" for c in base)
     while "__" in limpio:
@@ -406,7 +424,7 @@ def costos_puerto() -> dict:
         dias_libres = 5
 
         [costo_puerto.dias_libres_por_categoria]
-        Aéreos = 2
+        Elevadores = 2
 
     Aquí NO hay tarifa diaria. El costo de la demora no se estima con una tarifa
     por día — que en la práctica varía por naviera, terminal, volumen y espacio —
@@ -1474,6 +1492,7 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
         COL_DESC: datos_norm.get(_norm_encabezado(COL_DESC), ""),
         COL_CANT: datos_norm.get(_norm_encabezado(COL_CANT), ""),
         COL_PAIS: datos_norm.get(_norm_encabezado(COL_PAIS), ""),
+        COL_VIA: datos_norm.get(_norm_encabezado(COL_VIA), ""),
         COL_ETA: llegada.isoformat() if llegada else eta_crudo,
         "Fecha_Recibido": fecha_recibido.isoformat(),
         "Categoria_Origen": categoria,
@@ -1534,6 +1553,7 @@ def quitar_de_recibido(bl: str, categoria_manual: str = None, fila_sugerida=None
         COL_DESC: datos_norm.get(_norm_encabezado(COL_DESC), ""),
         COL_CANT: datos_norm.get(_norm_encabezado(COL_CANT), ""),
         COL_PAIS: datos_norm.get(_norm_encabezado(COL_PAIS), ""),
+        COL_VIA: datos_norm.get(_norm_encabezado(COL_VIA), ""),
         COL_ETA: eta_vuelta,
         COL_LLEGO: LLEGO_SI,
     }

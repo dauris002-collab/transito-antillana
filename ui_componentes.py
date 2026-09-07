@@ -28,12 +28,12 @@ from sheets_io import (
     registrar_log, sla_etapas,
 )
 from logica import (
-    CATEGORIAS_CON_MODELO, CATEGORIAS_CON_OC_EE, CATEGORIA_AEREA, EST_PROXIMO,
+    CATEGORIAS_CON_CLIENTE_STOCK, CATEGORIAS_CON_MODELO, CATEGORIAS_CON_OC_EE, CATEGORIA_AEREA, EST_PROXIMO,
     EST_PUERTO, EST_RETRASADO, EST_SIN_FECHA, EST_TRANSITO, ETIQUETA_CORTA_ETAPA,
     ICONO_ALMACEN, ICONO_ETAPA, PALETA_PAISES, SEMANAS_HORIZONTE, STATUS_COLOR,
     STATUS_ORDER, UMBRAL_PROXIMO,
     _cumple_filtro_puerto, _en_proceso, _etiquetas_desambiguadas, _lleno,
-    clave_fila, columna_referencia, contar_recibidas_mes, enriquecer, es_aereo,
+    clave_fila, contar_recibidas_mes, enriquecer, es_aereo,
     esc, etiqueta_etapa, fechas_flujo_de_fila, formato_corto, lugar_de,
     ordenar_vista, resumen_atraso_puerto, texto_dias, texto_estado,
 )
@@ -632,26 +632,26 @@ def _ref_oc_ee(fila) -> str:
 
 
 def _celda_referencia(r) -> str:
-    """La 3ra columna de la lista. No todas las categorías traen lo mismo:
-    Modelo/Serie solo lo tienen Equipos, Generadores y Consolidados; Cliente/
-    Stock solo Equipos, Generadores y Aéreos. Carga Suelta no trae ninguno de
-    los dos y ahí la celda sale vacía en vez de inventar un dato.
+    """La 3ra columna de la lista. Ya NO depende de qué categoría 'debería'
+    traer cada dato — mira directo las dos columnas (Modelo/Serie y Cliente/
+    Stock) y muestra lo que de verdad esté lleno en esa fila. Antes, Carga
+    Suelta (que no está en la lista de categorías 'con Modelo' ni 'con
+    Cliente/Stock') cortaba directo a un guion sin siquiera mirar si Cliente/
+    Stock tenía algo cargado — así que un dato real en el Sheet nunca llegaba
+    a la plataforma para esa categoría.
 
-    Cuando la categoría prioriza Modelo/Serie pero esa celda viene vacía Y sí
-    hay Cliente/Stock cargado, se muestra el Cliente/Stock como dato principal
-    en vez de un guion — un guion escondía un dato real que sí estaba en el
-    Sheet."""
-    categoria = r.get("Categoria", "")
-    columna = columna_referencia(categoria)
-    if not columna:
-        return '<div class="c-suave" data-l="Referencia">—</div>'
-    valor_principal = str(r.get(columna, "") or "").strip()
-    cliente = str(r.get(COL_CLIENTE_STOCK, "") or "").strip() if columna == COL_MODELO else ""
-    if columna == COL_MODELO and not valor_principal and cliente:
+    Si hay Modelo/Serie, manda como dato principal y Cliente/Stock (si lo hay)
+    va debajo, como antes. Si Modelo/Serie está vacío pero Cliente/Stock sí
+    tiene algo, Cliente/Stock pasa a ser el dato principal. Solo si ninguno de
+    los dos tiene nada sale el guion."""
+    modelo = str(r.get(COL_MODELO, "") or "").strip()
+    cliente = str(r.get(COL_CLIENTE_STOCK, "") or "").strip()
+    if modelo:
+        extra = f'<div class="c-ref">{esc(cliente)}</div>' if cliente else ""
+        return f'<div class="c-suave" data-l="Modelo/Serie">{esc(modelo)}{extra}</div>'
+    if cliente:
         return f'<div class="c-suave" data-l="Cliente/Stock">{esc(cliente)}</div>'
-    etiqueta = "Modelo/Serie" if columna == COL_MODELO else "Cliente/Stock"
-    extra = f'<div class="c-ref">{esc(cliente)}</div>' if cliente else ""
-    return f'<div class="c-suave" data-l="{etiqueta}">{esc(valor_principal) or "—"}{extra}</div>'
+    return '<div class="c-suave" data-l="Referencia">—</div>'
 
 
 def render_lista(df: pd.DataFrame):
@@ -662,9 +662,12 @@ def render_lista(df: pd.DataFrame):
         return
 
     categorias_presentes = set(df["Categoria"]) if "Categoria" in df.columns else set()
-    encabezado_col3 = ("Modelo/Serie" if categorias_presentes
-                       and categorias_presentes <= set(CATEGORIAS_CON_MODELO)
-                       else "Referencia")
+    if categorias_presentes and categorias_presentes <= set(CATEGORIAS_CON_MODELO):
+        encabezado_col3 = "Modelo/Serie"
+    elif categorias_presentes and categorias_presentes <= set(CATEGORIAS_CON_CLIENTE_STOCK):
+        encabezado_col3 = "Cliente/Stock"
+    else:
+        encabezado_col3 = "Referencia"
     partes = [
         '<div class="lista"><div class="fila-head">'
         f"<div>BL</div><div>Descripción</div><div>{encabezado_col3}</div><div>Cant.</div>"

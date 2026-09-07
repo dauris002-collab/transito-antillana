@@ -18,12 +18,13 @@ from sheets_io import (
     CATEGORIAS, COL_ACTUALIZACION, COL_BL, COL_CANT, COL_CLIENTE_STOCK, COL_DESC,
     COL_EE, COL_ETA, COL_FECHA_ALMACEN, COL_FECHA_DECLARACION,
     COL_FECHA_LLEGADA_PUERTO, COL_FECHA_SALIDA, COL_LLEGO, COL_MODELO, COL_OC,
-    COL_PAIS, MESES_ES, MESES_ES_CORTO, NO_ESPECIFICADO, REQUIRED_COLUMNS,
+    COL_PAIS, COL_VIA, MESES_ES, MESES_ES_CORTO, NO_ESPECIFICADO, REQUIRED_COLUMNS,
+    VIA_AEREA, VIA_MARITIMA,
     _con_reintento, _leer_log, _norm, _refrescar_estructura, _validar_orden_flujo,
     actualizar_embarque, ahora_rd, append_row, append_rows_bulk, es_llego_si,
     es_numero, get_spreadsheet, hoy_rd, invalidar_caches, normalizar_etas,
-    parsear_fecha, quitar_de_recibido, registrar_log, sla_etapas,
-    validar_eta_confirmado,
+    parsear_fecha, quitar_de_recibido, registrar_log, sincronizar_pagos_con_transito,
+    sla_etapas, validar_eta_confirmado,
 )
 from logica import (
     CATEGORIAS_CON_CLIENTE_STOCK, CATEGORIAS_CON_MODELO, CATEGORIAS_CON_OC_EE,
@@ -66,7 +67,10 @@ def form_alta_manual(datos: dict):
         cantidad = c4.text_input("Cantidad", placeholder="Ej.: 4 unidades, 2 pallets, 113 bultos")
         c5, c6 = st.columns(2)
         pais = c5.text_input("País de origen")
-        eta = c6.date_input("Llegada a puerto (ETA)", value=hoy_rd(), format="DD/MM/YYYY")
+        via = c6.selectbox("Vía", [VIA_MARITIMA, VIA_AEREA],
+                           help="Decide si el flujo de llegada dice 'Llegada a Puerto' o "
+                                "'Llegada al Aeropuerto'. Ya no depende de la categoría.")
+        eta = st.date_input("Llegada (ETA)", value=hoy_rd(), format="DD/MM/YYYY")
         oc = ee = ""
         if con_oc_ee:
             c7, c8 = st.columns(2)
@@ -99,6 +103,7 @@ def form_alta_manual(datos: dict):
         COL_DESC: descripcion.strip(),
         COL_CANT: cantidad.strip(),
         COL_PAIS: pais.strip(),
+        COL_VIA: via,
         COL_ETA: eta.isoformat(),
     }
     if con_modelo and modelo.strip():
@@ -117,6 +122,20 @@ def form_alta_manual(datos: dict):
     if ok:
         registrar_log("Alta manual", bl.strip(), categoria, f"ETA {eta.isoformat()}")
         invalidar_caches()
+        # Antes, el expediente solo aparecía en Pagos cuando un admin abría esa
+        # pestaña (sincronizar_pagos_con_transito se llamaba ahí, y en ningún
+        # otro lado). Ahora se refleja al toque, en el mismo momento en que se
+        # crea el embarque en tránsito -- sin esperar a que alguien entre a Pagos.
+        fila_nueva = pd.DataFrame([{
+            COL_BL: datos_nuevos[COL_BL],
+            COL_DESC: datos_nuevos[COL_DESC],
+            COL_CANT: datos_nuevos.get(COL_CANT, ""),
+            COL_ETA: datos_nuevos[COL_ETA],
+        }])
+        ok_pago, msg_pago = sincronizar_pagos_con_transito(fila_nueva, pd.DataFrame())
+        if not ok_pago:
+            st.warning(f"El embarque se guardó, pero no se pudo reflejar en Pagos automáticamente "
+                       f"({msg_pago}). Se sincronizará solo la próxima vez que alguien abra esa pestaña.")
         st.success(f"Embarque {bl.strip()} guardado en '{categoria}'.")
         st.rerun()
     else:
@@ -163,6 +182,7 @@ def form_editar(datos: dict):
     con_oc_ee = categoria in CATEGORIAS_CON_OC_EE
     con_modelo = categoria in CATEGORIAS_CON_MODELO
     con_cliente = categoria in CATEGORIAS_CON_CLIENTE_STOCK
+    via_actual = str(fila.get(COL_VIA, "") or "").strip() or VIA_MARITIMA
 
     if confirmado:
         st.info("Este embarque tiene la llegada confirmada, así que su ETA **es** la fecha de "
@@ -179,7 +199,11 @@ def form_editar(datos: dict):
         cantidad = c3.text_input("Cantidad", value=str(fila[COL_CANT]))
         c4, c5 = st.columns(2)
         pais = c4.text_input("País de origen", value=str(fila[COL_PAIS]))
-        eta = c5.date_input("Llegada a puerto (ETA)", value=eta_actual, format="DD/MM/YYYY")
+        via = c5.selectbox("Vía", [VIA_MARITIMA, VIA_AEREA],
+                           index=([VIA_MARITIMA, VIA_AEREA].index(via_actual)
+                                  if via_actual in (VIA_MARITIMA, VIA_AEREA) else 0),
+                           help="Decide si el flujo dice 'Llegada a Puerto' o 'Llegada al Aeropuerto'.")
+        eta = st.date_input("Llegada (ETA)", value=eta_actual, format="DD/MM/YYYY")
         salida = st.date_input("Fecha de salida", value=salida_actual, format="DD/MM/YYYY")
         oc = ee = ""
         if con_oc_ee:
@@ -218,6 +242,7 @@ def form_editar(datos: dict):
         COL_DESC: descripcion.strip(),
         COL_CANT: cantidad.strip(),
         COL_PAIS: pais.strip(),
+        COL_VIA: via,
         COL_ETA: eta.isoformat(),
         COL_FECHA_SALIDA: salida.isoformat() if salida else "",
     }
@@ -251,7 +276,7 @@ def form_editar(datos: dict):
 @st.cache_data(show_spinner=False)
 def _plantilla_excel() -> bytes:
     buffer = io.BytesIO()
-    columnas = REQUIRED_COLUMNS + [COL_MODELO, COL_FECHA_SALIDA, COL_CLIENTE_STOCK]
+    columnas = REQUIRED_COLUMNS + [COL_MODELO, COL_FECHA_SALIDA, COL_CLIENTE_STOCK, COL_VIA]
     ejemplo = pd.DataFrame(
         [{
             COL_BL: "EGLV142653674620",
@@ -262,6 +287,7 @@ def _plantilla_excel() -> bytes:
             COL_MODELO: "ERP3.0MXLG / ERP20UXTL",
             COL_FECHA_SALIDA: "",
             COL_CLIENTE_STOCK: "",
+            COL_VIA: VIA_MARITIMA,
         }],
         columns=columnas,
     )
@@ -279,7 +305,7 @@ def form_carga_masiva(datos: dict):
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     categoria = st.selectbox("Categoría de destino (todo el archivo se carga aquí)", CATEGORIAS)
-    columnas_opcionales = [COL_FECHA_SALIDA]
+    columnas_opcionales = [COL_FECHA_SALIDA, COL_VIA]
     if categoria in CATEGORIAS_CON_MODELO:
         columnas_opcionales.append(COL_MODELO)
     if categoria in CATEGORIAS_CON_CLIENTE_STOCK:
@@ -288,7 +314,8 @@ def form_carga_masiva(datos: dict):
         columnas_opcionales += [COL_OC, COL_EE]
     st.caption("Columnas obligatorias: " + ", ".join(REQUIRED_COLUMNS) +
                ". Opcionales para esta categoría: " + ", ".join(f"'{c}'" for c in columnas_opcionales) +
-               ". El ETA puede venir en cualquier formato reconocible; se guarda como AAAA-MM-DD.")
+               f". Si no incluyes '{COL_VIA}', se asume {VIA_MARITIMA}. "
+               "El ETA puede venir en cualquier formato reconocible; se guarda como AAAA-MM-DD.")
 
     archivo = st.file_uploader("Archivo .xlsx", type=["xlsx"])
     if archivo is None:
@@ -338,6 +365,15 @@ def form_carga_masiva(datos: dict):
             (parsear_fecha(v).isoformat() if parsear_fecha(v) else "") for v in nuevo[COL_FECHA_SALIDA]
         ]
 
+    if COL_VIA in nuevo.columns:
+        # Texto libre tolerante: cualquier variante de "aéreo" (con/sin acento,
+        # mayúsculas, "avión", "air") se guarda como Aéreo; todo lo demás --
+        # incluido vacío -- se guarda como Marítimo, el modo por defecto.
+        nuevo[COL_VIA] = [
+            VIA_AEREA if _norm(v) in ("aereo", "aerea", "avion", "air", "aire") else VIA_MARITIMA
+            for v in nuevo[COL_VIA]
+        ]
+
     existentes = _bls_existentes(datos)
     bl_norm = nuevo[COL_BL].astype(str).str.strip()
     dup_archivo = bl_norm.duplicated(keep="first") & bl_norm.ne("")
@@ -363,6 +399,11 @@ def form_carga_masiva(datos: dict):
         if ok:
             registrar_log("Carga masiva", "", categoria, f"{len(nuevos)} embarque(s)")
             invalidar_caches()
+            ok_pago, msg_pago = sincronizar_pagos_con_transito(nuevos, pd.DataFrame())
+            if not ok_pago:
+                st.warning(f"Los embarques se cargaron, pero no se pudieron reflejar en Pagos "
+                           f"automáticamente ({msg_pago}). Se sincronizarán solos la próxima vez "
+                           "que alguien abra esa pestaña.")
             st.success(f"{len(nuevos)} embarque(s) cargado(s) en '{categoria}'.")
             st.rerun()
         else:
@@ -769,8 +810,9 @@ def _herramienta_salud(df: pd.DataFrame, historico: pd.DataFrame):
                               "Campo vacío en el Sheet."))
 
     # OC y EE son la referencia con la que Compras y Finanzas rastrean la carga
-    # aérea y suelta. Sin ellas, el embarque aparece en el tablero pero nadie lo
-    # puede amarrar a una orden: es el vacío más caro de los que salen aquí.
+    # suelta y la de la pestaña General. Sin ellas, el embarque aparece en el
+    # tablero pero nadie lo puede amarrar a una orden: es el vacío más caro de
+    # los que salen aquí.
     con_oc_ee = df[df["Categoria"].isin(CATEGORIAS_CON_OC_EE)]
     if not con_oc_ee.empty:
         def _vacio(valor):
@@ -781,7 +823,7 @@ def _herramienta_salud(df: pd.DataFrame, historico: pd.DataFrame):
         if not sin_ref.empty:
             por_cat = sin_ref["Categoria"].value_counts().to_dict()
             problemas.append(
-                (f"{len(sin_ref)} embarque(s) de Aéreos/Carga Suelta sin OC ni EE",
+                (f"{len(sin_ref)} embarque(s) de Carga Suelta/General sin OC ni EE",
                  ", ".join(f"{r[COL_BL] or '(sin BL)'} ({r['Categoria']} fila {r['FilaSheet']})"
                            for _, r in sin_ref.head(12).iterrows())
                  + " · Total por categoría: "

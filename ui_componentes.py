@@ -28,7 +28,7 @@ from sheets_io import (
     registrar_log, sla_etapas,
 )
 from logica import (
-    CATEGORIAS_CON_CLIENTE_STOCK, CATEGORIAS_CON_MODELO, CATEGORIAS_CON_OC_EE, CATEGORIA_AEREA, EST_PROXIMO,
+    CATEGORIAS_CON_OC_EE, CATEGORIA_AEREA, EST_PROXIMO,
     EST_PUERTO, EST_RETRASADO, EST_SIN_FECHA, EST_TRANSITO, ETIQUETA_CORTA_ETAPA,
     ICONO_ALMACEN, ICONO_ETAPA, PALETA_PAISES, SEMANAS_HORIZONTE, STATUS_COLOR,
     STATUS_ORDER, UMBRAL_PROXIMO,
@@ -632,26 +632,21 @@ def _ref_oc_ee(fila) -> str:
 
 
 def _celda_referencia(r) -> str:
-    """La 3ra columna de la lista. Ya NO depende de qué categoría 'debería'
-    traer cada dato — mira directo las dos columnas (Modelo/Serie y Cliente/
-    Stock) y muestra lo que de verdad esté lleno en esa fila. Antes, Carga
-    Suelta (que no está en la lista de categorías 'con Modelo' ni 'con
-    Cliente/Stock') cortaba directo a un guion sin siquiera mirar si Cliente/
-    Stock tenía algo cargado — así que un dato real en el Sheet nunca llegaba
-    a la plataforma para esa categoría.
-
-    Si hay Modelo/Serie, manda como dato principal y Cliente/Stock (si lo hay)
-    va debajo, como antes. Si Modelo/Serie está vacío pero Cliente/Stock sí
-    tiene algo, Cliente/Stock pasa a ser el dato principal. Solo si ninguno de
-    los dos tiene nada sale el guion."""
+    """La 3ra columna de la lista. Antes elegía UN dato para mostrar (Modelo/
+    Serie si había, si no Cliente/Stock, si no un guion bajo un encabezado
+    genérico 'Referencia' cuando la vista mezclaba categorías) — y eso
+    escondía el dato que no ganaba la elección, aunque estuviera lleno en el
+    Sheet. Ahora se muestran los DOS, siempre, cada uno con su propia
+    etiqueta: si alguno está vacío en esa fila, se ve un guion solo en ese,
+    nunca se oculta la fila entera ni el otro dato."""
     modelo = str(r.get(COL_MODELO, "") or "").strip()
     cliente = str(r.get(COL_CLIENTE_STOCK, "") or "").strip()
-    if modelo:
-        extra = f'<div class="c-ref">{esc(cliente)}</div>' if cliente else ""
-        return f'<div class="c-suave" data-l="Modelo/Serie">{esc(modelo)}{extra}</div>'
-    if cliente:
-        return f'<div class="c-suave" data-l="Cliente/Stock">{esc(cliente)}</div>'
-    return '<div class="c-suave" data-l="Referencia">—</div>'
+    return (
+        '<div class="c-suave">'
+        f'<div class="c-ref"><b>Modelo/Serie:</b> {esc(modelo) if modelo else "—"}</div>'
+        f'<div class="c-ref"><b>Cliente:</b> {esc(cliente) if cliente else "—"}</div>'
+        "</div>"
+    )
 
 
 def render_lista(df: pd.DataFrame):
@@ -661,16 +656,9 @@ def render_lista(df: pd.DataFrame):
                     unsafe_allow_html=True)
         return
 
-    categorias_presentes = set(df["Categoria"]) if "Categoria" in df.columns else set()
-    if categorias_presentes and categorias_presentes <= set(CATEGORIAS_CON_MODELO):
-        encabezado_col3 = "Modelo/Serie"
-    elif categorias_presentes and categorias_presentes <= set(CATEGORIAS_CON_CLIENTE_STOCK):
-        encabezado_col3 = "Cliente/Stock"
-    else:
-        encabezado_col3 = "Referencia"
     partes = [
         '<div class="lista"><div class="fila-head">'
-        f"<div>BL</div><div>Descripción</div><div>{encabezado_col3}</div><div>Cant.</div>"
+        "<div>BL</div><div>Descripción</div><div>Modelo/Serie · Cliente</div><div>Cant.</div>"
         "<div>País</div><div>ETA</div><div>Estado</div></div>"
     ]
     for _, r in df.iterrows():

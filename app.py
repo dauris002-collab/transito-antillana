@@ -58,6 +58,7 @@ from vistas_admin import (
     form_alta_manual, form_carga_masiva, form_editar, herramientas, mostrar_historico,
 )
 from pagos import panel_pagos
+from analitica import panel_analitica
 
 
 st.set_page_config(
@@ -281,9 +282,9 @@ def main():
 
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     es_admin = st.session_state.rol == "admin"
-    secciones = (["Dashboard", "Agregar", "Editar", "Carga masiva", "Histórico",
+    secciones = (["Dashboard", "Analítica", "Agregar", "Editar", "Carga masiva", "Histórico",
                   "Estatus de Pago", "Herramientas"]
-                 if es_admin else ["Dashboard", "Histórico", "Estatus de Pago"])
+                 if es_admin else ["Dashboard", "Analítica", "Histórico", "Estatus de Pago"])
 
     # Navegación con estado propio en vez de st.tabs: además de no ejecutar el
     # cuerpo de todas las secciones en cada rerun, permite saltar por código
@@ -326,6 +327,8 @@ def main():
 
     if seccion == "Dashboard":
         mostrar_dashboard(datos)
+    elif seccion == "Analítica":
+        panel_analitica(datos)
     elif seccion == "Agregar":
         form_alta_manual(datos)
     elif seccion == "Editar":

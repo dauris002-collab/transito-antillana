@@ -71,6 +71,23 @@ def etiqueta_etapa(etapa: str, via="") -> str:
     return ETIQUETA_CORTA_ETAPA.get(etapa, etapa)
 
 
+def etiqueta_etapa_grupo(etapa: str, hay_aereo: bool, hay_maritimo: bool) -> str:
+    """Nombre de una etapa para un RESUMEN o FILTRO que puede agrupar varias
+    filas a la vez (chips de conteo, el selector "Etapa" de la lista) -- a
+    diferencia de etiqueta_etapa(), que es por una sola fila y por eso puede
+    decidir con certeza si dice "puerto" o "aeropuerto". Un resumen que junta
+    filas de los dos modos de transporte no puede: si son todas aéreas dice
+    "aeropuerto", si hay de las dos dice las dos formas, y si no hay ninguna
+    aérea se queda como está."""
+    if etapa != ETAPAS_PUERTO[0]:
+        return ETIQUETA_CORTA_ETAPA.get(etapa, etapa)
+    if hay_aereo and hay_maritimo:
+        return "Llegada a puerto/aeropuerto"
+    if hay_aereo:
+        return "Llegada al aeropuerto"
+    return ETIQUETA_CORTA_ETAPA.get(etapa, etapa)
+
+
 ETIQUETA_CORTA_ETAPA = {
     "Llegada a puerto": "Llegada a puerto",
     "Recepción y declaración": "Recepción/declaración",

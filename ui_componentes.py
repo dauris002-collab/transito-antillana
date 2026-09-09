@@ -473,7 +473,7 @@ def _pastillas_mes_eta(df_todo: pd.DataFrame):
     if not claves:
         return
 
-    st.markdown('<div class="nav-rotulo">En tránsito por mes de llegada (ETA)</div>',
+    st.markdown('<div class="nav-rotulo">ETA por Mes</div>',
                 unsafe_allow_html=True)
     estilos = "".join(
         f'.st-key-mespill_{_slug_css(clave)} button {{'

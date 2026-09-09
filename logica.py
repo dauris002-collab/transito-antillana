@@ -346,12 +346,56 @@ def _columna_fechas(df: pd.DataFrame, columna: str) -> list:
     return [parsear_fecha(v) for v in df[columna]]
 
 
+def _clave_mes_eta(f) -> str:
+    """Clave estable y ordenable para el mes de una ETA: 'AAAA-MM', o 'sin_eta'
+    si la fecha no se pudo interpretar. Una sola fuente de verdad tanto para
+    agrupar el conteo por mes como para filtrar la lista por ese mismo mes."""
+    return f"{f.year:04d}-{f.month:02d}" if f else "sin_eta"
+
+
+def _etiqueta_mes_eta(clave: str) -> str:
+    """'2026-09' -> 'sep 2026'. 'sin_eta' se muestra tal cual la etiqueta fija."""
+    if clave == "sin_eta":
+        return "Sin ETA"
+    anio, mes = clave.split("-")
+    return f"{MESES_ES_CORTO[int(mes)]} {anio}"
+
+
+def contar_activos_por_mes_eta(df: pd.DataFrame) -> dict:
+    """Cuenta embarques ACTIVOS por mes de ETA, en vivo -- no se guarda un mes
+    fijo en ningún lado: si la ETA de una fila cambia de fecha, el conteo se
+    recalcula solo la próxima vez que se llame esta función.
+
+    Cuenta TODO lo activo sin importar la etapa (sin declarar, en trámite,
+    etc.) -- lo único que sale del conteo es lo ya archivado, porque eso ya
+    salió del tablero. Un embarque atrasado con ETA de un mes anterior sigue
+    contando en SU mes, no en un bucket aparte de 'vencidos': así el número
+    de un mes pasado que se mantiene alto es la señal de que hay atraso
+    acumulado ahí. Lo que no tiene un ETA interpretable va bajo la clave
+    'sin_eta', nunca se pierde del total.
+
+    Devuelve {clave_mes: cantidad, ...} ya ordenado cronológicamente, con
+    'sin_eta' (si existe) al final. clave_mes es 'AAAA-MM' -- usa
+    _etiqueta_mes_eta() para el texto que se le muestra al usuario."""
+    if df is None or df.empty or COL_ETA not in df.columns:
+        return {}
+    conteos = {}
+    for valor in df[COL_ETA]:
+        clave = _clave_mes_eta(parsear_fecha(valor))
+        conteos[clave] = conteos.get(clave, 0) + 1
+    meses = sorted(k for k in conteos if k != "sin_eta")
+    ordenado = {k: conteos[k] for k in meses}
+    if "sin_eta" in conteos:
+        ordenado["sin_eta"] = conteos["sin_eta"]
+    return ordenado
+
+
 def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     """Agrega estado, fechas parseadas, contadores, alertas de cuello de botella
     y clave de orden operativo. Se llama UNA vez por refresco sobre la tabla
     completa; las vistas por categoría son rebanadas de este resultado."""
     df = df.copy()
-    calculadas = ["EstadoTexto", "DiasRel", "ETAFecha", "Prioridad", "OrdenSec", "ValorNum",
+    calculadas = ["EstadoTexto", "DiasRel", "ETAFecha", "MesETA", "Prioridad", "OrdenSec", "ValorNum",
                   "DiasTransito", "DiasEnPuerto", "DiasEnEtapa", "EtapaActual", "EtapaIdx",
                   "Alerta", "AlertaDias", "Buscar", "F_Salida", "F_Puerto", "F_Declaracion",
                   "BLRepetido", "FlujoRaro"]
@@ -369,6 +413,11 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     df["ETAFecha"] = etas
     df["EstadoTexto"] = [c[0] for c in calculado]
     df["DiasRel"] = [c[1] for c in calculado]
+    # Mes de la ETA, en vivo -- alimenta tanto las pastillas de "en tránsito
+    # por mes" en el Dashboard como el filtro "Mes ETA" de la lista. No se
+    # guarda en el Sheet: se recalcula cada vez que se enriquece, así que si
+    # alguien mueve la ETA de una fila, el mes al que pertenece se mueve solo.
+    df["MesETA"] = [_clave_mes_eta(f) for f in etas]
     df["Prioridad"] = df["EstadoTexto"].map(PRIORIDAD_ESTADO).fillna(9).astype(int)
 
     salidas = _columna_fechas(df, COL_FECHA_SALIDA)

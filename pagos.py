@@ -33,7 +33,7 @@ from sheets_io import (
     registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
 )
 from logica import PALETA_PAISES, enriquecer_pagos, esc, resumen_pagos, totales_conceptos
-from ui_componentes import COLOR_TOTAL, CUSTOM_CSS, _logo_base64, rerun_fragmento
+from ui_componentes import CUSTOM_CSS, _logo_base64, rerun_fragmento
 
 
 COLOR_SOBRECOSTO = "#991B1B"
@@ -77,9 +77,9 @@ PAGOS_CSS = """
              white-space:nowrap; }
 .pago-totales { display:flex; flex-wrap:wrap; justify-content:center; align-items:baseline; gap:28px;
                 margin-top:6px; }
-.pago-total-etq { font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#6B7280;
+.pago-total-etq { font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#0C447C;
                   display:block; text-align:center; }
-.pago-total-val { font-size:1.2rem; font-weight:800; color:#111827; display:block; text-align:center; }
+.pago-total-val { font-size:1.2rem; font-weight:400; color:#111827; display:block; text-align:center; }
 .pago-cerrado { text-align:center; color:#9CA3AF; font-size:0.78rem; margin-top:10px; }
 </style>
 """
@@ -167,7 +167,10 @@ def _hay_bls_sin_sincronizar(activos: pd.DataFrame, historico: pd.DataFrame, pag
 # ---------------------------------------------------------------------------
 # DASHBOARD (viewer + admin)
 # ---------------------------------------------------------------------------
-COLOR_ABIERTOS = "#2E86DE"
+COLOR_ABIERTOS = "#EA580C"
+
+
+COLOR_PAGADOS = "#2E7D32"  # mismo verde que ya usa el badge "Pagado" de cada tarjeta, ver _html_expediente
 
 
 def _aplicar_filtro_kpi(df: pd.DataFrame, filtro: str) -> pd.DataFrame:
@@ -217,7 +220,7 @@ def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
     prom = resumen["dias_mora_promedio"]
     sobre = resumen["sobrecosto"]
     kpis = [
-        ("Pagados", str(resumen["n_pagados"]), COLOR_TOTAL, "cerrados"),
+        ("Pagados", str(resumen["n_pagados"]), COLOR_PAGADOS, "cerrados"),
         ("Pendientes", str(resumen["n_abiertos"]), COLOR_ABIERTOS, "abiertos"),
         ("Mora promedio", f"{prom:.0f} d" if prom is not None else "—", COLOR_MORA_PROMEDIO, "con_mora"),
         ("Sobrecosto acumulado", f"USD {sobre['USD']:,.0f} · DOP {sobre['DOP']:,.0f}",

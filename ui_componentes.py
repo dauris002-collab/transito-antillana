@@ -32,7 +32,7 @@ from logica import (
     EST_PUERTO, EST_RETRASADO, EST_SIN_FECHA, EST_TRANSITO, ETIQUETA_CORTA_ETAPA,
     ICONO_ALMACEN, ICONO_ETAPA, PALETA_PAISES, SEMANAS_HORIZONTE, STATUS_COLOR,
     STATUS_ORDER, UMBRAL_PROXIMO,
-    _cumple_filtro_puerto, _en_proceso, _etiquetas_desambiguadas, _lleno,
+    _cumple_filtro_puerto, _en_proceso, _etiquetas_desambiguadas, _etiqueta_mes_eta, _lleno,
     clave_fila, contar_recibidas_mes, enriquecer, es_aereo,
     esc, etiqueta_etapa, fechas_flujo_de_fila, formato_corto, lugar_de,
     ordenar_vista, resumen_atraso_puerto, texto_dias, texto_estado,
@@ -448,6 +448,63 @@ def rerun_fragmento():
         st.rerun(scope="fragment")
     except Exception:
         st.rerun()
+
+
+def _pastillas_mes_eta(df_todo: pd.DataFrame):
+    """Pastillas clicables con el conteo de embarques ACTIVOS por mes de ETA,
+    consolidado de las 9 categorías -- para dejar de entrar pestaña por
+    pestaña a contar cuánto llega cada mes. Cuenta todo lo activo, sin
+    importar la etapa (sin declarar, en trámite, etc.); lo ya archivado no
+    entra, porque salió del tablero.
+
+    El conteo se lee directo de la columna MesETA que ya calculó enriquecer()
+    -- en vivo, así que si alguien mueve la ETA de una fila, la próxima vez
+    que se dibuje esto ya sale en su mes correcto sin que nadie tenga que
+    tocar nada.
+
+    Clic en una pastilla pone la categoría en 'Todos' y precarga el filtro
+    'Mes ETA' de esa vista con el mes clickeado, para no tener que ir a
+    buscarlo a mano en el selector de abajo."""
+    if df_todo.empty or "MesETA" not in df_todo.columns:
+        return
+    conteo = df_todo["MesETA"].value_counts().to_dict()
+    meses = sorted(k for k in conteo if k != "sin_eta")
+    claves = meses + (["sin_eta"] if "sin_eta" in conteo else [])
+    if not claves:
+        return
+
+    st.markdown('<div class="nav-rotulo">En tránsito por mes de llegada (ETA)</div>',
+                unsafe_allow_html=True)
+    estilos = "".join(
+        f'.st-key-mespill_{_slug_css(clave)} button {{'
+        f'border:1.5px solid #0C447C !important; border-radius:999px !important;'
+        f'background:#fff !important; font-weight:700 !important;}} '
+        f'.st-key-mespill_{_slug_css(clave)} button p {{color:#0C447C !important;}} '
+        for clave in claves
+    )
+    st.markdown(f"<style>{estilos}</style>", unsafe_allow_html=True)
+
+    def _click_pastilla(clave_mes):
+        # OJO: esto tiene que ir en on_click, no en un `if st.button(...)`.
+        # selector_horizontal() ya instanció el widget con key "categoria_activa"
+        # ANTES de que estas pastillas se dibujen (se llama primero en
+        # mostrar_dashboard), y Streamlit prohíbe tocar el session_state de un
+        # widget después de instanciado EN EL MISMO rerun
+        # (StreamlitWidgetAlreadyInstantiatedError). on_click corre en la fase
+        # previa, antes de que el script se re-ejecute de arriba a abajo, así
+        # que para cuando selector_horizontal() vuelva a instanciar el widget,
+        # el session_state ya trae el valor nuevo -- eso sí es válido.
+        st.session_state["categoria_activa"] = "Todos"
+        st.session_state["mes_eta_Todos"] = clave_mes
+
+    cols = st.columns(len(claves))
+    for col, clave in zip(cols, claves):
+        etiqueta = f"{_etiqueta_mes_eta(clave)} · {conteo[clave]}"
+        with col:
+            with st.container(key=f"mespill_{_slug_css(clave)}"):
+                st.button(etiqueta, key=f"btn_mespill_{_slug_css(clave)}", width="stretch",
+                         on_click=_click_pastilla, args=(clave,))
+    st.write("")
 
 
 # ---------------------------------------------------------------------------
@@ -1416,15 +1473,25 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     pais_sel = f2.selectbox("País", paises, key=f"pais_{tab_key}", label_visibility="collapsed")
     estado_sel = f3.selectbox("Estado", estados, key=f"estado_{tab_key}", label_visibility="collapsed")
 
-    f4, f5, f6 = st.columns([1, 1, 1])
-    etapa_sel = f4.selectbox("Etapa", etapas, key=f"etapa_filtro_{tab_key}")
-    orden_sel = f5.selectbox("Ordenar por", criterios, key=f"orden_{tab_key}")
-    with f6:
+    # Mes ETA: opciones limitadas a los meses que de verdad aparecen en ESTA
+    # categoría/vista -- así el selector nunca ofrece un mes que aquí daría
+    # lista vacía. Si llega precargado desde una pastilla de "en tránsito por
+    # mes" (ver _pastillas_mes_eta) y ese mes no existe en esta vista en
+    # particular, Streamlit lo ignora y cae al primer valor ("Todos"), no truena.
+    meses_presentes = sorted(k for k in df["MesETA"].unique() if k != "sin_eta")
+    mes_opciones = ["Todos"] + meses_presentes + (["sin_eta"] if "sin_eta" in df["MesETA"].unique() else [])
+
+    f4, f5, f6, f7 = st.columns([1, 1, 1, 1])
+    mes_sel = f4.selectbox("Mes ETA", mes_opciones, key=f"mes_eta_{tab_key}",
+                           format_func=lambda k: "Todos" if k == "Todos" else _etiqueta_mes_eta(k))
+    etapa_sel = f5.selectbox("Etapa", etapas, key=f"etapa_filtro_{tab_key}")
+    orden_sel = f6.selectbox("Ordenar por", criterios, key=f"orden_{tab_key}")
+    with f7:
         st.write("")
         st.write("")
         if st.button("Limpiar filtros", key=f"limpiar_{tab_key}", width="stretch"):
             for k in (f"busca_{tab_key}", f"pais_{tab_key}", f"estado_{tab_key}",
-                      f"orden_{tab_key}", f"etapa_filtro_{tab_key}"):
+                      f"orden_{tab_key}", f"etapa_filtro_{tab_key}", f"mes_eta_{tab_key}"):
                 st.session_state.pop(k, None)
             st.session_state.pop(f"firma_pais_{tab_key}", None)
             rerun_fragmento()
@@ -1434,6 +1501,8 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
         filtrado = filtrado[filtrado[COL_PAIS] == pais_sel]
     if estado_sel != "Todos":
         filtrado = filtrado[filtrado["EstadoTexto"] == estado_sel]
+    if mes_sel != "Todos":
+        filtrado = filtrado[filtrado["MesETA"] == mes_sel]
     if etapa_sel == "Sin confirmar llegada":
         filtrado = filtrado[filtrado["EtapaActual"].astype(str).str.strip() == ""]
     elif etapa_sel != "Todas":
@@ -1586,6 +1655,9 @@ def mostrar_dashboard(datos: dict):
         st.divider()
         _panel_en_proceso(en_proceso_df, rol, contexto=VISTA_EN_PROCESO_PUERTO)
         return
+
+    if seleccion == "Todos":
+        _pastillas_mes_eta(df_todo)
 
     sub = df_todo if seleccion == "Todos" else df_todo[df_todo["Categoria"] == seleccion]
     _render_categoria(sub, rol, seleccion, recibidas_mes)

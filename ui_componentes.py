@@ -21,7 +21,7 @@ from sheets_io import (
     CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
     COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_LLEGO, COL_MODELO,
     COL_OC, COL_PAIS, COL_VIA, ETAPA_ALMACEN, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES,
-    MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO, VIA_MARITIMA,
+    MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO, VIA_AEREA, VIA_MARITIMA,
     _norm, _slug_css, columnas_extra, confirmar_llegada, costos_puerto,
     eliminar_embarque, es_numero, fijar_fecha_declaracion, formato_dinero,
     formato_eta, hoy_rd, invalidar_caches, marcar_como_recibido, marcar_no_llego,
@@ -29,11 +29,11 @@ from sheets_io import (
 )
 from logica import (
     CATEGORIAS_CON_OC_EE, EST_PROXIMO,
-    EST_PUERTO, EST_RETRASADO, EST_SIN_FECHA, EST_TRANSITO, ETIQUETA_CORTA_ETAPA,
+    EST_PUERTO, EST_RETRASADO, EST_SIN_FECHA, EST_TRANSITO,
     ICONO_ALMACEN, ICONO_ETAPA, PALETA_PAISES, SEMANAS_HORIZONTE, STATUS_COLOR,
     STATUS_ORDER, UMBRAL_PROXIMO,
     _cumple_filtro_puerto, _en_proceso, _etiquetas_desambiguadas, _etiqueta_mes_eta, _lleno,
-    clave_fila, contar_recibidas_mes, enriquecer, es_aereo, etiqueta_etapa_grupo,
+    clave_fila, contar_recibidas_mes, enriquecer, etiqueta_etapa_grupo,
     esc, etiqueta_etapa, fechas_flujo_de_fila, formato_corto, lugar_de,
     ordenar_vista, resumen_atraso_puerto, texto_dias, texto_estado,
 )
@@ -589,10 +589,13 @@ def _mezcla_via(df: pd.DataFrame) -> tuple:
     """(hay_aereo, hay_maritimo) de un conjunto de filas -- alimenta
     etiqueta_etapa_grupo() para que un resumen o filtro que junta embarques de
     los dos modos de transporte sepa si debe decir "puerto", "aeropuerto" o
-    ambos."""
-    if df.empty or COL_VIA not in df.columns:
+    ambos. Usa la columna "EsAerea" (ya resuelta con respaldo por categoría en
+    enriquecer(), ver es_aereo_fila en logica.py), no el valor crudo de
+    Via_Transporte -- si no, una fila aérea sin ese campo lleno se contaría
+    como marítima aquí aunque el resto de la pantalla ya la trate como aérea."""
+    if df.empty or "EsAerea" not in df.columns:
         return False, True
-    aereo = df[COL_VIA].apply(es_aereo)
+    aereo = df["EsAerea"].astype(bool)
     return bool(aereo.any()), bool((~aereo).any())
 
 
@@ -658,7 +661,7 @@ def html_contadores(fila) -> str:
     if es_numero(dias_puerto):
         # El tiempo total en puerto abarca las dos etapas, así que se compara
         # contra la suma de sus plazos, no contra el de una sola.
-        lugar = lugar_de(fila.get(COL_VIA, ""))
+        lugar = lugar_de(fila.get("EsAerea", False))
         clase = _clase_contador(dias_puerto, sum(v for k, v in sla.items()
                                                  if k in SLA_ETAPA_DEFECTO))
         piezas.append(_chip(clase, f"En {lugar}", dias_puerto))
@@ -715,14 +718,14 @@ def render_lista(df: pd.DataFrame):
     ]
     for _, r in df.iterrows():
         color = STATUS_COLOR.get(r["EstadoTexto"], "#6B7280")
-        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], r.get(COL_VIA, ""))
+        es_aerea_fila = bool(r.get("EsAerea", False))
+        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], es_aerea_fila)
         etapa = str(r.get("EtapaActual", "")).strip()
         badge_etapa = ""
         if etapa:
-            icono = "✈️" if (etapa == ETAPAS_PUERTO[0] and es_aereo(r.get(COL_VIA, ""))) \
-                else ICONO_ETAPA[etapa]
+            icono = "✈️" if (etapa == ETAPAS_PUERTO[0] and es_aerea_fila) else ICONO_ETAPA[etapa]
             badge_etapa = (f'<span class="badge linea">{icono} '
-                           f'{esc(etiqueta_etapa(etapa, r.get(COL_VIA, "")))}</span>')
+                           f'{esc(etiqueta_etapa(etapa, es_aerea_fila))}</span>')
         alerta = str(r.get("Alerta", "") or "").strip()
         badge_alerta = f'<span class="badge" style="background:{COLOR_ALERTA};">⚠ {esc(alerta)}</span>' if alerta else ""
         if r.get("BLRepetido"):
@@ -858,7 +861,7 @@ def _ficha_embarque(fila):
     agregado en el Sheet y que la app no gestiona."""
     categoria = fila["Categoria"]
     via = str(fila.get(COL_VIA, "") or "").strip()
-    es_aerea = es_aereo(via)
+    es_aerea = bool(fila.get("EsAerea", False))
     campos = [
         ("BL", fila[COL_BL]),
         ("Descripción", fila[COL_DESC]),
@@ -869,9 +872,9 @@ def _ficha_embarque(fila):
         ("Cantidad", fila[COL_CANT]),
         ("País de origen", fila[COL_PAIS]),
         ("Categoría", categoria),
-        ("Vía", via or VIA_MARITIMA),
+        ("Vía", VIA_AEREA if es_aerea else (via or VIA_MARITIMA)),
         ("ETA", formato_eta(fila[COL_ETA])),
-        ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"], via)),
+        ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"], es_aerea)),
     ]
     if categoria in CATEGORIAS_CON_OC_EE:
         if str(fila.get(COL_OC, "")).strip():
@@ -902,7 +905,7 @@ def _ficha_embarque(fila):
             if fecha:
                 campos.append((rotulos[nombre_etapa], formato_eta(fecha)))
         if es_numero(fila.get("DiasEnPuerto")):
-            campos.append((f"En {lugar_de(via)}", texto_dias(fila["DiasEnPuerto"])))
+            campos.append((f"En {lugar_de(es_aerea)}", texto_dias(fila["DiasEnPuerto"])))
     if str(fila.get("Alerta", "") or "").strip():
         campos.append(("⚠ Atención", fila["Alerta"]))
 
@@ -983,9 +986,10 @@ def _panel_alertas(df: pd.DataFrame, tope: int = 6):
         return
     con_alerta = con_alerta.sort_values("AlertaDias", ascending=False, na_position="last")
 
+    hay_aereo, hay_maritimo = _mezcla_via(con_alerta)
     resumen = {}
     for etapa, texto in zip(con_alerta["EtapaActual"], con_alerta["Alerta"]):
-        clave = ETIQUETA_CORTA_ETAPA.get(etapa, "Sin confirmar llegada") if etapa else "Sin confirmar llegada"
+        clave = etiqueta_etapa_grupo(etapa, hay_aereo, hay_maritimo) if etapa else "Sin confirmar llegada"
         resumen[clave] = resumen.get(clave, 0) + 1
     detalle = " · ".join(f"{n} en {nombre.lower()}" for nombre, n in resumen.items())
 
@@ -1114,7 +1118,7 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
         bl = str(fila[COL_BL]).strip()
         categoria = fila["Categoria"]
         etapa = str(fila.get("EtapaActual", "")).strip()
-        es_aerea = es_aereo(fila.get(COL_VIA, ""))
+        es_aerea = bool(fila.get("EsAerea", False))
         clave = clave_fila(contexto, categoria, bl or "sin_bl", fila.get("FilaSheet", ""))
         alerta = str(fila.get("Alerta", "") or "").strip()
         # Con dos filas del mismo BL es fácil trabajar sobre la equivocada y creer
@@ -1217,7 +1221,8 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
     def _fila_confirmacion(r, ya_retrasado: bool):
         bl = str(r[COL_BL]).strip()
         categoria = r["Categoria"]
-        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], r.get("Categoria", ""))
+        es_aerea = bool(r.get("EsAerea", False))
+        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], es_aerea)
         color = STATUS_COLOR.get(r["EstadoTexto"], "#6B7280")
         c1, c2, c3 = st.columns([3.2, 1.3, 1.5])
         c1.markdown(
@@ -1230,7 +1235,6 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
             c2.caption("Sin BL: no se puede gestionar")
             return
         clave = clave_fila(tab_key, categoria, bl, r.get("FilaSheet", ""))
-        es_aerea = es_aereo(r.get(COL_VIA, ""))
         texto_si = "Sí, llegó al aeropuerto" if es_aerea else "Sí, llegó a puerto"
         if c2.button(texto_si, key=f"si_llego_{clave}", type="primary", width="stretch"):
             ok, mensaje = confirmar_llegada(bl, categoria, fila_sugerida=r.get("FilaSheet"))
@@ -1283,13 +1287,12 @@ def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
         "Modelo/Serie": df[COL_MODELO] if COL_MODELO in df.columns else "",
         "Cantidad": df[COL_CANT],
         "País de origen": df[COL_PAIS],
-        "Vía": (df[COL_VIA].replace("", VIA_MARITIMA) if COL_VIA in df.columns
-               else VIA_MARITIMA),
+        "Vía": [VIA_AEREA if aerea else (str(v).strip() or VIA_MARITIMA) for aerea, v in
+               zip(df["EsAerea"], df[COL_VIA] if COL_VIA in df.columns else [""] * len(df))],
         "ETA": [formato_eta(v) for v in df[COL_ETA]],
         "¿Llegó?": df[COL_LLEGO] if COL_LLEGO in df.columns else "",
-        "Estado": [texto_estado(e, d, v) for e, d, v in
-                   zip(df["EstadoTexto"], df["DiasRel"],
-                       df[COL_VIA] if COL_VIA in df.columns else [""] * len(df))],
+        "Estado": [texto_estado(e, d, a) for e, d, a in
+                   zip(df["EstadoTexto"], df["DiasRel"], df["EsAerea"])],
         "Etapa": df["EtapaActual"],
         "Categoría": df["Categoria"],
         "Salida": [formato_eta(f) if f else "" for f in df["F_Salida"]],
@@ -1583,11 +1586,12 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
     clave = clave_fila("acc", tab_key, bl, n_fila)
 
     if etapa:
+        es_aerea_fila = bool(fila.get("EsAerea", False))
         st.markdown(html_flujo(fechas_flujo_de_fila(fila), etapa,
-                               es_aerea=es_aereo(fila.get(COL_VIA, ""))) + html_contadores(fila),
+                               es_aerea=es_aerea_fila) + html_contadores(fila),
                     unsafe_allow_html=True)
     elif fila["EstadoTexto"] in (EST_PUERTO, EST_RETRASADO):
-        texto = "'Sí, llegó al aeropuerto'" if es_aereo(fila.get(COL_VIA, "")) else "'Sí, llegó a puerto'"
+        texto = "'Sí, llegó al aeropuerto'" if bool(fila.get("EsAerea", False)) else "'Sí, llegó a puerto'"
         st.caption(f"Llegada sin confirmar todavía — usa {texto} en la sección de confirmación, arriba.")
     st.write("")
 

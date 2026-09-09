@@ -33,7 +33,7 @@ from logica import (
     ICONO_ALMACEN, ICONO_ETAPA, PALETA_PAISES, SEMANAS_HORIZONTE, STATUS_COLOR,
     STATUS_ORDER, UMBRAL_PROXIMO,
     _cumple_filtro_puerto, _en_proceso, _etiquetas_desambiguadas, _etiqueta_mes_eta, _lleno,
-    clave_fila, contar_recibidas_mes, enriquecer, es_aereo,
+    clave_fila, contar_recibidas_mes, enriquecer, es_aereo, etiqueta_etapa_grupo,
     esc, etiqueta_etapa, fechas_flujo_de_fila, formato_corto, lugar_de,
     ordenar_vista, resumen_atraso_puerto, texto_dias, texto_estado,
 )
@@ -585,15 +585,31 @@ def html_flujo(fechas: dict, etapa_actual: str, es_aerea: bool = False) -> str:
     return "".join(partes)
 
 
-def html_chips(conteos: dict, resaltar: str = "") -> str:
+def _mezcla_via(df: pd.DataFrame) -> tuple:
+    """(hay_aereo, hay_maritimo) de un conjunto de filas -- alimenta
+    etiqueta_etapa_grupo() para que un resumen o filtro que junta embarques de
+    los dos modos de transporte sepa si debe decir "puerto", "aeropuerto" o
+    ambos."""
+    if df.empty or COL_VIA not in df.columns:
+        return False, True
+    aereo = df[COL_VIA].apply(es_aereo)
+    return bool(aereo.any()), bool((~aereo).any())
+
+
+def html_chips(conteos: dict, resaltar: str = "", hay_aereo: bool = False, hay_maritimo: bool = True) -> str:
     """Resumen por etapa como chips que se acomodan solos. Reemplaza a varios
-    st.metric en fila, que en un celular de 380px quedaban ilegibles."""
+    st.metric en fila, que en un celular de 380px quedaban ilegibles.
+
+    `hay_aereo`/`hay_maritimo` describen el CONJUNTO que se está resumiendo
+    (puede mezclar embarques aéreos y marítimos a la vez, a diferencia de una
+    fila individual): con ellos, "Llegada a puerto" se adapta a "Llegada al
+    aeropuerto" o a ambos, según lo que de verdad haya en ese conjunto."""
     piezas = ['<div class="chips">']
     for etapa in ETAPAS_PUERTO:
         clase = "chip on" if etapa == resaltar else "chip"
         piezas.append(
             f'<span class="{clase}">{ICONO_ETAPA[etapa]} '
-            f'{esc(ETIQUETA_CORTA_ETAPA.get(etapa, etapa))} <b>{int(conteos.get(etapa, 0))}</b></span>'
+            f'{esc(etiqueta_etapa_grupo(etapa, hay_aereo, hay_maritimo))} <b>{int(conteos.get(etapa, 0))}</b></span>'
         )
     piezas.append("</div>")
     return "".join(piezas)
@@ -1431,7 +1447,9 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     en_proceso = _en_proceso(df)
     if mostrar_en_proceso and not en_proceso.empty:
         st.markdown("**En proceso en puerto**")
-        st.markdown(html_chips(en_proceso["EtapaActual"].value_counts().to_dict()), unsafe_allow_html=True)
+        hay_aereo, hay_maritimo = _mezcla_via(en_proceso)
+        st.markdown(html_chips(en_proceso["EtapaActual"].value_counts().to_dict(),
+                               hay_aereo=hay_aereo, hay_maritimo=hay_maritimo), unsafe_allow_html=True)
         html_atraso_puerto(en_proceso, contexto=tab_key)
         _panel_en_proceso(en_proceso, rol, contexto=tab_key)
 
@@ -1441,6 +1459,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     paises = ["Todos"] + sorted({p for p in df[COL_PAIS] if str(p).strip()})
     estados = ["Todos"] + [e for e in STATUS_ORDER]
     etapas = ["Todas", "Sin confirmar llegada"] + list(ETAPAS_PUERTO)
+    hay_aereo_cat, hay_maritimo_cat = _mezcla_via(df)
     criterios = ["Urgencia", "Más días detenido", "ETA más próximo", "ETA más lejano",
                  "BL", "País", "Descripción"]
     if valor_total:
@@ -1469,7 +1488,9 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
         f4, f5, f6, f7 = st.columns([1, 1, 1, 1])
         mes_sel = f4.selectbox("Mes ETA", mes_opciones, key=f"mes_eta_{tab_key}",
                                format_func=lambda k: "Todos" if k == "Todos" else _etiqueta_mes_eta(k))
-    etapa_sel = f5.selectbox("Etapa", etapas, key=f"etapa_filtro_{tab_key}")
+    etapa_sel = f5.selectbox("Etapa", etapas, key=f"etapa_filtro_{tab_key}",
+                             format_func=lambda e: (etiqueta_etapa_grupo(e, hay_aereo_cat, hay_maritimo_cat)
+                                                    if e in ETAPAS_PUERTO else e))
     orden_sel = f6.selectbox("Ordenar por", criterios, key=f"orden_{tab_key}")
     with f7:
         st.write("")
@@ -1641,7 +1662,9 @@ def mostrar_dashboard(datos: dict):
     )
 
     if seleccion == VISTA_EN_PROCESO_PUERTO:
-        st.markdown(html_chips(en_proceso_df["EtapaActual"].value_counts().to_dict()),
+        hay_aereo, hay_maritimo = _mezcla_via(en_proceso_df)
+        st.markdown(html_chips(en_proceso_df["EtapaActual"].value_counts().to_dict(),
+                               hay_aereo=hay_aereo, hay_maritimo=hay_maritimo),
                     unsafe_allow_html=True)
         html_atraso_puerto(en_proceso_df, contexto=VISTA_EN_PROCESO_PUERTO)
         _panel_alertas(en_proceso_df)

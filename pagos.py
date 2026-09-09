@@ -78,9 +78,11 @@ PAGOS_CSS = """
 .pago-totales { display:flex; flex-wrap:wrap; justify-content:center; align-items:baseline; gap:28px;
                 margin-top:6px; }
 .pago-total-etq { font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#0C447C;
-                  display:block; text-align:center; }
+                  font-weight:700; display:block; text-align:center; }
 .pago-total-val { font-size:1.2rem; font-weight:400; color:#111827; display:block; text-align:center; }
-.pago-cerrado { text-align:center; color:#9CA3AF; font-size:0.78rem; margin-top:10px; }
+.pago-cerrado { text-align:center; color:#6B7280; font-size:0.78rem; margin-top:10px; }
+.pago-sin-extra { color:#166534; font-weight:600; }
+.pago-extra { color:#991B1B; font-weight:700; background:#FEF2F2; padding:2px 9px; border-radius:6px; }
 </style>
 """
 
@@ -300,8 +302,12 @@ def _html_expediente(r) -> str:
     if pagado and fecha_pago:
         extra = r.get("MontoExtra") or {}
         partes = [_fmt(v, m) for m, v in extra.items() if v is not None and abs(v) > 0.005]
-        extra_txt = " · Extra pagado de más: " + " y ".join(partes) if partes else " · Sin diferencia sobre lo saludable"
-        pie_cerrado = f'<div class="pago-cerrado">Pagado el {esc(fecha_pago)}{extra_txt}</div>'
+        if partes:
+            extra_html = (' · <span class="pago-extra">⚠ Extra pagado de más: '
+                          f'{" y ".join(partes)}</span>')
+        else:
+            extra_html = ' · <span class="pago-sin-extra">Sin diferencia sobre lo saludable</span>'
+        pie_cerrado = f'<div class="pago-cerrado">Pagado el {esc(fecha_pago)}{extra_html}</div>'
 
     return (
         '<div class="pago-tarjeta">'

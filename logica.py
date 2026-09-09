@@ -52,21 +52,47 @@ def es_aereo(via) -> bool:
     ahora el modo de transporte es un dato de la fila (columna Via_Transporte,
     ver COL_VIA), así que cualquier categoría puede tener embarques por avión
     o por barco. Vacío (filas de antes de que existiera esta columna) se trata
-    como marítimo, no como aéreo."""
+    como marítimo, no como aéreo.
+
+    Para decidir qué mostrarle al usuario sobre una fila real, no se llama
+    esta función directamente: se usa es_aereo_fila(), que tiene un respaldo
+    para cuando Via_Transporte viene vacío. Esta función se deja tal cual
+    para los pocos lugares que necesitan el dato CRUDO de la columna (por
+    ejemplo, mostrar la Vía guardada en la ficha del embarque)."""
     return str(via).strip() == VIA_AEREA
 
 
-def lugar_de(via) -> str:
-    """"aeropuerto" para carga aérea, "puerto" para todo lo demás. Solo cambia
-    textos que ve el usuario: las claves internas (ETAPAS_PUERTO, EST_PUERTO,
-    nombres de columnas del Sheet) siguen diciendo "puerto" para no romper los
-    datos ya guardados ni los filtros."""
-    return "aeropuerto" if es_aereo(via) else "puerto"
+def es_aereo_fila(via, categoria="") -> bool:
+    """Como es_aereo(), pero con un respaldo: si Via_Transporte viene vacío
+    (una fila de antes de que existiera esa columna, o que nunca se llegó a
+    llenar), se asume aérea cuando la CATEGORÍA de la fila es 'Aéreos' -- esa
+    categoría es exclusivamente de embarques por avión, así que no hace falta
+    el campo lleno para saberlo. Con Via_Transporte lleno, manda ese dato
+    siempre, sin importar la categoría (la vía es por fila, no por categoría,
+    desde la reorganización que separó las dos cosas).
+
+    Esta es la función que hay que usar para decidir qué le dice la pantalla
+    al usuario (etiquetas, iconos, textos de estado) sobre una fila real."""
+    if str(via).strip():
+        return es_aereo(via)
+    return str(categoria).strip() == "Aéreos"
 
 
-def etiqueta_etapa(etapa: str, via="") -> str:
-    """Nombre corto de la etapa, con "aeropuerto" cuando el embarque es aéreo."""
-    if etapa == ETAPAS_PUERTO[0] and es_aereo(via):
+def lugar_de(es_aerea) -> str:
+    """"aeropuerto" si la fila es aérea, "puerto" para todo lo demás. Recibe
+    el booleano ya resuelto (ver es_aereo_fila()), no el valor crudo de
+    Via_Transporte -- así el respaldo por categoría se decide en un solo
+    lugar y no en cada función que arma un texto. Solo cambia textos que ve
+    el usuario: las claves internas (ETAPAS_PUERTO, EST_PUERTO, nombres de
+    columnas del Sheet) siguen diciendo "puerto" para no romper los datos ya
+    guardados ni los filtros."""
+    return "aeropuerto" if es_aerea else "puerto"
+
+
+def etiqueta_etapa(etapa: str, es_aerea: bool = False) -> str:
+    """Nombre corto de la etapa, con "aeropuerto" cuando la fila es aérea
+    (booleano ya resuelto, ver es_aereo_fila())."""
+    if etapa == ETAPAS_PUERTO[0] and es_aerea:
         return "Llegada al aeropuerto"
     return ETIQUETA_CORTA_ETAPA.get(etapa, etapa)
 
@@ -329,11 +355,11 @@ def estado_embarque(eta_valor, llego=None, hoy: date = None):
     return EST_TRANSITO, None
 
 
-def texto_estado(estado: str, dias, via="") -> str:
+def texto_estado(estado: str, dias, es_aerea: bool = False) -> str:
     if estado == EST_RETRASADO and dias is not None:
         return f"Retrasado {texto_dias(dias)}"
     if estado == EST_PUERTO and dias is not None:
-        donde = "Aeropuerto" if es_aereo(via) else "Puerto"
+        donde = "Aeropuerto" if es_aerea else "Puerto"
         return f"En {donde} hace {texto_dias(dias)}"
     if estado == EST_PROXIMO and dias is not None:
         d = int(dias)
@@ -412,8 +438,8 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     y clave de orden operativo. Se llama UNA vez por refresco sobre la tabla
     completa; las vistas por categoría son rebanadas de este resultado."""
     df = df.copy()
-    calculadas = ["EstadoTexto", "DiasRel", "ETAFecha", "MesETA", "Prioridad", "OrdenSec", "ValorNum",
-                  "DiasTransito", "DiasEnPuerto", "DiasEnEtapa", "EtapaActual", "EtapaIdx",
+    calculadas = ["EstadoTexto", "DiasRel", "ETAFecha", "MesETA", "EsAerea", "Prioridad", "OrdenSec",
+                  "ValorNum", "DiasTransito", "DiasEnPuerto", "DiasEnEtapa", "EtapaActual", "EtapaIdx",
                   "Alerta", "AlertaDias", "Buscar", "F_Salida", "F_Puerto", "F_Declaracion",
                   "BLRepetido", "FlujoRaro"]
     if df.empty:
@@ -435,6 +461,13 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     # guarda en el Sheet: se recalcula cada vez que se enriquece, así que si
     # alguien mueve la ETA de una fila, el mes al que pertenece se mueve solo.
     df["MesETA"] = [_clave_mes_eta(f) for f in etas]
+    # Aérea o no, con respaldo por categoría cuando Via_Transporte viene
+    # vacío (ver es_aereo_fila) -- una sola vez aquí, en vez de que cada
+    # función de UI vuelva a decidir el mismo dato con criterios distintos.
+    categorias_col = df["Categoria"] if "Categoria" in df.columns else [""] * len(df)
+    vias = df[COL_VIA] if COL_VIA in df.columns else [""] * len(df)
+    es_aereas = [es_aereo_fila(v, c) for v, c in zip(vias, categorias_col)]
+    df["EsAerea"] = es_aereas
     df["Prioridad"] = df["EstadoTexto"].map(PRIORIDAD_ESTADO).fillna(9).astype(int)
 
     salidas = _columna_fechas(df, COL_FECHA_SALIDA)
@@ -473,9 +506,8 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     df["DiasEnPuerto"] = [(hoy - p).days if p else None for p in puertos]
 
     dias_etapa, alertas, alerta_dias = [], [], []
-    vias = df[COL_VIA] if COL_VIA in df.columns else [""] * len(df)
-    for etapa, fechas, estado, dias_rel, via in zip(df["EtapaActual"], fechas_por_fila,
-                                                    df["EstadoTexto"], df["DiasRel"], vias):
+    for etapa, fechas, estado, dias_rel, es_aerea in zip(df["EtapaActual"], fechas_por_fila,
+                                                         df["EstadoTexto"], df["DiasRel"], es_aereas):
         d_etapa = None
         if etapa:
             fecha_etapa = fechas[INDICE_ETAPA[etapa]]
@@ -485,7 +517,7 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
         texto, dias_alerta = "", None
         limite = sla.get(etapa)
         if etapa and d_etapa is not None and limite is not None and d_etapa > limite:
-            base = TEXTO_ALERTA_ETAPA.get(etapa, "detenido").format(lugar=lugar_de(via))
+            base = TEXTO_ALERTA_ETAPA.get(etapa, "detenido").format(lugar=lugar_de(es_aerea))
             texto = f"{base[0].upper()}{base[1:]} hace {texto_dias(d_etapa)}"
             dias_alerta = d_etapa
         elif not etapa and estado == EST_RETRASADO and dias_rel is not None \

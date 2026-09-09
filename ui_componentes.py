@@ -450,21 +450,24 @@ def rerun_fragmento():
         st.rerun()
 
 
-def _pastillas_mes_eta(df_todo: pd.DataFrame):
-    """Pastillas clicables con el conteo de embarques ACTIVOS por mes de ETA,
-    consolidado de las 9 categorías -- para dejar de entrar pestaña por
-    pestaña a contar cuánto llega cada mes. Cuenta todo lo activo, sin
-    importar la etapa (sin declarar, en trámite, etc.); lo ya archivado no
-    entra, porque salió del tablero.
+def _filtro_eta_por_mes(df_todo: pd.DataFrame):
+    """Filtro ÚNICO de "ETA por Mes" en el Dashboard (vista Todos): un solo
+    selectbox, con el conteo de cada mes ya sumado en la propia etiqueta de la
+    opción (p. ej. 'sep 2026 · 12'). Reemplaza a la fila de pastillas clicables
+    que había antes.
+
+    Usa DIRECTAMENTE la misma clave de session_state ("mes_eta_Todos") que
+    consume el filtrado de la lista de abajo (ver _render_categoria): no es un
+    control aparte que haya que mantener sincronizado con otro, es el ÚNICO
+    lugar donde ese valor se fija cuando la categoría activa es 'Todos' --
+    _render_categoria, para esa pestaña, ya no dibuja su propio selectbox de
+    Mes ETA, solo lee este mismo valor.
 
     El conteo se lee directo de la columna MesETA que ya calculó enriquecer()
     -- en vivo, así que si alguien mueve la ETA de una fila, la próxima vez
     que se dibuje esto ya sale en su mes correcto sin que nadie tenga que
-    tocar nada.
-
-    Clic en una pastilla pone la categoría en 'Todos' y precarga el filtro
-    'Mes ETA' de esa vista con el mes clickeado, para no tener que ir a
-    buscarlo a mano en el selector de abajo."""
+    tocar nada. Cuenta todo lo activo, sin importar la etapa; lo ya archivado
+    no entra, porque salió del tablero."""
     if df_todo.empty or "MesETA" not in df_todo.columns:
         return
     conteo = df_todo["MesETA"].value_counts().to_dict()
@@ -473,38 +476,14 @@ def _pastillas_mes_eta(df_todo: pd.DataFrame):
     if not claves:
         return
 
-    st.markdown('<div class="nav-rotulo">ETA por Mes</div>',
-                unsafe_allow_html=True)
-    estilos = "".join(
-        f'.st-key-mespill_{_slug_css(clave)} button {{'
-        f'border:1.5px solid #0C447C !important; border-radius:999px !important;'
-        f'background:#fff !important; font-weight:700 !important;}} '
-        f'.st-key-mespill_{_slug_css(clave)} button p {{color:#0C447C !important;}} '
-        for clave in claves
-    )
-    st.markdown(f"<style>{estilos}</style>", unsafe_allow_html=True)
+    opciones = ["Todos"] + claves
 
-    def _click_pastilla(clave_mes):
-        # OJO: esto tiene que ir en on_click, no en un `if st.button(...)`.
-        # selector_horizontal() ya instanció el widget con key "categoria_activa"
-        # ANTES de que estas pastillas se dibujen (se llama primero en
-        # mostrar_dashboard), y Streamlit prohíbe tocar el session_state de un
-        # widget después de instanciado EN EL MISMO rerun
-        # (StreamlitWidgetAlreadyInstantiatedError). on_click corre en la fase
-        # previa, antes de que el script se re-ejecute de arriba a abajo, así
-        # que para cuando selector_horizontal() vuelva a instanciar el widget,
-        # el session_state ya trae el valor nuevo -- eso sí es válido.
-        st.session_state["categoria_activa"] = "Todos"
-        st.session_state["mes_eta_Todos"] = clave_mes
+    def _etiqueta(clave):
+        if clave == "Todos":
+            return f"Todos · {len(df_todo)}"
+        return f"{_etiqueta_mes_eta(clave)} · {conteo[clave]}"
 
-    cols = st.columns(len(claves))
-    for col, clave in zip(cols, claves):
-        etiqueta = f"{_etiqueta_mes_eta(clave)} · {conteo[clave]}"
-        with col:
-            with st.container(key=f"mespill_{_slug_css(clave)}"):
-                st.button(etiqueta, key=f"btn_mespill_{_slug_css(clave)}", width="stretch",
-                         on_click=_click_pastilla, args=(clave,))
-    st.write("")
+    st.selectbox("ETA por Mes", opciones, key="mes_eta_Todos", format_func=_etiqueta)
 
 
 # ---------------------------------------------------------------------------
@@ -1473,17 +1452,23 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     pais_sel = f2.selectbox("País", paises, key=f"pais_{tab_key}", label_visibility="collapsed")
     estado_sel = f3.selectbox("Estado", estados, key=f"estado_{tab_key}", label_visibility="collapsed")
 
-    # Mes ETA: opciones limitadas a los meses que de verdad aparecen en ESTA
-    # categoría/vista -- así el selector nunca ofrece un mes que aquí daría
-    # lista vacía. Si llega precargado desde una pastilla de "en tránsito por
-    # mes" (ver _pastillas_mes_eta) y ese mes no existe en esta vista en
-    # particular, Streamlit lo ignora y cae al primer valor ("Todos"), no truena.
-    meses_presentes = sorted(k for k in df["MesETA"].unique() if k != "sin_eta")
-    mes_opciones = ["Todos"] + meses_presentes + (["sin_eta"] if "sin_eta" in df["MesETA"].unique() else [])
-
-    f4, f5, f6, f7 = st.columns([1, 1, 1, 1])
-    mes_sel = f4.selectbox("Mes ETA", mes_opciones, key=f"mes_eta_{tab_key}",
-                           format_func=lambda k: "Todos" if k == "Todos" else _etiqueta_mes_eta(k))
+    # Mes ETA: en la vista "Todos" el filtro ya vive arriba del todo, como el
+    # ÚNICO selectbox "ETA por Mes" (ver _filtro_eta_por_mes) -- no se repite
+    # aquí para que sea de verdad un único control, no dos que puedan quedar
+    # desincronizados. Se lee directo el mismo session_state que ese
+    # selectbox ya dejó puesto. En cualquier otra categoría, que no tiene ese
+    # control arriba, el filtro de mes vive aquí como siempre, con sus
+    # opciones limitadas a los meses que de verdad aparecen en ESA categoría.
+    es_todos = tab_key == "Todos"
+    if es_todos:
+        mes_sel = st.session_state.get("mes_eta_Todos", "Todos")
+        f5, f6, f7 = st.columns([1, 1, 1])
+    else:
+        meses_presentes = sorted(k for k in df["MesETA"].unique() if k != "sin_eta")
+        mes_opciones = ["Todos"] + meses_presentes + (["sin_eta"] if "sin_eta" in df["MesETA"].unique() else [])
+        f4, f5, f6, f7 = st.columns([1, 1, 1, 1])
+        mes_sel = f4.selectbox("Mes ETA", mes_opciones, key=f"mes_eta_{tab_key}",
+                               format_func=lambda k: "Todos" if k == "Todos" else _etiqueta_mes_eta(k))
     etapa_sel = f5.selectbox("Etapa", etapas, key=f"etapa_filtro_{tab_key}")
     orden_sel = f6.selectbox("Ordenar por", criterios, key=f"orden_{tab_key}")
     with f7:
@@ -1494,6 +1479,14 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
                       f"orden_{tab_key}", f"etapa_filtro_{tab_key}", f"mes_eta_{tab_key}"):
                 st.session_state.pop(k, None)
             st.session_state.pop(f"firma_pais_{tab_key}", None)
+            if es_todos:
+                # "mes_eta_Todos" también respalda el selectbox "ETA por Mes"
+                # de arriba, que vive FUERA de este fragmento (@st.fragment):
+                # un rerun de solo el fragmento no lo vuelve a dibujar, así que
+                # se quedaría mostrando visualmente el mes viejo aunque la
+                # lista de abajo ya se haya limpiado. Rerun completo aquí para
+                # que ese selectbox también vuelva a "Todos".
+                st.rerun()
             rerun_fragmento()
 
     filtrado = df
@@ -1657,7 +1650,7 @@ def mostrar_dashboard(datos: dict):
         return
 
     if seleccion == "Todos":
-        _pastillas_mes_eta(df_todo)
+        _filtro_eta_por_mes(df_todo)
 
     sub = df_todo if seleccion == "Todos" else df_todo[df_todo["Categoria"] == seleccion]
     _render_categoria(sub, rol, seleccion, recibidas_mes)

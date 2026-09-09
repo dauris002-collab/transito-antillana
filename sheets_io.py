@@ -254,13 +254,14 @@ PAGOS_SHEET = "Pagos"
 # como número puro (sin "dolares"/"pesos" pegado al texto) y no hay que parsear
 # texto libre para saber en qué moneda está cada celda.
 CONCEPTOS_PAGO = ["ADUANAS", "DPH", "DPW", "TRANSPORTE", "HIT", "FDA", "VECONINTER", "ALMACENAJE",
-                  "PORTCOLLECT", "FLETE", "GESTION ADUANAL", "CARGOS LOCALES"]
+                  "PORTCOLLECT", "FLETE", "GESTION ADUANAL", "CARGOS LOCALES", "SAN SOUCI"]
 
 
 MONEDA_CONCEPTO = {
     "ADUANAS": "DOP", "DPH": "USD", "DPW": "DOP", "TRANSPORTE": "DOP",
     "HIT": "DOP", "FDA": "DOP", "VECONINTER": "USD", "ALMACENAJE": "DOP",
     "PORTCOLLECT": "USD", "FLETE": "USD", "GESTION ADUANAL": "DOP", "CARGOS LOCALES": "USD",
+    "SAN SOUCI": "DOP",
 }
 
 

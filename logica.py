@@ -668,24 +668,55 @@ def _llegadas_confirmadas(activos: pd.DataFrame, historico: pd.DataFrame) -> dic
     return mapa
 
 
+def _referencia_transito(activos: pd.DataFrame, historico: pd.DataFrame) -> dict:
+    """BL -> texto de OC / EE / Cliente-Stock tal como está en tránsito, para
+    que Pagos muestre quién solicitó el expediente sin que Logística tenga
+    que volver a teclearlo. Un BL puede traer más de uno lleno a la vez
+    (Aéreos, por ejemplo, admite OC, EE y Cliente/Stock los tres) -- se
+    muestran todos los que tengan valor, no solo el primero.
+    Activos manda sobre histórico, igual que _llegadas_confirmadas."""
+    mapa = {}
+    for fuente in (activos, historico):
+        if fuente is None or fuente.empty:
+            continue
+        for _, r in fuente.iterrows():
+            bl = str(r.get(COL_BL, "")).strip()
+            if not bl or bl in mapa:
+                continue
+            piezas = []
+            oc = str(r.get(COL_OC, "") or "").strip()
+            ee = str(r.get(COL_EE, "") or "").strip()
+            cliente = str(r.get(COL_CLIENTE_STOCK, "") or "").strip()
+            if oc:
+                piezas.append(f"OC {oc}")
+            if ee:
+                piezas.append(f"EE {ee}")
+            if cliente:
+                piezas.append(f"Cliente/Stock: {cliente}")
+            if piezas:
+                mapa[bl] = " · ".join(piezas)
+    return mapa
+
+
 def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
                      historico: pd.DataFrame) -> pd.DataFrame:
     """Agrega al DataFrame de Pagos lo que no vive directamente en sus celdas:
     si el BL sigue existiendo en tránsito, el total ACTUAL de lo que está
     lleno en los conceptos (en vivo), el contador de días sin pagar (desde la
     llegada CONFIRMADA hasta hoy o hasta que se pague), si el expediente ya
-    está Pagado o sigue Pendiente, y — para los ya pagados — el costo final
-    (conceptos + el extra que Logística escribió a mano).
+    está Pagado o sigue Pendiente, — para los ya pagados — el costo final
+    (conceptos + el extra que Logística escribió a mano), y quién lo solicitó
+    (OC/EE/Cliente-Stock, leído en vivo de tránsito).
 
     Descripción, Cantidad y Llegada NO se cruzan aquí: viven en la propia hoja
     Pagos, sincronizadas por sincronizar_pagos_con_transito() — se leen tal
-    cual de sus columnas. La ÚNICA excepción es la llegada CONFIRMADA que usa
-    el contador de días sin pagar: esa sí se recalcula en vivo, porque si se
-    queda con el valor sincronizado una vez, nunca se actualiza cuando la
-    llegada se confirma después."""
+    cual de sus columnas. Las excepciones son la llegada CONFIRMADA (para el
+    contador de días sin pagar) y la referencia de quién solicitó: esas sí se
+    recalculan en vivo, porque si se quedan con el valor sincronizado una
+    sola vez, no se actualizan si tránsito cambia después."""
     df = df_pagos.copy()
     calculadas = ["BLSinTransito", "TieneMontos", "TotalActual", "DiasSinPagar",
-                  "EmpresaEfectiva", "EstadoEfectivo", "MontoExtra",
+                  "EmpresaEfectiva", "EstadoEfectivo", "MontoExtra", "ReferenciaTransito",
                   "TotalPagado", "DiasMora", "FechaSinMoraParsed", "FechaPagoRealParsed"]
     if df.empty:
         for c in calculadas:
@@ -724,6 +755,9 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
         bool(bl) and emp == EMPRESA_ANTILLANA and bl not in bls_transito
         for bl, emp in zip(df[COL_BL].astype(str).str.strip(), empresas_efectivas)
     ]
+
+    referencia_map = _referencia_transito(activos, historico)
+    df["ReferenciaTransito"] = [referencia_map.get(bl, "") for bl in df[COL_BL].astype(str).str.strip()]
 
     totales_actuales = [totales_conceptos(r) for _, r in df.iterrows()]
     df["TotalActual"] = totales_actuales

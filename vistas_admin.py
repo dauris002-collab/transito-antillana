@@ -315,9 +315,10 @@ def form_carga_masiva(datos: dict):
         columnas_opcionales.append(COL_CLIENTE_STOCK)
     if categoria in CATEGORIAS_CON_OC_EE:
         columnas_opcionales += [COL_OC, COL_EE]
+    via_defecto_caption = VIA_AEREA if categoria == "Aéreos" else VIA_MARITIMA
     st.caption("Columnas obligatorias: " + ", ".join(REQUIRED_COLUMNS) +
                ". Opcionales para esta categoría: " + ", ".join(f"'{c}'" for c in columnas_opcionales) +
-               f". Si no incluyes '{COL_VIA}', se asume {VIA_MARITIMA}. "
+               f". Si no incluyes '{COL_VIA}', se asume {via_defecto_caption} (según la categoría de destino). "
                "El ETA puede venir en cualquier formato reconocible; se guarda como AAAA-MM-DD.")
 
     archivo = st.file_uploader("Archivo .xlsx", type=["xlsx"], key="masiva_archivo")
@@ -368,14 +369,34 @@ def form_carga_masiva(datos: dict):
             (parsear_fecha(v).isoformat() if parsear_fecha(v) else "") for v in nuevo[COL_FECHA_SALIDA]
         ]
 
+    # Texto libre tolerante: cualquier variante reconocible de "aéreo" o de
+    # "marítimo" (con/sin acento, mayúsculas, sinónimos) se guarda como tal.
+    # Lo que no se reconoce -- celda vacía, texto raro, o si el archivo ni
+    # siquiera trae esta columna -- se resuelve según la categoría de destino
+    # elegida arriba: si es "Aéreos" se asume Aéreo (igual que ya hace el alta
+    # manual), y para el resto de categorías se asume Marítimo.
+    #
+    # Antes, todo lo que no calzara EXACTAMENTE con una variante de "aéreo"
+    # cala a Marítimo sin mirar la categoría -- así, cargar un lote entero en
+    # "Aéreos" sin rellenar esta columna en el Excel los dejaba marcados como
+    # marítimos, y el resto de la app los mostraba "en puerto" en vez de "en
+    # aeropuerto".
+    via_defecto = VIA_AEREA if categoria == "Aéreos" else VIA_MARITIMA
+    aereo_variantes = ("aereo", "aerea", "avion", "air", "aire")
+    maritimo_variantes = ("maritimo", "maritima", "barco", "buque", "sea", "ship", "naval")
+
+    def _via_resuelta(v):
+        n = _norm(v)
+        if n in aereo_variantes:
+            return VIA_AEREA
+        if n in maritimo_variantes:
+            return VIA_MARITIMA
+        return via_defecto
+
     if COL_VIA in nuevo.columns:
-        # Texto libre tolerante: cualquier variante de "aéreo" (con/sin acento,
-        # mayúsculas, "avión", "air") se guarda como Aéreo; todo lo demás --
-        # incluido vacío -- se guarda como Marítimo, el modo por defecto.
-        nuevo[COL_VIA] = [
-            VIA_AEREA if _norm(v) in ("aereo", "aerea", "avion", "air", "aire") else VIA_MARITIMA
-            for v in nuevo[COL_VIA]
-        ]
+        nuevo[COL_VIA] = [_via_resuelta(v) for v in nuevo[COL_VIA]]
+    else:
+        nuevo[COL_VIA] = via_defecto
 
     existentes = _bls_existentes(datos)
     bl_norm = nuevo[COL_BL].astype(str).str.strip()

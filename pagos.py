@@ -71,7 +71,8 @@ PAGOS_CSS = """
                 font-weight:700; padding:2px 10px; border-radius:999px; margin-left:8px; }
 .pago-estado { display:inline-block; font-size:0.75rem; font-weight:700; color:#fff;
                padding:3px 12px; border-radius:999px; white-space:nowrap; }
-.pago-meta { color:#6B7280; font-size:0.85rem; margin-top:2px; }
+.pago-meta { color:#111827; font-size:0.85rem; margin-top:2px; }
+.pago-referencia { color:#111827; font-size:0.85rem; margin-top:1px; }
 .pago-conceptos { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:14px 0; }
 .pago-chip { padding:6px 15px; border-radius:999px; color:#fff; font-size:0.83rem; font-weight:700;
              white-space:nowrap; }
@@ -80,7 +81,7 @@ PAGOS_CSS = """
 .pago-total-etq { font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#0C447C;
                   font-weight:700; display:block; text-align:center; }
 .pago-total-val { font-size:1.2rem; font-weight:400; color:#111827; display:block; text-align:center; }
-.pago-cerrado { text-align:center; color:#6B7280; font-size:0.78rem; margin-top:10px; }
+.pago-cerrado { text-align:center; color:#111827; font-size:0.78rem; margin-top:10px; }
 .pago-sin-extra { color:#166534; font-weight:600; }
 .pago-extra { color:#991B1B; font-weight:700; background:#FEF2F2; padding:2px 9px; border-radius:6px; }
 </style>
@@ -287,6 +288,13 @@ def _html_expediente(r) -> str:
     dias_sin_pagar_txt = "—" if dias_sin_pagar is None or pd.isna(dias_sin_pagar) else str(int(dias_sin_pagar))
     fecha_saludable = esc(r.get(COL_FECHA_SIN_MORA, "")) or "sin fijar"
 
+    # Quién lo solicitó (OC/EE/Cliente-Stock), leído en vivo de tránsito por
+    # enriquecer_pagos(). No todo expediente lo trae -- Carga Suelta/General
+    # no usan Cliente/Stock, Tecnicaribe y Motor Ibérico no tienen tránsito
+    # propio -- así que la línea entera se omite cuando no hay nada que mostrar.
+    referencia = str(r.get("ReferenciaTransito", "") or "").strip()
+    referencia_html = f'<div class="pago-referencia">{esc(referencia)}</div>' if referencia else ""
+
     if pagado:
         # Ya pagado: lo que importa es el costo FINAL (conceptos + el extra
         # que Logística escribió a mano — 0 si no hubo diferencia).
@@ -314,6 +322,7 @@ def _html_expediente(r) -> str:
         f'<div class="pago-cabeza"><span class="pago-bl">{bl}<span class="pago-empresa">{empresa}</span></span>'
         f'<span class="pago-estado" style="background:{color_estado};">{esc(estado)}</span></div>'
         f'<div class="pago-meta">{desc} · {cant} · Llegada: {llegada}</div>'
+        f'{referencia_html}'
         f'<div class="pago-conceptos">{"".join(chips)}</div>'
         '<div class="pago-totales">'
         f'<div><span class="pago-total-etq">{etiqueta_usd}</span>'

@@ -23,7 +23,7 @@ from sheets_io import (
     CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO, ETAPAS_PUERTO,
     INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
     _fecha_de_tokens, _interpretar_tokens, _norm, _slug_css, _tokenizar_fecha,
-    a_numero, columna_de_valor, costos_puerto, es_llego_no, es_llego_si,
+    a_numero, columna_de_valor, es_llego_no, es_llego_si,
     es_numero, fecha_llegada_fila, hoy_rd, parsear_fecha, sla_etapas,
     _validar_orden_flujo,
 )
@@ -181,40 +181,43 @@ def _lleno(v) -> bool:
     return str(v).strip() != ""
 
 
-def _cumple_filtro_puerto(fila, filtro: str, cfg=None) -> bool:
+def _cumple_filtro_puerto(fila, filtro: str) -> bool:
     """Mismo criterio que arma el detalle de html_atraso_puerto, evaluado fila
     por fila. Se usa para REORDENAR el diagrama de _panel_en_proceso según el
     filtro activo, en vez de tener dos listas —la de arriba y la del diagrama—
     que no se hablan entre sí."""
     if filtro == "todos":
         return True
-    cfg = cfg or costos_puerto()
-    dias = fila.get("DiasEnPuerto")
-    if not es_numero(dias):
-        return False
-    if filtro == "atrasados":
-        return dias > cfg["umbral"]
     if filtro == "sin_declarar":
+        dias = fila.get("DiasEnPuerto")
+        if not es_numero(dias):
+            return False
         return not _lleno(fila.get("F_Declaracion"))
     return True
 
 
 def resumen_atraso_puerto(df) -> dict:
-    """Lo que está en puerto ahora mismo y cuánto lleva ahí.
+    """Lo que está en puerto/aeropuerto ahora mismo y cuánto lleva ahí.
 
     No calcula dinero. El costo de la demora no se estima con una tarifa por día
     —varía por naviera, terminal, volumen y espacio— sino que se observa
     comparando el monto estimado con el realmente pagado; eso vive en el módulo
     de Estatus de Pago. Aquí solo se cuentan días, que es lo que sí se sabe con
-    certeza desde tránsito."""
-    cfg = costos_puerto()
-    vacio = {"n_puerto": 0, "n_atrasados": 0, "n_sin_declarar": 0,
-             "dias_excedidos": 0, "dias_promedio": 0.0,
-             "umbral": cfg["umbral"], "detalle": []}
+    certeza desde tránsito.
+
+    Ya no distingue "atrasados": ese filtro comparaba los días en puerto contra
+    un umbral interno fijo, igual para carga marítima y aérea, que no reflejaba
+    ningún plazo contractual real. Lo único que este dato certifica es si el
+    embarque ya se declaró o no, así que el resumen se queda solo con eso.
+
+    Cada fila del detalle trae "lugar" ("puerto" o "aeropuerto") calculado a
+    partir de su propia columna Via_Transporte, para que un embarque aéreo
+    nunca aparezca etiquetado como si estuviera en un puerto marítimo."""
+    vacio = {"n_puerto": 0, "n_sin_declarar": 0, "dias_promedio": 0.0, "detalle": []}
     if df is None or df.empty or "DiasEnPuerto" not in df.columns:
         return vacio
 
-    n_puerto = n_atr = n_sin_dec = dias_exc = 0
+    n_puerto = n_sin_dec = 0
     suma_dias = 0
     detalle = []
     for _, fila in df.iterrows():
@@ -226,27 +229,20 @@ def resumen_atraso_puerto(df) -> dict:
         sin_declarar = not _lleno(fila.get("F_Declaracion"))
         if sin_declarar:
             n_sin_dec += 1
-        atrasado = dias > cfg["umbral"]
-        if atrasado:
-            n_atr += 1
-            dias_exc += int(dias) - cfg["umbral"]
-        if atrasado or sin_declarar:
-            detalle.append({
-                "bl": str(fila.get(COL_BL, "") or ""),
-                "oc": str(fila.get(COL_OC, "") or "").strip(),
-                "cat": fila.get("Categoria", ""),
-                "dias": int(dias),
-                "exceso": max(0, int(dias) - cfg["umbral"]),
-                "atrasado": atrasado,
-                "sin_declarar": sin_declarar,
-            })
+        detalle.append({
+            "bl": str(fila.get(COL_BL, "") or ""),
+            "oc": str(fila.get(COL_OC, "") or "").strip(),
+            "cat": fila.get("Categoria", ""),
+            "dias": int(dias),
+            "sin_declarar": sin_declarar,
+            "lugar": lugar_de(fila.get(COL_VIA, "")),
+        })
 
     detalle.sort(key=lambda d: d["dias"], reverse=True)
     return {
-        "n_puerto": n_puerto, "n_atrasados": n_atr, "n_sin_declarar": n_sin_dec,
-        "dias_excedidos": dias_exc,
+        "n_puerto": n_puerto, "n_sin_declarar": n_sin_dec,
         "dias_promedio": (suma_dias / n_puerto) if n_puerto else 0.0,
-        "umbral": cfg["umbral"], "detalle": detalle,
+        "detalle": detalle,
     }
 
 

@@ -22,7 +22,7 @@ from sheets_io import (
     COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_LLEGO, COL_MODELO,
     COL_OC, COL_PAIS, COL_VIA, ETAPA_ALMACEN, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES,
     MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO, VIA_MARITIMA,
-    _norm, _slug_css, columnas_extra, confirmar_llegada, costos_puerto,
+    _norm, _slug_css, columnas_extra, confirmar_llegada,
     eliminar_embarque, es_numero, fijar_fecha_declaracion, formato_dinero,
     formato_eta, hoy_rd, invalidar_caches, marcar_como_recibido, marcar_no_llego,
     registrar_log, sla_etapas,
@@ -138,10 +138,10 @@ html { -webkit-text-size-adjust: 100%; }
   .pnom { font-size:.74rem; }
 }
 
-/* ---------- Resumen ejecutivo de puerto (filtro clicable) ----------
-   El contador vive en el propio botón del filtro (Todos · N, Atrasados · N,
-   Sin declarar · N) y clicarlo filtra el detalle de abajo: el número no es solo
-   para mirar, también sirve para llegar al embarque. */
+/* ---------- Resumen ejecutivo de puerto/aeropuerto (filtro clicable) ----------
+   El contador vive en el propio botón del filtro (Todos · N, Sin declarar · N)
+   y clicarlo filtra el detalle de abajo: el número no es solo para mirar,
+   también sirve para llegar al embarque. */
 .ejec-detalle { border:1px solid var(--ant-borde); border-radius:10px; overflow:hidden; margin-top:8px; }
 .ejec-detalle .atttl { padding:8px 14px; background:#F9FAFB; border-bottom:1px solid var(--ant-borde);
                         font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em;
@@ -164,7 +164,6 @@ html { -webkit-text-size-adjust: 100%; }
 .atmonto { margin-left:auto; font-weight:700; color:#991B1B; white-space:nowrap;
            text-align:right; }
 .atresto { color:#6B7280; font-style:italic; }
-.atfila.atok .atmonto { color:#4B5563; }
 
 /* ---------- Chips de resumen por etapa ---------- */
 .chips { display:flex; flex-wrap:wrap; gap:8px; margin:4px 0 10px 0; }
@@ -378,15 +377,20 @@ button, a, div[data-testid="stButtonGroup"] button { -webkit-tap-highlight-color
 
 
 def html_atraso_puerto(df, contexto: str = "") -> None:
-    """Filtro clicable de lo que está parado en puerto: el contador vive en el
-    propio botón (Todos · N, Atrasados · N, Sin declarar · N) y clicarlo filtra
-    el detalle de abajo, así el número también sirve para llegar al embarque.
+    """Filtro clicable de lo que está parado en puerto/aeropuerto: el contador
+    vive en el propio botón (Todos · N, Sin declarar · N) y clicarlo filtra el
+    detalle de abajo, así el número también sirve para llegar al embarque.
 
     Ya no muestra dinero. El costo de la demora no se estima con una tarifa por
     día —varía por naviera, terminal, volumen y espacio— sino que se observa
     comparando estimado contra pagado, y eso vive en el módulo de Estatus de
     Pago. Mostrar aquí un peso calculado con una tarifa inventada era peor que
     no mostrar nada.
+
+    Tampoco queda la pestaña "Atrasados": comparaba los días en puerto contra
+    un umbral fijo, igual para barco y avión, que no correspondía a ningún
+    plazo real. El único corte que este dato sostiene es declarado / sin
+    declarar.
 
     `contexto` distingue el filtro cuando el mismo bloque aparece en más de una
     vista: sin esto, el estado de un filtro se pisaría con el de otro."""
@@ -400,7 +404,6 @@ def html_atraso_puerto(df, contexto: str = "") -> None:
 
     opciones = [
         ("todos", f'Todos · {r["n_puerto"]}', "#0C447C"),
-        ("atrasados", f'Atrasados · {r["n_atrasados"]}', "#D7263D"),
         ("sin_declarar", f'Sin declarar · {r["n_sin_declarar"]}', "#B45309"),
     ]
 
@@ -425,8 +428,7 @@ def html_atraso_puerto(df, contexto: str = "") -> None:
                     st.session_state[clave_click] = True
                     rerun_fragmento()
 
-    st.caption(f"Promedio: {r['dias_promedio']:.0f} días en puerto · "
-               f"umbral de alerta: {r['umbral']} días")
+    st.caption(f"Promedio: {r['dias_promedio']:.0f} días en puerto/aeropuerto")
 
     # El detalle se queda oculto hasta que se clickee alguno de los botones de
     # arriba, aunque sea "Todos": antes se desplegaba de una vez y era la tabla
@@ -435,9 +437,7 @@ def html_atraso_puerto(df, contexto: str = "") -> None:
         return
 
     detalle = r["detalle"]
-    if actual == "atrasados":
-        detalle = [d for d in detalle if d["atrasado"]]
-    elif actual == "sin_declarar":
+    if actual == "sin_declarar":
         detalle = [d for d in detalle if d["sin_declarar"]]
 
     if not detalle:
@@ -449,13 +449,15 @@ def html_atraso_puerto(df, contexto: str = "") -> None:
         ref = esc(d["bl"]) or "&mdash;"
         oc = (f' <span class="atoc">OC {esc(d["oc"])}</span>' if d["oc"]
               else ' <span class="atoc atsin">sin OC</span>')
-        exceso = f' · <b>+{d["exceso"]} sobre el plazo</b>' if d["atrasado"] else ""
+        # d["lugar"] sale de la Via_Transporte real de ESA fila (lugar_de en
+        # logica.py): un embarque aéreo dice "aeropuerto" aquí aunque su
+        # Categoria del Sheet no sea "Aéreos", y viceversa.
         estado = ('<span class="atmonto">Sin declarar</span>' if d["sin_declarar"]
                   else '<span class="atmonto" style="color:#4B5563;">Declarado</span>')
         filas.append(
-            f'<div class="atfila{"" if d["atrasado"] else " atok"}">'
+            f'<div class="atfila">'
             f'<span class="atbl">{ref}</span>{oc}'
-            f'<span class="atdias">{d["dias"]} días en puerto{exceso}</span>'
+            f'<span class="atdias">{d["dias"]} días en {d["lugar"]}</span>'
             f'{estado}</div>'
         )
     resto = len(detalle) - 10
@@ -464,7 +466,7 @@ def html_atraso_puerto(df, contexto: str = "") -> None:
 
     st.markdown(
         '<div class="ejec-detalle"><div class="atttl" style="text-align:center;">'
-        'Detenidos en puerto</div>' + "".join(filas) + "</div>",
+        'Detenidos en puerto/aeropuerto</div>' + "".join(filas) + "</div>",
         unsafe_allow_html=True,
     )
 
@@ -1100,7 +1102,6 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
     en más de una vista y sin esto las claves de sus widgets chocan."""
     es_admin = rol == "admin"
     filtro_activo = st.session_state.get(f"filtro_puerto_{_slug_css(contexto)}", "todos")
-    cfg_costo = costos_puerto()
     df = df.copy()
     # Con el filtro en "todos" (el estado por defecto) _cumple_filtro_puerto()
     # siempre da True, así que se evita el .apply() fila por fila en el caso más
@@ -1108,7 +1109,7 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
     if filtro_activo == "todos":
         df["_NoCumpleFiltro"] = False
     else:
-        df["_NoCumpleFiltro"] = ~df.apply(lambda f: _cumple_filtro_puerto(f, filtro_activo, cfg_costo), axis=1)
+        df["_NoCumpleFiltro"] = ~df.apply(lambda f: _cumple_filtro_puerto(f, filtro_activo), axis=1)
     orden = df.sort_values(["_NoCumpleFiltro", "AlertaDias", "EtapaIdx", COL_ETA],
                            ascending=[True, False, True, True], na_position="last")
 

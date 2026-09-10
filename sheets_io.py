@@ -1236,6 +1236,15 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str):
                        "Quítalos del archivo o actualiza los datos antes de cargar.")
     opcionales = [c for c in OPCIONALES_CATEGORIA
                   if c in df.columns and df[c].astype(str).str.strip().ne("").any()]
+    # Via_Transporte NO es "opcional por categoría" como Modelo/OC/EE -- toda
+    # categoría puede tener embarques aéreos o marítimos -- así que se escribe
+    # siempre que la carga masiva la traiga resuelta (ver form_carga_masiva).
+    # Antes quedaba fuera de OPCIONALES_CATEGORIA y esta función la descartaba
+    # en silencio: cada carga masiva perdía el modo de transporte sin importar
+    # lo que trajera el Excel, y el resto de la app caía al valor por defecto
+    # (Marítimo) aunque el embarque fuera aéreo.
+    if COL_VIA in df.columns and COL_VIA not in opcionales:
+        opcionales.append(COL_VIA)
     headers = _asegurar_columnas(ws, [COL_ACTUALIZACION, COL_ACTUALIZADO_POR, *opcionales])
     sello, autor = marca_ahora(), usuario_actual()
     columnas_fila = REQUIRED_COLUMNS + opcionales

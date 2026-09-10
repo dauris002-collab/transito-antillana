@@ -15,11 +15,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from sheets_io import (
-    CATEGORIAS, COL_ACTUALIZACION, COL_BL, COL_CANT, COL_CLIENTE_STOCK, COL_DESC,
+    CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_BL, COL_CANT, COL_CLIENTE_STOCK, COL_DESC,
     COL_EE, COL_ETA, COL_FECHA_ALMACEN, COL_FECHA_DECLARACION,
     COL_FECHA_LLEGADA_PUERTO, COL_FECHA_SALIDA, COL_LLEGO, COL_MODELO, COL_OC,
-    COL_PAIS, COL_VIA, MESES_ES, MESES_ES_CORTO, NO_ESPECIFICADO, REQUIRED_COLUMNS,
-    VIA_AEREA, VIA_MARITIMA,
+    COL_PAIS, COL_VIA, MAX_FILAS_LECTURA, MESES_ES, MESES_ES_CORTO, NO_ESPECIFICADO,
+    REQUIRED_COLUMNS, VIA_AEREA, VIA_MARITIMA,
     _con_reintento, _leer_log, _norm, _refrescar_estructura, _validar_orden_flujo,
     actualizar_embarque, ahora_rd, append_row, append_rows_bulk, es_llego_si,
     es_numero, get_spreadsheet, hoy_rd, invalidar_caches, normalizar_etas,
@@ -29,11 +29,11 @@ from sheets_io import (
 from logica import (
     CATEGORIAS_CON_CLIENTE_STOCK, CATEGORIAS_CON_MODELO, CATEGORIAS_CON_OC_EE,
     EST_SIN_FECHA, ETIQUETA_CORTA_ETAPA, _columna_fechas, _etiquetas_desambiguadas,
-    analizar_eta, enriquecer,
+    analizar_eta,
 )
 from ui_componentes import (
-    COLOR_RECIBIDAS_MES, COLOR_TOTAL, CUSTOM_CSS, VERSION_APP, _df_a_excel,
-    tarjeta_kpi,
+    COLOR_RECIBIDAS_MES, COLOR_TOTAL, VERSION_APP, _df_a_excel,
+    _enriquecer_cacheado, tarjeta_kpi,
 )
 
 
@@ -306,7 +306,8 @@ def form_carga_masiva(datos: dict):
         file_name="plantilla_embarques_antillana.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-    categoria = st.selectbox("Categoría de destino (todo el archivo se carga aquí)", CATEGORIAS)
+    categoria = st.selectbox("Categoría de destino (todo el archivo se carga aquí)", CATEGORIAS,
+                             key="masiva_categoria")
     columnas_opcionales = [COL_FECHA_SALIDA, COL_VIA]
     if categoria in CATEGORIAS_CON_MODELO:
         columnas_opcionales.append(COL_MODELO)
@@ -319,7 +320,7 @@ def form_carga_masiva(datos: dict):
                f". Si no incluyes '{COL_VIA}', se asume {VIA_MARITIMA}. "
                "El ETA puede venir en cualquier formato reconocible; se guarda como AAAA-MM-DD.")
 
-    archivo = st.file_uploader("Archivo .xlsx", type=["xlsx"])
+    archivo = st.file_uploader("Archivo .xlsx", type=["xlsx"], key="masiva_archivo")
     if archivo is None:
         return
 
@@ -415,6 +416,7 @@ def form_carga_masiva(datos: dict):
 # ---------------------------------------------------------------------------
 # HISTÓRICO
 # ---------------------------------------------------------------------------
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def _preparar_historico(historico: pd.DataFrame) -> pd.DataFrame:
     """Histórico crudo -> DataFrame con fecha parseada, año, mes y tiempos de
     ciclo. Nada se borra nunca de la pestaña 'Recibido (Mes)': cada recepción
@@ -449,6 +451,15 @@ def _preparar_historico(historico: pd.DataFrame) -> pd.DataFrame:
                                      for p, d in zip(puerto, declaracion)]
     df["CicloTotal"] = [(a - s).days if (s and a and a >= s) else None
                         for s, a in zip(salida, almacen)]
+    # Columna de búsqueda precalculada (mismo patrón que enriquecer): el
+    # buscador del detalle filtra con un contains sobre este texto ya listo.
+    def _col(nombre):
+        return df[nombre] if nombre in df.columns else [""] * len(df)
+    df["Buscar"] = [
+        _norm(f"{bl} {desc} {m} {c}")
+        for bl, desc, m, c in zip(_col(COL_BL), _col(COL_DESC),
+                                  _col(COL_MODELO), _col(COL_CLIENTE_STOCK))
+    ]
     return df.sort_values("FechaParsed").reset_index(drop=True)
 
 
@@ -509,7 +520,6 @@ def _tabla_detalle(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def mostrar_historico(datos: dict, rol: str):
-    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     st.subheader("Histórico de embarques recibidos")
 
     crudo = datos["historico"]
@@ -626,11 +636,7 @@ def mostrar_historico(datos: dict, rol: str):
 
     filtrado = df_anio[df_anio["Mes"] == mes_sel]
     if busqueda and busqueda.strip():
-        q = _norm(busqueda)
-        filtrado = filtrado[filtrado.apply(
-            lambda r: q in _norm(f"{r.get(COL_BL,'')} {r.get(COL_DESC,'')} {r.get(COL_MODELO,'')} "
-                                 f"{r.get(COL_CLIENTE_STOCK,'')}"), axis=1
-        )]
+        filtrado = filtrado[filtrado["Buscar"].str.contains(_norm(busqueda), regex=False, na=False)]
 
     etiqueta_mes = f"{MESES_ES[mes_sel]} {anio_sel}"
     st.markdown(tarjeta_kpi(f"Recibidos en {etiqueta_mes}", len(filtrado), COLOR_RECIBIDAS_MES),
@@ -876,22 +882,25 @@ def respaldo_completo() -> tuple:
     cual están, sin enriquecer, sin filtrar y sin reordenar columnas — para que
     sirva para restaurar, no solo para analizar.
 
-    Se lee con get_all_values() y no con la caché de la app a propósito: un
-    respaldo tiene que reflejar el Sheet de este momento, no lo que la pantalla
-    tenía cargado hace cinco minutos. Cuesta una llamada por pestaña, por eso va
-    detrás de un botón y no en cada rerun."""
+    Se lee en vivo, sin la caché de la app, a propósito: un respaldo tiene
+    que reflejar el Sheet de este momento, no lo que la pantalla tenía cargado
+    hace cinco minutos. Es una sola llamada por lote para TODAS las pestañas,
+    y aun así va detrás de un botón y no en cada rerun."""
     try:
         hojas = _con_reintento(lambda: get_spreadsheet().worksheets())
     except Exception as e:  # noqa: BLE001
         return None, f"No se pudo leer el Google Sheet: {e}", 0
+    try:
+        respuesta = _con_reintento(lambda: get_spreadsheet().values_batch_get(
+            [f"'{h.title}'!A1:AZ{MAX_FILAS_LECTURA}" for h in hojas]))
+    except Exception as e:  # noqa: BLE001
+        return None, f"Falló la lectura del Google Sheet: {e}", 0
+    bloques = respuesta.get("valueRanges", [])
     buffer = io.BytesIO()
     filas_totales = 0
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        for hoja in hojas:
-            try:
-                valores = _con_reintento(lambda h=hoja: h.get_all_values())
-            except Exception as e:  # noqa: BLE001
-                return None, f"Falló la lectura de la pestaña '{hoja.title}': {e}", 0
+        for hoja, bloque in zip(hojas, bloques):
+            valores = bloque.get("values", [])
             # Sin header: la fila 1 se guarda como una fila más, así el respaldo
             # es idéntico al original aunque alguien haya cambiado un encabezado.
             marco = pd.DataFrame(valores) if valores else pd.DataFrame()
@@ -935,7 +944,7 @@ def herramientas(datos: dict):
     if df.empty:
         st.info("No hay embarques cargados.")
         return
-    df = enriquecer(df)
+    df = _enriquecer_cacheado(df)
 
     _herramienta_fechas(df)
     st.divider()

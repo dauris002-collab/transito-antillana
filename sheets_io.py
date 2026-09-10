@@ -11,6 +11,7 @@ vistas_admin.py ni causar dependencias circulares.
 from __future__ import annotations
 
 import re
+import threading
 import time
 import unicodedata
 from functools import lru_cache
@@ -328,7 +329,7 @@ COLUMNAS_PAGOS = [
 CACHE_TTL = 45              # segundos de caché de lectura
 
 
-REINTENTOS_API = 3
+REINTENTOS_API = 5
 
 
 MESES_ES = {
@@ -683,7 +684,7 @@ def _con_reintento(fn, intentos: int = REINTENTOS_API):
         except gspread.exceptions.APIError as e:
             codigo = _codigo_api(e)
             if codigo in (429, 500, 502, 503) and intento < intentos - 1:
-                time.sleep(1.2 * (intento + 1))
+                time.sleep(2 * (2 ** intento))
                 ultimo = e
                 continue
             raise
@@ -725,7 +726,7 @@ def marca_ahora() -> str:
     """Sello que se estampa en Fecha_Actualizacion cada vez que alguien carga o
     modifica información. Lleva hora, no solo fecha, porque es lo que el tablero
     muestra como 'información actualizada'."""
-    return ahora_rd().strftime("%Y-%m-%d %H:%M")
+    return ahora_rd().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def parsear_marca(valor):
@@ -825,6 +826,42 @@ def _leer_fila(ws, fila: int, headers: list) -> dict:
     valores = _con_reintento(lambda: ws.row_values(fila)) or []
     valores += [""] * (len(headers) - len(valores))
     return {h: valores[i] for i, h in enumerate(headers)}
+
+
+def _conflicto_sello(fila_norm: dict, sello_esperado, que: str = "embarque") -> str:
+    """Bloqueo optimista (mismo patrón de actualizar_embarque): si la pantalla
+    trae el sello de Fecha_Actualizacion que vio y el de la fila recién leída
+    difiere, otra persona la tocó mientras tanto. Devuelve el mensaje de
+    conflicto o "" si no hay sello que verificar o coincide."""
+    if sello_esperado is None:
+        return ""
+    sello_actual = str(fila_norm.get(_norm_encabezado(COL_ACTUALIZACION), "")).strip()
+    if sello_actual == str(sello_esperado).strip():
+        return ""
+    autor = str(fila_norm.get(_norm_encabezado(COL_ACTUALIZADO_POR), "")).strip() or "otra persona"
+    return (f"{autor} modificó este {que} el {sello_actual}, después de que abriste esta "
+            "pantalla. Actualiza los datos y revisa antes de guardar.")
+
+
+def _verificar_fila_bl(ws, fila: int, bl_esperado: str) -> bool:
+    """Relee la celda BL de `fila` (una llamada) justo antes de borrarla:
+    confirma que la fila sigue siendo la del BL que la pantalla mostró."""
+    headers = _headers(ws.title)
+    columna = _columna_indice(headers, COL_BL)
+    if columna is None:
+        return False
+    valor = _con_reintento(lambda: ws.cell(fila, columna).value)
+    return _norm(valor or "") == _norm(bl_esperado)
+
+
+def _bls_existentes(ws) -> set:
+    """Lectura viva de la columna BL de la pestaña (normalizados)."""
+    headers = _headers(ws.title)
+    columna = _columna_indice(headers, COL_BL)
+    if columna is None:
+        return set()
+    valores = _con_reintento(lambda: ws.col_values(columna)) or []
+    return {_norm(v) for v in valores[1:] if str(v).strip()}
 
 
 def _df_desde_valores(valores: list, columnas_canonicas: list) -> pd.DataFrame:
@@ -1075,24 +1112,24 @@ def cargar_todo() -> dict:
 
     # "Última carga" = la marca más reciente escrita por alguien al agregar,
     # editar, cargar en masa o archivar. Es distinto de "última lectura".
-    marcas = []
+    sellos = []  # por cuadro: [(marca_parseada, autor)]; se parsea una sola vez
     for cuadro in (activos, historico):
-        if not cuadro.empty and COL_ACTUALIZACION in cuadro.columns:
-            marcas += [m for m in (parsear_marca(v) for v in cuadro[COL_ACTUALIZACION]) if m]
+        if cuadro.empty or COL_ACTUALIZACION not in cuadro.columns:
+            sellos.append([])
+            continue
+        columna_autor = COL_ACTUALIZADO_POR if COL_ACTUALIZADO_POR in cuadro.columns else None
+        if columna_autor is None and "Registrado_Por" in cuadro.columns:
+            columna_autor = "Registrado_Por"
+        autores = cuadro[columna_autor] if columna_autor else [""] * len(cuadro)
+        sellos.append(list(zip((parsear_marca(v) for v in cuadro[COL_ACTUALIZACION]), autores)))
+    marcas = [m for par in sellos for m, _ in par if m]
     ultima_carga = max(marcas) if marcas else None
 
     ultima_persona = ""
     if ultima_carga is not None:
-        for cuadro in (activos, historico):
-            if cuadro.empty or COL_ACTUALIZACION not in cuadro.columns:
-                continue
-            columna_autor = COL_ACTUALIZADO_POR if COL_ACTUALIZADO_POR in cuadro.columns else None
-            if columna_autor is None and "Registrado_Por" in cuadro.columns:
-                columna_autor = "Registrado_Por"
-            if columna_autor is None:
-                continue
-            for marca, autor in zip(cuadro[COL_ACTUALIZACION], cuadro[columna_autor]):
-                if parsear_marca(marca) == ultima_carga and str(autor).strip():
+        for par in sellos:
+            for marca, autor in par:
+                if marca == ultima_carga and str(autor).strip():
                     ultima_persona = str(autor).strip()
                     break
             if ultima_persona:
@@ -1105,6 +1142,7 @@ def cargar_todo() -> dict:
 
 def invalidar_caches():
     cargar_todo.clear()
+    _headers.clear()
 
 
 # --- Escrituras -------------------------------------------------------------
@@ -1172,6 +1210,11 @@ def append_row(datos: dict, categoria: str):
     datos = dict(datos)
     datos[COL_ACTUALIZACION] = marca_ahora()
     datos[COL_ACTUALIZADO_POR] = usuario_actual()
+    bl = str(datos.get(COL_BL, "")).strip()
+    if bl and _norm(bl) in _bls_existentes(ws):
+        return False, (f"Ya hay una fila con el BL '{bl}' en '{ws.title}'. Si es un embarque "
+                       "parcial del mismo BL, edita la fila existente; si no, actualiza los "
+                       "datos y revisa antes de guardar.")
     # Solo se asegura la columna de los campos que traen valor real: así una
     # categoría que no usa OC o Modelo_Serie no termina con esa columna vacía.
     columnas_a_asegurar = [c for c, v in datos.items() if str(v).strip()]
@@ -1185,6 +1228,12 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str):
     ws = get_worksheet(categoria)
     if ws is None:
         return False, f"No existe la pestaña '{categoria}' en el Google Sheet."
+    existentes = _bls_existentes(ws)
+    repetidos = sorted({str(r.get(COL_BL, "")).strip() for _, r in df.iterrows()
+                        if str(r.get(COL_BL, "")).strip() and _norm(r.get(COL_BL)) in existentes})
+    if repetidos:
+        return False, (f"Estos BL ya están en '{ws.title}': {', '.join(repetidos)}. "
+                       "Quítalos del archivo o actualiza los datos antes de cargar.")
     opcionales = [c for c in OPCIONALES_CATEGORIA
                   if c in df.columns and df[c].astype(str).str.strip().ne("").any()]
     headers = _asegurar_columnas(ws, [COL_ACTUALIZACION, COL_ACTUALIZADO_POR, *opcionales])
@@ -1223,7 +1272,7 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict,
     combinado_norm = {_norm_encabezado(k): v for k, v in combinado.items()}
 
     sello_actual = str(combinado_norm.get(_norm_encabezado(COL_ACTUALIZACION), "")).strip()
-    if not forzar and sello_esperado and sello_actual and sello_actual != str(sello_esperado).strip():
+    if not forzar and (sello_esperado or sello_actual) and sello_actual != str(sello_esperado).strip():
         autor = str(combinado_norm.get(_norm_encabezado(COL_ACTUALIZADO_POR), "")).strip() or "otra persona"
         return False, (f"{autor} modificó este embarque el {sello_actual}, después de que abriste esta "
                        "pantalla. Actualiza los datos y revisa antes de guardar, o marca la casilla de "
@@ -1255,7 +1304,7 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict,
 
 
 @_con_manejo_apierror
-def marcar_llegada(bl: str, categoria: str, valor: str, fila_sugerida=None):
+def marcar_llegada(bl: str, categoria: str, valor: str, fila_sugerida=None, sello_esperado=None):
     """Escribe la respuesta a '¿ya llegó?'.
 
     valor = "SI"  -> llegó; la fecha de llegada pasa a ser el ETA de la fila
@@ -1285,6 +1334,9 @@ def marcar_llegada(bl: str, categoria: str, valor: str, fila_sugerida=None):
     if es_llego_si(valor):
         actual = _leer_fila(ws, fila, headers)
         actual_norm = {_norm_encabezado(k): v for k, v in actual.items()}
+        conflicto = _conflicto_sello(actual_norm, sello_esperado)
+        if conflicto:
+            return False, conflicto
         problema = validar_eta_confirmado(actual_norm.get(_norm_encabezado(COL_ETA), ""),
                                           actual_norm.get(_norm_encabezado(COL_FECHA_DECLARACION), ""))
         if problema:
@@ -1303,16 +1355,18 @@ def marcar_llegada(bl: str, categoria: str, valor: str, fila_sugerida=None):
     return True, ""
 
 
-def confirmar_llegada(bl: str, categoria: str, fila_sugerida=None):
+def confirmar_llegada(bl: str, categoria: str, fila_sugerida=None, sello_esperado=None):
     """Un clic: 'esta carga ya llegó a puerto'. A partir de aquí el ETA de la
     fila vale como fecha real de llegada y el reloj de días en puerto arranca."""
-    return marcar_llegada(bl, categoria, LLEGO_SI, fila_sugerida=fila_sugerida)
+    return marcar_llegada(bl, categoria, LLEGO_SI, fila_sugerida=fila_sugerida,
+                          sello_esperado=sello_esperado)
 
 
-def marcar_no_llego(bl: str, categoria: str, fila_sugerida=None):
+def marcar_no_llego(bl: str, categoria: str, fila_sugerida=None, sello_esperado=None):
     """'Revisé y todavía no ha llegado'. Deja constancia de la revisión sin
     arrancar ningún contador."""
-    return marcar_llegada(bl, categoria, LLEGO_NO, fila_sugerida=fila_sugerida)
+    return marcar_llegada(bl, categoria, LLEGO_NO, fila_sugerida=fila_sugerida,
+                          sello_esperado=sello_esperado)
 
 
 def validar_eta_confirmado(eta_crudo, declaracion=None):
@@ -1366,7 +1420,7 @@ def _validar_orden_flujo(llegada, declaracion, almacen=None):
 
 @_con_manejo_apierror
 def fijar_fecha_declaracion(bl: str, categoria: str, fecha=None, fila_sugerida=None,
-                            sobrescribir: bool = False):
+                            sobrescribir: bool = False, sello_esperado=None):
     """Registra la recepción y declaración. Exige que la llegada esté confirmada:
     no se declara una carga que, según el propio Sheet, todavía no llegó."""
     ws = get_worksheet(categoria)
@@ -1382,6 +1436,10 @@ def fijar_fecha_declaracion(bl: str, categoria: str, fecha=None, fila_sugerida=N
     indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
     combinado = _leer_fila(ws, fila, headers)
     combinado_norm = {_norm_encabezado(k): v for k, v in combinado.items()}
+
+    conflicto = _conflicto_sello(combinado_norm, sello_esperado)
+    if conflicto:
+        return False, conflicto
 
     if not es_llego_si(combinado_norm.get(_norm_encabezado(COL_LLEGO), "")):
         return False, ("Este embarque todavía no tiene la llegada confirmada. Marca primero "
@@ -1434,6 +1492,8 @@ def eliminar_embarque(bl: str, categoria: str, fila_sugerida=None):
     fila, error = _localizar_fila(ws, bl, fila_sugerida)
     if error:
         return False, error
+    if not _verificar_fila_bl(ws, fila, bl):
+        return False, "La fila cambió mientras se procesaba; pulsa Actualizar y reintenta."
     _con_reintento(lambda: ws.delete_rows(fila))
     return True, ""
 
@@ -1514,6 +1574,10 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
 
     _con_reintento(lambda: ws_destino.append_row(_fila_desde_dict(headers_destino, registro),
                                                  value_input_option="RAW"))
+    if not _verificar_fila_bl(ws_origen, fila, bl):
+        return False, (f"El embarque quedó archivado en '{RECIBIDO_SHEET}', pero la fila {fila} de "
+                       f"'{categoria}' cambió mientras se procesaba y NO se borró. Bórrala a mano en "
+                       "el Sheet para que no quede duplicado, o vuelve a intentarlo.")
     try:
         _con_reintento(lambda: ws_origen.delete_rows(fila))
     except Exception as e:  # noqa: BLE001
@@ -1566,6 +1630,10 @@ def quitar_de_recibido(bl: str, categoria_manual: str = None, fila_sugerida=None
     ok, mensaje = append_row(devuelto, categoria)
     if not ok:
         return False, mensaje or f"No se pudo escribir de vuelta en '{categoria}'."
+    if not _verificar_fila_bl(ws_recibido, fila, bl):
+        return False, (f"El embarque volvió a '{categoria}', pero la fila {fila} de "
+                       f"'{RECIBIDO_SHEET}' cambió mientras se procesaba y NO se borró. "
+                       "Bórralo a mano para que no quede duplicado.")
     try:
         _con_reintento(lambda: ws_recibido.delete_rows(fila))
     except Exception as e:  # noqa: BLE001
@@ -1756,7 +1824,8 @@ def mover_empresa_primera_columna():
 
 
 @_con_manejo_apierror
-def guardar_pago(bl: str, conceptos: dict, estado: str = None, empresa: str = None, referencia: dict = None):
+def guardar_pago(bl: str, conceptos: dict, estado: str = None, empresa: str = None, referencia: dict = None,
+                 sello_esperado=None):
     """Crea o actualiza la fila de Pagos de un BL. `conceptos` trae únicamente
     los que aplican a este expediente (los que no, se guardan vacíos: 'no
     aplica' no es lo mismo que 'cero'). `empresa`, si viene, se aplica SIEMPRE
@@ -1792,6 +1861,10 @@ def guardar_pago(bl: str, conceptos: dict, estado: str = None, empresa: str = No
         return True, ""
 
     combinado = _leer_fila(ws, fila, headers)
+    combinado_norm = {_norm_encabezado(k): v for k, v in combinado.items()}
+    conflicto = _conflicto_sello(combinado_norm, sello_esperado, que="expediente")
+    if conflicto:
+        return False, conflicto
     combinado.update(datos)
     rango = f"{rowcol_to_a1(fila, 1)}:{rowcol_to_a1(fila, len(headers))}"
     _con_reintento(lambda: ws.update(range_name=rango, values=[_fila_desde_dict(headers, combinado)],
@@ -1821,11 +1894,11 @@ def registrar_sin_mora(bl: str, fecha, sobrescribir: bool = False):
         return False, (f"Este expediente ya tiene una fecha saludable registrada ({ya_registrado}). "
                        "Marca la casilla de corrección para cambiarla.")
 
-    indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
     peticiones = [
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_FECHA_SIN_MORA)]), "values": [[fecha.isoformat()]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_FECHA_SIN_MORA)]), "values": [[fecha.isoformat()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
     ]
     _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
     return True, ""
@@ -1856,14 +1929,14 @@ def registrar_pago_realizado(bl: str, fecha, extra: dict, sobrescribir: bool = F
         return False, (f"Este expediente ya tiene un pago registrado ({ya_registrado}). "
                        "Marca la casilla de corrección para cambiarlo.")
 
-    indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
     peticiones = [
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_FECHA_PAGO_REAL)]), "values": [[fecha.isoformat()]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_PAGOREAL_USD)]), "values": [[extra.get("USD", 0.0)]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_PAGOREAL_DOP)]), "values": [[extra.get("DOP", 0.0)]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ESTADO_PAGO)]), "values": [[ESTADO_PAGO_PAGADO]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_FECHA_PAGO_REAL)]), "values": [[fecha.isoformat()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_PAGOREAL_USD)]), "values": [[extra.get("USD", 0.0)]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_PAGOREAL_DOP)]), "values": [[extra.get("DOP", 0.0)]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ESTADO_PAGO)]), "values": [[ESTADO_PAGO_PAGADO]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
     ]
     _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
     return True, ""
@@ -1883,14 +1956,21 @@ def marcar_estado_pago(bl: str, estado: str):
     if fila is None:
         return False, f"El BL '{bl}' no tiene conceptos registrados todavía."
     headers = _asegurar_columnas(ws, [COL_ESTADO_PAGO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
-    indices = {_norm(h): i + 1 for i, h in enumerate(headers)}
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
     peticiones = [
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ESTADO_PAGO)]), "values": [[estado]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
-        {"range": rowcol_to_a1(fila, indices[_norm(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ESTADO_PAGO)]), "values": [[estado]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
     ]
     _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
     return True, ""
+
+
+@st.cache_resource
+def _lock_sync_pagos():
+    """Candado de proceso para sincronizar_pagos_con_transito: serializa la
+    carrera dentro de este proceso (Community Cloud corre un solo proceso)."""
+    return threading.Lock()
 
 
 @_con_manejo_apierror
@@ -1904,45 +1984,46 @@ def sincronizar_pagos_con_transito(activos: pd.DataFrame, historico: pd.DataFram
     No pisa ni borra nada de lo que ya exista en Pagos: un BL que ya tiene
     fila se deja tal cual, aunque su descripción o llegada haya cambiado en
     tránsito después de sincronizado. Sincronizar solo AGREGA lo que falta."""
-    ws = _obtener_o_crear_ws_pagos()
-    headers = _asegurar_columnas(ws, COLUMNAS_PAGOS)
-    columna_bl = _columna_indice(headers, COL_BL)
-    existentes = set()
-    if columna_bl:
-        valores = _con_reintento(lambda: ws.col_values(columna_bl)) or []
-        existentes = {_norm(v) for v in valores[1:] if str(v).strip()}
+    with _lock_sync_pagos():
+        ws = _obtener_o_crear_ws_pagos()
+        headers = _asegurar_columnas(ws, COLUMNAS_PAGOS)
+        columna_bl = _columna_indice(headers, COL_BL)
+        existentes = set()
+        if columna_bl:
+            valores = _con_reintento(lambda: ws.col_values(columna_bl)) or []
+            existentes = {_norm(v) for v in valores[1:] if str(v).strip()}
 
-    sello, autor = marca_ahora(), usuario_actual()
-    nuevas, vistos = [], set()
-    for fuente, es_hist in ((activos, False), (historico, True)):
-        if fuente is None or fuente.empty:
-            continue
-        for _, r in fuente.iterrows():
-            bl = str(r.get(COL_BL, "")).strip()
-            clave = _norm(bl)
-            if not bl or clave in existentes or clave in vistos:
+        sello, autor = marca_ahora(), usuario_actual()
+        nuevas, vistos = [], set()
+        for fuente, es_hist in ((activos, False), (historico, True)):
+            if fuente is None or fuente.empty:
                 continue
-            if es_hist:
-                llegada = (parsear_fecha(r.get(COL_FECHA_LLEGADA_PUERTO, ""))
-                          or parsear_fecha(r.get(COL_ETA, "")))
-            else:
-                llegada = fecha_llegada_fila(r) or parsear_fecha(r.get(COL_ETA, ""))
-            nuevas.append({
-                COL_BL: bl,
-                COL_DESC: str(r.get(COL_DESC, "")),
-                COL_CANT: str(r.get(COL_CANT, "")),
-                COL_PAGO_LLEGADA: llegada.isoformat() if llegada else "",
-                COL_ACTUALIZACION: sello,
-                COL_ACTUALIZADO_POR: autor,
-            })
-            # Empresa se deja en blanco a propósito: tránsito no tiene ese
-            # concepto (solo trackea Antillana), y quién debe cada expediente
-            # lo decide Logística a mano, no la sincronización.
-            vistos.add(clave)
+            for _, r in fuente.iterrows():
+                bl = str(r.get(COL_BL, "")).strip()
+                clave = _norm(bl)
+                if not bl or clave in existentes or clave in vistos:
+                    continue
+                if es_hist:
+                    llegada = (parsear_fecha(r.get(COL_FECHA_LLEGADA_PUERTO, ""))
+                              or parsear_fecha(r.get(COL_ETA, "")))
+                else:
+                    llegada = fecha_llegada_fila(r) or parsear_fecha(r.get(COL_ETA, ""))
+                nuevas.append({
+                    COL_BL: bl,
+                    COL_DESC: str(r.get(COL_DESC, "")),
+                    COL_CANT: str(r.get(COL_CANT, "")),
+                    COL_PAGO_LLEGADA: llegada.isoformat() if llegada else "",
+                    COL_ACTUALIZACION: sello,
+                    COL_ACTUALIZADO_POR: autor,
+                })
+                # Empresa se deja en blanco a propósito: tránsito no tiene ese
+                # concepto (solo trackea Antillana), y quién debe cada expediente
+                # lo decide Logística a mano, no la sincronización.
+                vistos.add(clave)
 
-    if not nuevas:
-        return True, "0 expedientes nuevos: Pagos ya tenía todos los BL de tránsito."
+        if not nuevas:
+            return True, "0 expedientes nuevos: Pagos ya tenía todos los BL de tránsito."
 
-    filas = [_fila_desde_dict(headers, n) for n in nuevas]
-    _con_reintento(lambda: ws.append_rows(filas, value_input_option="RAW"))
-    return True, f"{len(nuevas)} expediente(s) agregado(s) a Pagos desde tránsito."
+        filas = [_fila_desde_dict(headers, n) for n in nuevas]
+        _con_reintento(lambda: ws.append_rows(filas, value_input_option="RAW"))
+        return True, f"{len(nuevas)} expediente(s) agregado(s) a Pagos desde tránsito."

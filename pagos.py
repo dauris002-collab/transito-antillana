@@ -33,7 +33,7 @@ from sheets_io import (
     registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
 )
 from logica import PALETA_PAISES, enriquecer_pagos, esc, resumen_pagos, totales_conceptos
-from ui_componentes import CUSTOM_CSS, _logo_base64, rerun_fragmento
+from ui_componentes import COLOR_TOTAL, _logo_base64, rerun_fragmento
 
 
 COLOR_SOBRECOSTO = "#991B1B"
@@ -71,19 +71,17 @@ PAGOS_CSS = """
                 font-weight:700; padding:2px 10px; border-radius:999px; margin-left:8px; }
 .pago-estado { display:inline-block; font-size:0.75rem; font-weight:700; color:#fff;
                padding:3px 12px; border-radius:999px; white-space:nowrap; }
-.pago-meta { color:#111827; font-size:0.85rem; margin-top:2px; }
-.pago-referencia { color:#111827; font-size:0.85rem; font-weight:700; margin-top:1px; }
+.pago-meta { color:#6B7280; font-size:0.85rem; margin-top:2px; }
 .pago-conceptos { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:14px 0; }
 .pago-chip { padding:6px 15px; border-radius:999px; color:#fff; font-size:0.83rem; font-weight:700;
              white-space:nowrap; }
 .pago-totales { display:flex; flex-wrap:wrap; justify-content:center; align-items:baseline; gap:28px;
                 margin-top:6px; }
-.pago-total-etq { font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#0C447C;
-                  font-weight:700; display:block; text-align:center; }
-.pago-total-val { font-size:1.2rem; font-weight:400; color:#111827; display:block; text-align:center; }
-.pago-cerrado { text-align:center; color:#111827; font-size:0.78rem; font-weight:700; margin-top:10px; }
-.pago-sin-extra { color:#166534; font-weight:600; }
-.pago-extra { color:#991B1B; font-weight:700; background:#FEF2F2; padding:2px 9px; border-radius:6px; }
+.pago-total-etq { font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#6B7280;
+                  display:block; text-align:center; }
+.pago-total-val { font-size:1.2rem; font-weight:800; color:#111827; display:block; text-align:center; }
+.pago-cerrado { text-align:center; color:#9CA3AF; font-size:0.78rem; margin-top:10px; }
+@media (max-width:640px) { .pago-totales { gap:14px 18px; } }
 </style>
 """
 
@@ -170,10 +168,7 @@ def _hay_bls_sin_sincronizar(activos: pd.DataFrame, historico: pd.DataFrame, pag
 # ---------------------------------------------------------------------------
 # DASHBOARD (viewer + admin)
 # ---------------------------------------------------------------------------
-COLOR_ABIERTOS = "#EA580C"
-
-
-COLOR_PAGADOS = "#2E7D32"  # mismo verde que ya usa el badge "Pagado" de cada tarjeta, ver _html_expediente
+COLOR_ABIERTOS = "#2E86DE"
 
 
 def _aplicar_filtro_kpi(df: pd.DataFrame, filtro: str) -> pd.DataFrame:
@@ -223,7 +218,7 @@ def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
     prom = resumen["dias_mora_promedio"]
     sobre = resumen["sobrecosto"]
     kpis = [
-        ("Pagados", str(resumen["n_pagados"]), COLOR_PAGADOS, "cerrados"),
+        ("Pagados", str(resumen["n_pagados"]), COLOR_TOTAL, "cerrados"),
         ("Pendientes", str(resumen["n_abiertos"]), COLOR_ABIERTOS, "abiertos"),
         ("Mora promedio", f"{prom:.0f} d" if prom is not None else "—", COLOR_MORA_PROMEDIO, "con_mora"),
         ("Sobrecosto acumulado", f"USD {sobre['USD']:,.0f} · DOP {sobre['DOP']:,.0f}",
@@ -246,15 +241,16 @@ def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
         for _, _, color, slug in kpis
     )
     st.markdown(f"<style>{estilos}</style>", unsafe_allow_html=True)
-    cols = st.columns(len(kpis) + 1)
-    for col, (label, valor, _color, slug) in zip(cols, kpis):
-        with col:
-            with st.container(key=f"pagokpi_{slug}"):
-                if st.button(f"{label.upper()}\n\n{valor}", key=f"btn_pagokpi_{slug}", width="stretch"):
-                    st.session_state["pago_filtro_estado"] = "todos" if filtro_activo == slug else slug
-                    rerun_fragmento()
-    with cols[-1]:
-        st.markdown(_tarjeta_por_pagar(resumen["total_por_pagar"]), unsafe_allow_html=True)
+    with st.container(key="pagokpirow"):
+        cols = st.columns(len(kpis) + 1)
+        for col, (label, valor, _color, slug) in zip(cols, kpis):
+            with col:
+                with st.container(key=f"pagokpi_{slug}"):
+                    if st.button(f"{label.upper()}\n\n{valor}", key=f"btn_pagokpi_{slug}", width="stretch"):
+                        st.session_state["pago_filtro_estado"] = "todos" if filtro_activo == slug else slug
+                        rerun_fragmento()
+        with cols[-1]:
+            st.markdown(_tarjeta_por_pagar(resumen["total_por_pagar"]), unsafe_allow_html=True)
     return st.session_state.get("pago_filtro_estado", "todos")
 
 
@@ -285,15 +281,13 @@ def _html_expediente(r) -> str:
 
     total = r.get("TotalActual") or {}
     dias_sin_pagar = r.get("DiasSinPagar")
-    dias_sin_pagar_txt = "—" if dias_sin_pagar is None or pd.isna(dias_sin_pagar) else str(int(dias_sin_pagar))
+    if dias_sin_pagar is None or pd.isna(dias_sin_pagar):
+        dias_sin_pagar_txt = "—"
+    else:
+        dias_sin_pagar_txt = str(int(dias_sin_pagar))
+        if dias_sin_pagar < 0:
+            dias_sin_pagar_txt += " (pagado antes de la llegada)"
     fecha_saludable = esc(r.get(COL_FECHA_SIN_MORA, "")) or "sin fijar"
-
-    # Quién lo solicitó (OC/EE/Cliente-Stock), leído en vivo de tránsito por
-    # enriquecer_pagos(). No todo expediente lo trae -- Carga Suelta/General
-    # no usan Cliente/Stock, Tecnicaribe y Motor Ibérico no tienen tránsito
-    # propio -- así que la línea entera se omite cuando no hay nada que mostrar.
-    referencia = str(r.get("ReferenciaTransito", "") or "").strip()
-    referencia_html = f'<div class="pago-referencia">{esc(referencia)}</div>' if referencia else ""
 
     if pagado:
         # Ya pagado: lo que importa es el costo FINAL (conceptos + el extra
@@ -311,18 +305,18 @@ def _html_expediente(r) -> str:
         extra = r.get("MontoExtra") or {}
         partes = [_fmt(v, m) for m, v in extra.items() if v is not None and abs(v) > 0.005]
         if partes:
-            extra_html = (' · <span class="pago-extra">⚠ Extra pagado de más: '
-                          f'{" y ".join(partes)}</span>')
+            total_extra = sum(v for v in extra.values() if v is not None)
+            etiqueta_extra = "Pagado de menos" if total_extra < 0 else "Extra pagado de más"
+            extra_txt = f" · {etiqueta_extra}: " + " y ".join(partes)
         else:
-            extra_html = ' · <span class="pago-sin-extra">Sin diferencia sobre lo saludable</span>'
-        pie_cerrado = f'<div class="pago-cerrado">Pagado el {esc(fecha_pago)}{extra_html}</div>'
+            extra_txt = " · Sin diferencia sobre lo saludable"
+        pie_cerrado = f'<div class="pago-cerrado">Pagado el {esc(fecha_pago)}{extra_txt}</div>'
 
     return (
         '<div class="pago-tarjeta">'
         f'<div class="pago-cabeza"><span class="pago-bl">{bl}<span class="pago-empresa">{empresa}</span></span>'
         f'<span class="pago-estado" style="background:{color_estado};">{esc(estado)}</span></div>'
-        f'<div class="pago-meta"><b>{desc}</b> · {cant} · Llegada: {llegada}</div>'
-        f'{referencia_html}'
+        f'<div class="pago-meta">{desc} · {cant} · Llegada: {llegada}</div>'
         f'<div class="pago-conceptos">{"".join(chips)}</div>'
         '<div class="pago-totales">'
         f'<div><span class="pago-total-etq">{etiqueta_usd}</span>'
@@ -357,12 +351,23 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
     # de quedarse pegado en lo que el usuario había elegido antes aquí.
     slug_actual = st.session_state.get("pago_filtro_estado", "todos")
     if slug_actual not in ESTADO_DISPLAY:
+        st.caption("🔎 Filtro de tarjeta activo — el selector Estatus no aplica; quítalo pulsando "
+                   "la misma tarjeta o eligiendo 'Todos' aquí.")
         slug_actual = "todos"  # "con_mora"/"con_sobrecosto" no tienen equivalente en este selector
     opciones_estatus = ["Todos", "Pendiente", "Pagado"]
+
+    def _al_elegir_estatus():
+        # Salir del filtro de tarjeta eligiendo 'Todos': solo corre ante una
+        # elección real del usuario (on_change), nunca al re-renderizar.
+        if (st.session_state.get(f"pago_filtro_estatus_{slug_actual}") == "Todos"
+                and st.session_state.get("pago_filtro_estado", "todos") != "todos"):
+            st.session_state["pago_filtro_estado"] = "todos"
+
     with c2:
         estatus_sel = st.selectbox("Estatus", opciones_estatus,
                                    index=opciones_estatus.index(ESTADO_DISPLAY[slug_actual]),
-                                   key=f"pago_filtro_estatus_{slug_actual}")
+                                   key=f"pago_filtro_estatus_{slug_actual}",
+                                   on_change=_al_elegir_estatus)
     nuevo_slug = ESTADO_SLUG[estatus_sel]
     if nuevo_slug != slug_actual:
         st.session_state["pago_filtro_estado"] = nuevo_slug
@@ -382,6 +387,12 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
         st.warning(f"{sin_transito} expediente(s) de Pagos ya no tienen un BL coincidente en tránsito "
                    "(activo ni histórico) — puede que se hayan eliminado o cambiado de BL ahí.")
 
+    no_reconocidas = int((~enriquecido["EmpresaEfectiva"].isin(EMPRESAS_PAGO)).sum()) \
+        if not enriquecido.empty else 0
+    if no_reconocidas:
+        st.warning(f"{no_reconocidas} expediente(s) con Empresa no reconocida — "
+                   "solo visibles en 'Todas'.")
+
     resumen = resumen_pagos(con_montos)
     filtro_activo = _tarjetas_resumen(resumen, st.session_state.get("pago_filtro_estado", "todos"))
 
@@ -389,6 +400,10 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
         st.info(f"Hay {len(vista)} expediente(s) en esta selección, pero ninguno tiene montos "
                 "cargados todavía. Se muestran aquí solo cuando tengan al menos un concepto lleno.")
         return
+
+    if len(con_montos) < len(vista):
+        st.caption(f"{len(vista) - len(con_montos)} expediente(s) de esta selección aún no tienen "
+                   "montos cargados.")
 
     filtrado = _aplicar_filtro_kpi(con_montos, filtro_activo)
     st.markdown(PAGOS_CSS, unsafe_allow_html=True)
@@ -447,11 +462,11 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
     opciones_empresa = ["— Elige —"] + EMPRESAS_PAGO
     idx_empresa = opciones_empresa.index(empresa_previa) if empresa_previa in opciones_empresa else 0
     empresa_elegida = st.selectbox("Empresa (a quién se le debe este expediente)", opciones_empresa,
-                                   index=idx_empresa, key="pago_empresa_sel")
+                                   index=idx_empresa, key=f"pago_empresa_sel_{bl}")
 
     conceptos_aplican = st.multiselect(
         "Conceptos que aplican a este expediente (deja fuera los que no apliquen — vacío no es cero)",
-        CONCEPTOS_PAGO, default=seleccionados_previos, key="pago_conceptos_sel",
+        CONCEPTOS_PAGO, default=seleccionados_previos, key=f"pago_conceptos_sel_{bl}",
     )
 
     montos = {}
@@ -463,7 +478,7 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
             with cols[i % 2]:
                 montos[concepto] = st.number_input(
                     f"{concepto} ({moneda})", min_value=0.0, value=float(valor_previo),
-                    step=100.0, key=f"pago_monto_{concepto}",
+                    step=100.0, key=f"pago_monto_{concepto}_{bl}",
                 )
 
     if st.button("Guardar conceptos", type="primary", key="btn_guardar_conceptos"):
@@ -479,7 +494,9 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
         datos = {c: (montos[c] if c in conceptos_aplican else "") for c in CONCEPTOS_PAGO}
         referencia = {COL_DESC: elegido["desc"], COL_CANT: elegido["cant"],
                      COL_PAGO_LLEGADA: elegido["llegada_iso"]}
-        ok, mensaje = guardar_pago(bl, datos, empresa=empresa_elegida, referencia=referencia)
+        ok, mensaje = guardar_pago(bl, datos, empresa=empresa_elegida, referencia=referencia,
+                                   sello_esperado=(fila_existente.get(COL_ACTUALIZACION)
+                                                   if fila_existente is not None else None))
         if ok:
             registrar_log("Conceptos de pago guardados", bl, "", ", ".join(conceptos_aplican) or "(ninguno)")
             invalidar_caches()
@@ -506,7 +523,7 @@ def form_sin_mora(enriquecido: pd.DataFrame):
     corregir = False
     if ya_registrado:
         st.info(f"Ya registrado: {ya_registrado}.")
-        corregir = st.checkbox("Corregir fecha", key="corregir_sin_mora")
+        corregir = st.checkbox("Corregir fecha", key=f"corregir_sin_mora_{bl}")
         if not corregir:
             return
 
@@ -549,7 +566,7 @@ def form_pago_realizado(enriquecido: pd.DataFrame):
     corregir = False
     if ya_registrado:
         st.info(f"Ya registrado: {ya_registrado}.")
-        corregir = st.checkbox("Corregir fecha y/o extra", key="corregir_pago_real")
+        corregir = st.checkbox("Corregir fecha y/o extra", key=f"corregir_pago_real_{bl}")
         if not corregir:
             return
 
@@ -585,8 +602,11 @@ def form_estado_pago(enriquecido: pd.DataFrame):
     bl = st.selectbox("Expediente (BL)", opciones, key="sel_bl_estado")
     fila = enriquecido[enriquecido[COL_BL].astype(str).str.strip() == bl].iloc[0]
     actual = str(fila.get(COL_ESTADO_PAGO, "")).strip() or ESTADO_PAGO_PENDIENTE
+    if str(fila.get(COL_FECHA_PAGO_REAL, "")).strip():
+        st.caption("Este expediente tiene fecha de pago real; seguirá como Pagado hasta borrar "
+                   "esa fecha en el Sheet.")
     estado = st.radio("Estado", [ESTADO_PAGO_PENDIENTE, ESTADO_PAGO_PAGADO],
-                      index=0 if actual == ESTADO_PAGO_PENDIENTE else 1, key="radio_estado_pago")
+                      index=0 if actual == ESTADO_PAGO_PENDIENTE else 1, key=f"radio_estado_pago_{bl}")
     if st.button("Guardar estado", type="primary", key="btn_estado_pago"):
         ok, mensaje = marcar_estado_pago(bl, estado)
         if ok:
@@ -655,8 +675,6 @@ def _encabezado_pagos(sello_info: dict):
 
 @st.fragment
 def panel_pagos(datos: dict, es_admin: bool):
-    st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-
     activos = datos.get("activos", pd.DataFrame())
     historico = datos.get("historico", pd.DataFrame())
     df_pagos = datos.get("pagos", pd.DataFrame())

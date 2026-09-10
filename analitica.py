@@ -34,8 +34,8 @@ from sheets_io import (
     MESES_ES_CORTO, NO_ESPECIFICADO, VIA_AEREA,
     costos_puerto, parsear_fecha, unificar_paises,
 )
-from logica import ETAPAS_PUERTO, enriquecer, es_aereo
-from ui_componentes import esc
+from logica import ETAPAS_PUERTO, es_aereo
+from ui_componentes import _enriquecer_cacheado, esc
 
 
 # Paleta propia para esta pestaña -- más viva que la de tránsito (PALETA_PAISES
@@ -111,15 +111,15 @@ def _universo(activos: pd.DataFrame, historico: pd.DataFrame) -> pd.DataFrame:
     if activos is not None and not activos.empty:
         piezas.append(pd.DataFrame({
             "BL": activos[COL_BL], "Categoria": activos.get("Categoria", ""),
-            "Pais": unificar_paises(activos[COL_PAIS]), "Descripcion": activos[COL_DESC],
-            "Anio": [(parsear_fecha(v).year if parsear_fecha(v) else None) for v in activos[COL_ETA]],
+            "Pais": activos[COL_PAIS], "Descripcion": activos[COL_DESC],
+            "Anio": [(f.year if f else None) for f in (parsear_fecha(v) for v in activos[COL_ETA])],
         }))
     if historico is not None and not historico.empty:
         fechas_ref = historico["Fecha_Recibido"] if "Fecha_Recibido" in historico.columns else [""] * len(historico)
         piezas.append(pd.DataFrame({
             "BL": historico[COL_BL], "Categoria": historico.get("Categoria_Origen", ""),
             "Pais": unificar_paises(historico[COL_PAIS]), "Descripcion": historico[COL_DESC],
-            "Anio": [(parsear_fecha(v).year if parsear_fecha(v) else None) for v in fechas_ref],
+            "Anio": [(f.year if f else None) for f in (parsear_fecha(v) for v in fechas_ref)],
         }))
     if not piezas:
         return pd.DataFrame(columns=columnas)
@@ -175,13 +175,6 @@ def _mensual_historico(historico: pd.DataFrame) -> pd.DataFrame:
         filas.append({"Mes": mes, "Anio": mes.year, "Categoria": r.get("Categoria_Origen", "") or NO_ESPECIFICADO,
                       "Pais": pais or NO_ESPECIFICADO})
     return pd.DataFrame(filas, columns=columnas)
-
-
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def _enriquecer_activos_cacheado(activos: pd.DataFrame) -> pd.DataFrame:
-    if activos is None or activos.empty:
-        return activos
-    return enriquecer(activos)
 
 
 def _aplicar_filtros(df: pd.DataFrame, anios_sel: list, paises_sel: list, cats_sel: list) -> pd.DataFrame:
@@ -286,8 +279,8 @@ def _figura_categorias(universo: pd.DataFrame) -> go.Figure | None:
     )])
     fig.add_annotation(text=f"<b>{total}</b><br>embarques", x=0.5, y=0.5, showarrow=False,
                        font=dict(size=15, family=_FUENTE, color="#111827"))
-    fig.update_layout(**{**_LAYOUT_BASE, "showlegend": True}, height=340,
-                      legend=dict(orientation="v", font=dict(size=11, family=_FUENTE)),
+    fig.update_layout(**{**_LAYOUT_BASE, "showlegend": True}, height=380,
+                      legend=dict(orientation="h", y=-0.15, font=dict(size=11, family=_FUENTE)),
                       title=dict(text="🏷️ Embarques por categoría — clic para filtrar"))
     return fig
 
@@ -331,7 +324,7 @@ def _figura_tendencia_mensual(mensual: pd.DataFrame, meses: int = 24) -> go.Figu
     )])
     fig.update_layout(**_LAYOUT_BASE, height=300,
                       title=dict(text="📈 Embarques recibidos por mes"),
-                      xaxis=dict(showgrid=False, title=""),
+                      xaxis=dict(showgrid=False, title="", tickangle=-45),
                       yaxis=dict(showgrid=True, gridcolor="#F1F5F9", title="", rangemode="tozero"))
     return fig
 
@@ -416,7 +409,7 @@ def _figura_heatmap_pais_categoria(universo: pd.DataFrame, top_paises: int = 8, 
     fig.update_layout(**{**_LAYOUT_BASE, "font": dict(color="#374151", size=11, family=_FUENTE)},
                       height=max(300, 40 * len(cats_top)),
                       title=dict(text="🗺️ Qué categoría viene de qué país"),
-                      xaxis=dict(showgrid=False, title="", side="bottom"),
+                      xaxis=dict(showgrid=False, title="", side="bottom", tickangle=-45),
                       yaxis=dict(showgrid=False, title="", autorange="reversed"))
     return fig
 
@@ -444,13 +437,14 @@ def _tarjeta_via(dias_df: pd.DataFrame) -> str:
 # ---------------------------------------------------------------------------
 # PANEL
 # ---------------------------------------------------------------------------
+@st.fragment
 def panel_analitica(datos: dict):
     st.subheader("📊 Analítica de importaciones")
     st.caption("Se arma sola con lo que ya está en tránsito y en el histórico. Los filtros de arriba y el clic "
               "sobre las barras de País o las porciones de Categoría actualizan todo el panel.")
 
     activos_crudo, historico = datos.get("activos"), datos.get("historico")
-    activos = _enriquecer_activos_cacheado(activos_crudo)
+    activos = _enriquecer_cacheado(activos_crudo)
     universo = _universo(activos_crudo, historico)
     dias_df = _ciclo_historico(historico)
     mensual = _mensual_historico(historico)
@@ -532,21 +526,22 @@ def panel_analitica(datos: dict):
     sla_pct, sla_n = _cumplimiento_sla(dias_f)
 
     st.write("")
-    cols = st.columns(6)
-    tarjetas = [
-        ("📦", "Embarques recibidos", str(len(mensual_f)), "#059669", "#10B981"),
-        ("🌍", "País principal", pais_top.iloc[0] if len(pais_top) else "—", "#0284C7", "#38BDF8"),
-        ("🏷️", "Categoría principal", cat_top.iloc[0] if len(cat_top) else "—", "#1E3A5F", "#0C4A6E"),
-        ("⏱️", "Días en puerto (prom.)", f"{dias_prom:.1f} d" if dias_prom is not None else "—",
-         "#B45309", "#F59E0B"),
-        ("🐢", "Categoría más lenta", f"{cat_lenta} · {dias_lenta:.1f} d" if cat_lenta else "—",
-         "#B91C1C", "#EF4444"),
-        ("✅", "Cumplimiento SLA en puerto", f"{sla_pct}% ({sla_n})" if sla_pct is not None else "—",
-         "#0F766E", "#14B8A6"),
-    ]
-    for col, (icono, label, valor, ca, cb) in zip(cols, tarjetas):
-        with col:
-            st.markdown(_tarjeta_kpi_bi(icono, label, valor, ca, cb), unsafe_allow_html=True)
+    with st.container(key="bikpirow"):
+        cols = st.columns(6)
+        tarjetas = [
+            ("📦", "Embarques recibidos", str(len(mensual_f)), "#059669", "#10B981"),
+            ("🌍", "País principal", pais_top.iloc[0] if len(pais_top) else "—", "#0284C7", "#38BDF8"),
+            ("🏷️", "Categoría principal", cat_top.iloc[0] if len(cat_top) else "—", "#1E3A5F", "#0C4A6E"),
+            ("⏱️", "Días en puerto (prom.)", f"{dias_prom:.1f} d" if dias_prom is not None else "—",
+             "#B45309", "#F59E0B"),
+            ("🐢", "Categoría más lenta", f"{cat_lenta} · {dias_lenta:.1f} d" if cat_lenta else "—",
+             "#B91C1C", "#EF4444"),
+            ("✅", "Cumplimiento SLA en puerto", f"{sla_pct}% ({sla_n})" if sla_pct is not None else "—",
+             "#0F766E", "#14B8A6"),
+        ]
+        for col, (icono, label, valor, ca, cb) in zip(cols, tarjetas):
+            with col:
+                st.markdown(_tarjeta_kpi_bi(icono, label, valor, ca, cb), unsafe_allow_html=True)
 
     st.write("")
     ca1, ca2 = st.columns(2)

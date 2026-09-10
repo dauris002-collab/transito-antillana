@@ -233,7 +233,7 @@ def login_screen():
         with st.form("form_login", clear_on_submit=True, border=False):
             pin = st.text_input("PIN", type="password", max_chars=LARGO_PIN,
                                 label_visibility="collapsed",
-                                placeholder=f"PIN de {LARGO_PIN} dígitos")
+                                placeholder="PIN")
             entrar = st.form_submit_button("Entrar", type="primary", width="stretch")
 
     if not entrar:

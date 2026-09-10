@@ -72,7 +72,7 @@ PAGOS_CSS = """
 .pago-estado { display:inline-block; font-size:0.75rem; font-weight:700; color:#fff;
                padding:3px 12px; border-radius:999px; white-space:nowrap; }
 .pago-meta { color:#111827; font-size:0.85rem; margin-top:2px; }
-.pago-referencia { color:#111827; font-size:0.85rem; margin-top:1px; }
+.pago-referencia { color:#111827; font-size:0.85rem; font-weight:700; margin-top:1px; }
 .pago-conceptos { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:14px 0; }
 .pago-chip { padding:6px 15px; border-radius:999px; color:#fff; font-size:0.83rem; font-weight:700;
              white-space:nowrap; }
@@ -81,7 +81,7 @@ PAGOS_CSS = """
 .pago-total-etq { font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#0C447C;
                   font-weight:700; display:block; text-align:center; }
 .pago-total-val { font-size:1.2rem; font-weight:400; color:#111827; display:block; text-align:center; }
-.pago-cerrado { text-align:center; color:#111827; font-size:0.78rem; margin-top:10px; }
+.pago-cerrado { text-align:center; color:#111827; font-size:0.78rem; font-weight:700; margin-top:10px; }
 .pago-sin-extra { color:#166534; font-weight:600; }
 .pago-extra { color:#991B1B; font-weight:700; background:#FEF2F2; padding:2px 9px; border-radius:6px; }
 </style>
@@ -321,7 +321,7 @@ def _html_expediente(r) -> str:
         '<div class="pago-tarjeta">'
         f'<div class="pago-cabeza"><span class="pago-bl">{bl}<span class="pago-empresa">{empresa}</span></span>'
         f'<span class="pago-estado" style="background:{color_estado};">{esc(estado)}</span></div>'
-        f'<div class="pago-meta">{desc} · {cant} · Llegada: {llegada}</div>'
+        f'<div class="pago-meta"><b>{desc}</b> · {cant} · Llegada: {llegada}</div>'
         f'{referencia_html}'
         f'<div class="pago-conceptos">{"".join(chips)}</div>'
         '<div class="pago-totales">'

@@ -258,7 +258,8 @@ def _html_expediente(r) -> str:
     bl = esc(r.get(COL_BL, "")) or "(sin BL)"
     desc = esc(r.get(COL_DESC, ""))
     cant = esc(r.get(COL_CANT, ""))
-    llegada = esc(r.get(COL_PAGO_LLEGADA, "")) or "—"
+    llegada_efectiva = r.get("LlegadaEfectiva")
+    llegada = esc(formato_eta(llegada_efectiva)) if llegada_efectiva else "—"
     empresa = esc(r.get("EmpresaEfectiva", "")) or EMPRESA_ANTILLANA
     # El estado que se muestra es el EFECTIVO: Pagado en cuanto hay fecha de
     # pago real, así se haya tecleado directo en el Sheet sin pasar por el
@@ -450,6 +451,32 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
         st.caption("Expediente nuevo en Pagos — todavía sin conceptos registrados.")
     else:
         st.caption("Este expediente ya tiene conceptos registrados; los valores de abajo son los actuales.")
+        tiene_match_transito = bl in (set(activos[COL_BL].astype(str).str.strip())
+                                      | set(historico[COL_BL].astype(str).str.strip()))
+        llegada_mostrada = fila_existente.get("LlegadaEfectiva")
+        etiqueta_llegada = f"📅 Llegada: {formato_eta(llegada_mostrada) if llegada_mostrada else '—'}"
+        with st.expander(f"{etiqueta_llegada} · corregir"):
+            if tiene_match_transito:
+                st.caption("Este BL tiene un embarque coincidente en tránsito: la fecha se toma en "
+                          "vivo de ahí. Corregirla aquí no tiene efecto — corrige el ETA o la "
+                          "confirmación de llegada directamente en Tránsito.")
+            else:
+                st.caption("Este BL no tiene ningún embarque coincidente en tránsito: esta es la "
+                          "única forma de fijar o corregir su fecha de llegada.")
+            nueva_llegada = st.date_input("Fecha de llegada", value=llegada_mostrada or hoy_rd(),
+                                          format="DD/MM/YYYY", key=f"corr_llegada_{bl}",
+                                          disabled=tiene_match_transito)
+            if st.button("Corregir fecha de llegada", key=f"btn_corr_llegada_{bl}",
+                        disabled=tiene_match_transito):
+                ok, mensaje = guardar_pago(bl, {}, llegada=nueva_llegada.isoformat(),
+                                           sello_esperado=fila_existente.get(COL_ACTUALIZACION))
+                if ok:
+                    registrar_log("Corrección de llegada en Pagos", bl, "", nueva_llegada.isoformat())
+                    invalidar_caches()
+                    st.success("Fecha de llegada corregida.")
+                    st.rerun()
+                else:
+                    st.error(mensaje)
 
     valores_previos = {c: fila_existente.get(c, "") for c in CONCEPTOS_PAGO} if fila_existente is not None else {}
     seleccionados_previos = [c for c in CONCEPTOS_PAGO if str(valores_previos.get(c, "")).strip()]

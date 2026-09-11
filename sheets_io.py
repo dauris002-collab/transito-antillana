@@ -1834,7 +1834,7 @@ def mover_empresa_primera_columna():
 
 @_con_manejo_apierror
 def guardar_pago(bl: str, conceptos: dict, estado: str = None, empresa: str = None, referencia: dict = None,
-                 sello_esperado=None):
+                 sello_esperado=None, llegada: str = None):
     """Crea o actualiza la fila de Pagos de un BL. `conceptos` trae únicamente
     los que aplican a este expediente (los que no, se guardan vacíos: 'no
     aplica' no es lo mismo que 'cero'). `empresa`, si viene, se aplica SIEMPRE
@@ -1843,8 +1843,13 @@ def guardar_pago(bl: str, conceptos: dict, estado: str = None, empresa: str = No
     que corregirla aquí es exactamente lo que se espera. `referencia`
     (Descripción/Cantidad/Llegada) solo se usa AL CREAR la fila — si ya
     existe, no se toca, porque esos vienen de sincronizar_pagos_con_transito().
-    No toca las ventanas SIN MORA ni Pago Realizado — esas se fijan aparte,
-    con registrar_sin_mora() y registrar_pago_realizado()."""
+    `llegada` (AAAA-MM-DD), si viene, SÍ se aplica siempre (crear o editar):
+    es la única vía para corregir la Llegada guardada en Pagos después de que
+    la sincronización o el alta manual la fijaron la primera vez — pensado
+    para BL sin match en tránsito, donde no hay otra fuente de la que jalarla
+    en vivo (ver LlegadaEfectiva en logica.enriquecer_pagos). No toca las
+    ventanas SIN MORA ni Pago Realizado — esas se fijan aparte, con
+    registrar_sin_mora() y registrar_pago_realizado()."""
     bl = str(bl or "").strip()
     if not bl:
         return False, "Falta el BL."
@@ -1861,6 +1866,8 @@ def guardar_pago(bl: str, conceptos: dict, estado: str = None, empresa: str = No
         datos[COL_ESTADO_PAGO] = estado
     if empresa:
         datos[COL_EMPRESA] = empresa
+    if llegada:
+        datos[COL_PAGO_LLEGADA] = llegada
     datos[COL_ACTUALIZACION] = marca_ahora()
     datos[COL_ACTUALIZADO_POR] = usuario_actual()
 

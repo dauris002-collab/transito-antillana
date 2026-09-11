@@ -18,7 +18,7 @@ from sheets_io import (
     COL_BL, COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_EMPRESA, COL_ETA,
     COL_FECHA_DECLARACION, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL,
     COL_FECHA_SALIDA, COL_FECHA_SIN_MORA, COL_LLEGO, COL_MODELO, COL_OC,
-    COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS, COL_ESTADO_PAGO, COL_VIA,
+    COL_PAGO_LLEGADA, COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS, COL_ESTADO_PAGO, COL_VIA,
     ESTADO_PAGO_PAGADO, VIA_AEREA,
     CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO, ETAPAS_PUERTO,
     INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
@@ -628,7 +628,7 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     queda con el valor sincronizado una vez, nunca se actualiza cuando la
     llegada se confirma después."""
     df = df_pagos.copy()
-    calculadas = ["BLSinTransito", "TieneMontos", "TotalActual", "DiasSinPagar",
+    calculadas = ["BLSinTransito", "TieneMontos", "TotalActual", "DiasSinPagar", "LlegadaEfectiva",
                   "EmpresaEfectiva", "EstadoEfectivo", "MontoExtra",
                   "TotalPagado", "DiasMora", "FechaSinMoraParsed", "FechaPagoRealParsed"]
     if df.empty:
@@ -697,6 +697,14 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
         referencia = fecha_pago or hoy   # ya pagado -> se congela ahí; si no, corre hasta hoy
         dias_sin_pagar.append((referencia - llegada).days)
     df["DiasSinPagar"] = dias_sin_pagar
+
+    # Lo que se MUESTRA como Llegada: en vivo desde tránsito si el BL tiene
+    # match ahí (activo o archivado); si no hay match, la celda guardada en
+    # Pagos. El criterio es solo el BL — no importa qué Empresa tenga la fila.
+    df["LlegadaEfectiva"] = [
+        llegadas_confirmadas.get(bl) or parsear_fecha(cruda)
+        for bl, cruda in zip(df[COL_BL].astype(str).str.strip(), df.get(COL_PAGO_LLEGADA, []))
+    ]
 
     df["MontoExtra"] = [monto_extra(r) for _, r in df.iterrows()]
     # Costo final = conceptos + el extra que Logística escribió a mano. Solo

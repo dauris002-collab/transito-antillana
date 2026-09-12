@@ -1173,6 +1173,9 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
                         st.rerun()
                     else:
                         st.error(mensaje)
+                        st.caption("Agrega la fecha de declaración, ya sea corrigiendo la celda "
+                                  f"'Fecha_Declaracion' en la pestaña '{categoria}' del Sheet, o "
+                                  "actualizando los datos y repitiendo la acción aquí en la aplicación.")
             else:
                 _archivar(fila, clave, etiqueta=f"{ICONO_ALMACEN} {ETAPA_ALMACEN} (archiva)", df=visibles)
 
@@ -1192,6 +1195,9 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
                         st.rerun()
                     else:
                         st.error(mensaje)
+                        st.caption("Agrega la fecha de declaración, ya sea corrigiendo la celda "
+                                  f"'Fecha_Declaracion' en la pestaña '{categoria}' del Sheet, o "
+                                  "actualizando los datos y repitiendo la acción aquí en la aplicación.")
                 st.caption("Deshacer la llegada marca '¿Llegó?' en NO y borra la declaración: "
                            "así es como se corrige una confirmación hecha por error.")
                 if c2.button("Deshacer llegada", key=f"undo_{clave}", width="stretch"):
@@ -1265,6 +1271,9 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
                 st.rerun()
             else:
                 st.error(mensaje)
+                st.caption("Marca '¿Llegó? SI/NO', ya sea corrigiendo esa celda en la pestaña "
+                          f"'{categoria}' del Sheet, o actualizando los datos y repitiendo la "
+                          "acción aquí en la aplicación.")
         if ya_retrasado:
             c3.button("Sigue retrasado", key=f"sigue_{clave}", width="stretch", disabled=True)
             c3.caption("Actualiza el ETA en Editar")
@@ -1277,6 +1286,9 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
                 st.rerun()
             else:
                 st.error(mensaje)
+                st.caption("Marca '¿Llegó? SI/NO', ya sea corrigiendo esa celda en la pestaña "
+                          f"'{categoria}' del Sheet, o actualizando los datos y repitiendo la "
+                          "acción aquí en la aplicación.")
 
     for _, r in pendientes.head(TOPE).iterrows():
         _fila_confirmacion(r, False)

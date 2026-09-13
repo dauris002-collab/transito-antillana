@@ -522,6 +522,29 @@ def _figura_heatmap_pais_categoria(universo: pd.DataFrame, top_paises: int = 8, 
     return fig
 
 
+def _tarjeta_ahora(en_puerto: int, en_aeropuerto: int) -> str:
+    """Reemplaza las dos tarjetas KPI grandes de 'Mercancía en Puerto/Aeropuerto
+    ahora': ese componente (_tarjeta_kpi_bi) se diseñó para 6 tarjetas angostas
+    en fila -- estirado a solo 2 columnas de medio ancho cada una, quedaba
+    mucho color plano y casi nada de información. Mismo estilo de barra
+    compacta que ya usa _tarjeta_via, para que las dos cifras se lean juntas
+    de un vistazo en vez de como dos bloques sueltos."""
+    if en_puerto == 0 and en_aeropuerto == 0:
+        return ""
+    tope = max(en_puerto, en_aeropuerto, 1)
+    piezas = ['<div class="paises"><div class="atttl">⚓✈️ Llegó, sin declarar todavía, ahora mismo</div>']
+    for etiqueta, valor, color in (("En puerto", en_puerto, COLOR_MARITIMO),
+                                   ("En aeropuerto", en_aeropuerto, COLOR_AEREO)):
+        ancho = max(4.0, (valor / tope) * 100.0)
+        piezas.append(
+            f'<div class="pfila"><div class="pnom">{esc(etiqueta)}</div>'
+            f'<div class="pbarra"><span style="width:{ancho:.1f}%;background:{color};border-radius:6px;"></span></div>'
+            f'<div class="pval">{valor}</div></div>'
+        )
+    piezas.append("</div>")
+    return "".join(piezas)
+
+
 def _tarjeta_via(dias_df: pd.DataFrame) -> str:
     """Comparación Aéreo vs Marítimo del ciclo COMPLETO (llegada → almacén),
     con mediana en vez de promedio. Antes comparaba solo el tramo
@@ -549,6 +572,43 @@ def _tarjeta_via(dias_df: pd.DataFrame) -> str:
         )
     piezas.append("</div>")
     return "".join(piezas)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _figura_distribucion_via(dias_df: pd.DataFrame) -> go.Figure | None:
+    """Respaldo de _figura_tendencia_via_mensual para cuando no hay 2+ meses
+    de datos: hoy los 18 embarques cerrados con ciclo completo caen todos en
+    el mismo mes (septiembre 2026), así que ninguna tendencia mensual es
+    posible todavía -- no es un bug, es que la fecha de almacén recién se
+    empezó a capturar bien. Esto muestra la distribución real de cada
+    embarque cerrado en vez de nada: además de la mediana (que ya da
+    _tarjeta_via), se ve cuánto varía el ciclo dentro de cada vía -- un
+    embarque atípico salta a la vista en vez de perderse en un promedio.
+    Funciona con tan solo 1 embarque por vía; cuando haya 2+ meses reales,
+    el panel vuelve a preferir la tendencia mensual sobre esto."""
+    if dias_df.empty or "dias_total" not in dias_df.columns:
+        return None
+    base = dias_df.dropna(subset=["dias_total"])
+    if base.empty or base["Via"].nunique() < 2:
+        return None
+    fig = go.Figure()
+    for via, color in ((VIA_AEREA, COLOR_AEREO), (VIA_MARITIMA, COLOR_MARITIMO)):
+        grupo = base[base["Via"] == via]
+        if grupo.empty:
+            continue
+        fig.add_trace(go.Box(
+            y=grupo["dias_total"], name=f"{via} (n={len(grupo)})",
+            marker=dict(color=color, size=6), line=dict(color=color),
+            fillcolor="rgba(0,0,0,0)", boxpoints="all", pointpos=0, jitter=0.45,
+            hovertemplate="%{y:.0f} días<extra></extra>",
+        ))
+    if not fig.data:
+        return None
+    fig.update_layout(**{**_LAYOUT_BASE, "showlegend": False}, height=320,
+                      title=dict(text="📦 Distribución del ciclo completo por embarque — Aéreo vs Marítimo"),
+                      xaxis=dict(showgrid=False, title=""),
+                      yaxis=dict(showgrid=True, gridcolor="#F1F5F9", title="Días", rangemode="tozero"))
+    return fig
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
@@ -743,14 +803,13 @@ def panel_analitica(datos: dict):
               "colorea las tarjetas del dashboard en vivo.")
 
     st.write("")
-    ca1, ca2 = st.columns(2)
-    with ca1:
-        st.markdown(_tarjeta_kpi_bi("⚓", "Mercancía en Puerto ahora", str(en_puerto),
-                                    COLOR_MARITIMO, "#059669"), unsafe_allow_html=True)
-    with ca2:
-        st.markdown(_tarjeta_kpi_bi("✈️", "Mercancía en Aeropuerto ahora", str(en_aeropuerto),
-                                    COLOR_AEREO, "#1D4ED8"), unsafe_allow_html=True)
-    st.caption("Llegada confirmada, todavía sin declarar ante Aduanas — la carga sigue físicamente ahí.")
+    html_ahora = _tarjeta_ahora(en_puerto, en_aeropuerto)
+    with st.container(border=True):
+        if html_ahora:
+            st.markdown(html_ahora, unsafe_allow_html=True)
+            st.caption("Llegada confirmada, todavía sin declarar ante Aduanas — la carga sigue físicamente ahí.")
+        else:
+            st.caption("Nada llegado a puerto o aeropuerto esperando declarar en este momento.")
 
     # --- Bloque operativo: vía y retrasos, lo que de verdad responde "cómo -
     # va la operación" para la presidencia. Sube por encima de lo descriptivo
@@ -771,7 +830,11 @@ def panel_analitica(datos: dict):
             if fig:
                 st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_via_tendencia")
             else:
-                st.caption("Todavía no hay al menos 2 meses con ambas vías para trazar la tendencia.")
+                fig = _figura_distribucion_via(dias_f)
+                if fig:
+                    st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_via_distribucion")
+                else:
+                    st.caption("Todavía no hay embarques cerrados de ambas vías para comparar.")
 
     st.write("")
     cr1, cr2 = st.columns(2)

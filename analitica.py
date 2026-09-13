@@ -173,6 +173,14 @@ def _ciclo_historico(historico: pd.DataFrame) -> pd.DataFrame:
         almacen = parsear_fecha(r.get(COL_FECHA_ALMACEN, ""))
         dias_tramite = (almacen - declaracion).days if almacen and almacen >= declaracion else None
         dias_total = (almacen - llegada).days if almacen and almacen >= llegada else None
+        # Mismo fallback que enriquecer() en logica.py para los activos: Vía
+        # vacía + categoría 'Aéreos' se infiere aérea, en vez de caer por
+        # default a Marítimo. En el histórico real, 26 de 31 filas archivadas
+        # bajo 'Aéreos' no traían Via_Transporte -- sin esto, la comparación
+        # Aéreo vs Marítimo cuenta la mayoría de lo aéreo como marítimo.
+        via_cruda = str(r.get(COL_VIA, "") or "").strip()
+        categoria_origen = r.get("Categoria_Origen", "") or ""
+        es_aerea = es_aereo(via_cruda) or (not via_cruda and categoria_origen == "Aéreos")
         filas.append({
             "dias": (declaracion - llegada).days,
             "dias_transito": dias_transito,
@@ -181,7 +189,7 @@ def _ciclo_historico(historico: pd.DataFrame) -> pd.DataFrame:
             "Categoria": r.get("Categoria_Origen", "") or NO_ESPECIFICADO,
             "Pais": pais or NO_ESPECIFICADO,
             "Anio": llegada.year,
-            "Via": VIA_AEREA if es_aereo(r.get(COL_VIA, "")) else VIA_MARITIMA,
+            "Via": VIA_AEREA if es_aerea else VIA_MARITIMA,
             "Mes": date(almacen.year, almacen.month, 1) if almacen else None,
         })
     return pd.DataFrame(filas, columns=columnas)

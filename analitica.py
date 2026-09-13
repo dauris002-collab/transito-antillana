@@ -33,6 +33,7 @@ se usa el botón "Limpiar selección de gráficas".
 
 from __future__ import annotations
 
+import re
 from datetime import date
 
 import pandas as pd
@@ -335,12 +336,57 @@ def _figura_categorias(universo: pd.DataFrame) -> go.Figure | None:
     return fig
 
 
+_TOKEN_CON_DIGITO = re.compile(r"\d")
+
+# Palabras de relleno que pueden quedar colgando entre el nombre del producto
+# y su capacidad ('GENERADOR DE 600KW', 'GENERADOR 400KW / 500KW'): sin esto,
+# el recorte se detenía en 'DE' o en '/' antes de llegar al nombre real.
+_CONECTORES_RELLENO = {"DE", "PARA"}
+
+# Variantes conocidas que sobreviven al recorte de sufijos porque la
+# diferencia está en la palabra base, no en lo que le sigue (aquí: singular
+# vs. plural). Se revisa contra el resultado YA recortado completo, nunca
+# palabra por palabra, para no tocar frases donde 'GENERADORES' es parte
+# legítima de algo más largo ('REPUESTOS PARA GENERADORES ELECTRICOS').
+# Es una tabla chica a mano, no un normalizador lingüístico: crece según lo
+# que se vaya viendo en el Sheet real, no intenta adivinar plurales en general.
+_ALIAS_FAMILIA = {
+    "GENERADORES": "GENERADOR",
+}
+
+
+def _familia_producto(desc: str) -> str:
+    """Recorta del final de la descripción los tokens que traen un dígito
+    pegado -- capacidad ('350KW'), serie o modelo ('6013918') -- y los
+    conectores de relleno que puedan quedar colgando después de recortar
+    ('DE', 'PARA', '/', '-'), para que 'GENERADOR', 'GENERADOR 350KW' y
+    'GENERADOR DE 600KW' cuenten como el mismo producto en este ranking. Se
+    detiene en el primer token que no sea ninguna de las dos cosas, así que
+    una marca en medio ('EXCAVADORA CAT 320') queda como 'EXCAVADORA CAT', no
+    se pierde. Nunca recorta hasta dejar la descripción vacía.
+
+    Límite conocido: solo agrupa cuando el número y la unidad van pegados en
+    un mismo token ('350KW'). Si en el Sheet real aparece con espacio
+    ('350 KW'), esta regla no lo detecta -- no hay forma de saberlo sin ver
+    el texto real, así que no se intentó adivinar un patrón más agresivo."""
+    tokens = desc.split()
+    while len(tokens) > 1:
+        ultimo = tokens[-1].strip("/-,")
+        if _TOKEN_CON_DIGITO.search(tokens[-1]) or ultimo in _CONECTORES_RELLENO or ultimo == "":
+            tokens.pop()
+            continue
+        break
+    resultado = " ".join(tokens) if tokens else desc
+    return _ALIAS_FAMILIA.get(resultado, resultado)
+
+
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def _figura_top_productos(universo: pd.DataFrame, n: int = 10) -> go.Figure | None:
     if universo.empty:
         return None
     serie = universo["Descripcion"].astype(str).str.strip()
-    serie = serie[serie != ""].str.upper().value_counts().head(n).sort_values()
+    serie = serie[serie != ""].str.upper().map(_familia_producto)
+    serie = serie.value_counts().head(n).sort_values()
     if serie.empty:
         return None
     colores = [PALETA_BI[i % len(PALETA_BI)] for i in range(len(serie))]

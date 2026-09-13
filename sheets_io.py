@@ -1476,11 +1476,30 @@ def fijar_fecha_declaracion(bl: str, categoria: str, fecha=None, fila_sugerida=N
 
 
 def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str, fila_sugerida=None,
-                          fecha=None, sobrescribir: bool = False):
+                          fecha=None, sobrescribir: bool = False, sello_esperado=None):
     """Mueve el embarque a la etapa indicada. Elegir una etapa ANTERIOR deshace
-    las posteriores, que es la forma de corregir un registro equivocado."""
+    las posteriores, que es la forma de corregir un registro equivocado.
+
+    El candado de bloqueo optimista (sello_esperado) se valida UNA sola vez,
+    contra el estado de la fila al momento de llamar esta función — no en cada
+    escritura interna del camino a 'Llegada a puerto', que son dos pasos (NO y
+    luego SI) y el sello cambia entre uno y otro. Validarlo también en el
+    segundo paso haría que ese paso siempre fallara contra el cambio que
+    acaba de hacer el primero."""
     if nueva_etapa not in ETAPAS_PUERTO:
         return False, f"Etapa '{nueva_etapa}' no reconocida."
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return False, f"No existe la pestaña '{categoria}'."
+    fila_num, error = _localizar_fila(ws, bl, fila_sugerida)
+    if error:
+        return False, error
+    if sello_esperado is not None:
+        headers = _headers(ws.title)
+        actual_norm = {_norm_encabezado(k): v for k, v in _leer_fila(ws, fila_num, headers).items()}
+        conflicto = _conflicto_sello(actual_norm, sello_esperado)
+        if conflicto:
+            return False, conflicto
     if nueva_etapa == ETAPA_LLEGADA:
         # Retroceder a 'llegada' implica borrar la declaración: eso lo hace
         # marcar_llegada al escribir SI de nuevo no es necesario, así que aquí

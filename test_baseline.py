@@ -92,6 +92,14 @@ activos = pd.DataFrame([
     {sio.COL_BL: "BL005", sio.COL_DESC: "Sin fecha", sio.COL_CANT: "1", sio.COL_PAIS: "",
      sio.COL_ETA: "ilegible", sio.COL_LLEGO: "", sio.COL_FECHA_DECLARACION: "",
      sio.COL_VIA: "", "Categoria": "General", "FilaSheet": 7},
+    # Caso del fallback nuevo en enriquecer(): categoría 'Aéreos' con Vía
+    # vacía debe inferirse aérea (ETA viejo a propósito para forzar la alerta
+    # de 'Llegada a puerto' y que el texto revele si lugar_de() vio 'Aéreo'
+    # o cayó al default 'Marítimo' -- sin esto el texto diría 'en puerto',
+    # no 'en aeropuerto').
+    {sio.COL_BL: "BL006", sio.COL_DESC: "Pieza urgente", sio.COL_CANT: "1", sio.COL_PAIS: "USA",
+     sio.COL_ETA: "2020-01-01", sio.COL_LLEGO: "SI", sio.COL_FECHA_DECLARACION: "",
+     sio.COL_VIA: "", "Categoria": "Aéreos", "FilaSheet": 8},
 ])
 enr = lg.enriquecer(activos)
 cols_volcado = [sio.COL_BL, "EstadoTexto", "DiasRel", "MesETA", "Prioridad", "EtapaActual",

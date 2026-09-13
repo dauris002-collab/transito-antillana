@@ -22,7 +22,7 @@ from sheets_io import (
     COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_LLEGO, COL_MODELO,
     COL_OC, COL_PAIS, COL_VIA, ETAPA_ALMACEN, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES,
     MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO, VIA_MARITIMA,
-    _norm, _slug_css, columnas_extra, confirmar_llegada,
+    _norm, _slug_css, avanzar_estado_puerto, columnas_extra, confirmar_llegada,
     eliminar_embarque, es_numero, fijar_fecha_declaracion, formato_dinero,
     formato_eta, hoy_rd, invalidar_caches, marcar_como_recibido, marcar_no_llego,
     registrar_log, sla_etapas,
@@ -1180,17 +1180,25 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
                 _archivar(fila, clave, etiqueta=f"{ICONO_ALMACEN} {ETAPA_ALMACEN} (archiva)", df=visibles)
 
             with st.expander("Corregir fecha o retroceder etapa"):
-                fecha_corregida = st.date_input("Fecha real de la declaración", value=hoy_rd(),
-                                                format="DD/MM/YYYY", key=f"fc_{clave}")
-                c1, c2 = st.columns(2)
-                if c1.button("Guardar corrección", key=f"corr_{clave}", width="stretch"):
-                    ok, mensaje = fijar_fecha_declaracion(bl, categoria, fecha=fecha_corregida,
-                                                          fila_sugerida=fila.get("FilaSheet"),
-                                                          sobrescribir=True,
-                                                          sello_esperado=fila.get(COL_ACTUALIZACION))
+                etapa_destino = st.radio(
+                    "Etapa", ETAPAS_PUERTO,
+                    index=(1 if declarado else 0), horizontal=True, key=f"radio_etapa_{clave}",
+                )
+                if etapa_destino == ETAPAS_PUERTO[1]:
+                    fecha_corregida = st.date_input("Fecha real de la declaración", value=hoy_rd(),
+                                                    format="DD/MM/YYYY", key=f"fc_{clave}")
+                else:
+                    fecha_corregida = None
+                    st.caption("Vuelve a 'Llegada a puerto' conservando la llegada ya confirmada "
+                              "(el ETA actual) y borra la fecha de declaración.")
+                if st.button("Ir a esta etapa", key=f"corr_{clave}", width="stretch"):
+                    ok, mensaje = avanzar_estado_puerto(bl, categoria, etapa_destino,
+                                                        fila_sugerida=fila.get("FilaSheet"),
+                                                        fecha=fecha_corregida, sobrescribir=True,
+                                                        sello_esperado=fila.get(COL_ACTUALIZACION))
                     if ok:
-                        registrar_log("Corrección de declaración", bl, categoria,
-                                      fecha_corregida.isoformat())
+                        registrar_log(f"Etapa ajustada a '{etapa_destino}'", bl, categoria,
+                                     fecha_corregida.isoformat() if fecha_corregida else "")
                         invalidar_caches()
                         st.rerun()
                     else:
@@ -1198,9 +1206,11 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
                         st.caption("Agrega la fecha de declaración, ya sea corrigiendo la celda "
                                   f"'Fecha_Declaracion' en la pestaña '{categoria}' del Sheet, o "
                                   "actualizando los datos y repitiendo la acción aquí en la aplicación.")
-                st.caption("Deshacer la llegada marca '¿Llegó?' en NO y borra la declaración: "
-                           "así es como se corrige una confirmación hecha por error.")
-                if c2.button("Deshacer llegada", key=f"undo_{clave}", width="stretch"):
+                st.divider()
+                st.caption("'Deshacer llegada' va más atrás todavía: además de borrar la "
+                          "declaración, marca '¿Llegó?' en NO — para cuando la llegada misma se "
+                          "confirmó por error.")
+                if st.button("Deshacer llegada", key=f"undo_{clave}", width="stretch"):
                     ok, mensaje = marcar_no_llego(bl, categoria, fila_sugerida=fila.get("FilaSheet"),
                                                   sello_esperado=fila.get(COL_ACTUALIZACION))
                     if ok:

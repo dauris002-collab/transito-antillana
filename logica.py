@@ -403,6 +403,23 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     hoy = hoy_rd()
     sla = sla_etapas()
 
+    # Vía vacía + categoría 'Aéreos' se infiere aérea, ANTES de cualquier
+    # cálculo. La categoría ya es una señal fuerte y gratis (alguien archivó
+    # la fila en esa pestaña a propósito) que hasta ahora se ignoraba: el dato
+    # vacío se contaba como marítimo por el default general de es_aereo(),
+    # aunque en el histórico real la mayoría de lo archivado bajo 'Aéreos' no
+    # trae Via_Transporte relleno. Solo se completa lo vacío -- un valor
+    # explícito, aunque contradiga la categoría, nunca se sobreescribe.
+    # Corregir aquí (en vez de en es_aereo() o en cada sitio que la llama)
+    # arregla el dashboard, la analítica y cualquier lectura futura de COL_VIA
+    # sin tocar esos archivos ni cambiar el contrato de es_aereo().
+    if COL_VIA not in df.columns:
+        df[COL_VIA] = ""
+    if "Categoria" in df.columns:
+        via_vacia = df[COL_VIA].astype(str).str.strip() == ""
+        es_categoria_aerea = df["Categoria"] == "Aéreos"
+        df.loc[via_vacia & es_categoria_aerea, COL_VIA] = VIA_AEREA
+
     llegos = list(df[COL_LLEGO]) if COL_LLEGO in df.columns else [""] * len(df)
     etas = [parsear_fecha(v) for v in df[COL_ETA]]
     calculado = [estado_embarque(f, l, hoy) for f, l in zip(etas, llegos)]

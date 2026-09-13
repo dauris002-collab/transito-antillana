@@ -11,6 +11,17 @@ escrituras: todo aquí es de solo lectura.
 Pagos (aduanas, costos) se dejó AFUERA a propósito: todavía hay muy poca data
 registrada en esa pestaña como para que un promedio signifique algo.
 
+Rediseño (sep 2026): los tiempos que resume esta pestaña ahora usan MEDIANA en
+vez de promedio (mismo criterio que ya usaba Herramientas: un embarque
+trancado tres meses no debe mover el número de toda una categoría o vía), y
+el ciclo completo llegada→almacén en vez de solo el tramo llegada→declaración
+para las comparaciones de fondo (categoría más lenta, Aéreo vs Marítimo). El
+"Cumplimiento SLA" pasó a leer el mismo umbral de sla_etapas() que ya colorea
+las tarjetas del dashboard en vivo -- antes comparaba contra
+costos_puerto()['umbral'], un valor que quedó huérfano cuando se retiró el
+filtro de "atrasados" del panel operativo y que ningún otro lugar de la app
+usa; los dos números podían no coincidir sin que nada lo explicara.
+
 Nota sobre el clic-para-filtrar (on_select de st.plotly_chart, disponible
 desde Streamlit 1.35+ y confirmado en la versión fijada, 1.61.0): clicar una
 barra de país o una porción de categoría agrega ese valor al filtro efectivo
@@ -31,8 +42,8 @@ import streamlit as st
 from sheets_io import (
     CACHE_TTL, COL_BL, COL_DESC, COL_ETA, COL_FECHA_ALMACEN, COL_FECHA_DECLARACION,
     COL_FECHA_LLEGADA_PUERTO, COL_FECHA_SALIDA, COL_PAIS, COL_VIA,
-    MESES_ES_CORTO, NO_ESPECIFICADO, VIA_AEREA,
-    costos_puerto, parsear_fecha, unificar_paises,
+    MESES_ES_CORTO, NO_ESPECIFICADO, VIA_AEREA, VIA_MARITIMA,
+    parsear_fecha, sla_etapas, unificar_paises,
 )
 from logica import ETAPAS_PUERTO, es_aereo
 from ui_componentes import _enriquecer_cacheado, esc
@@ -128,13 +139,24 @@ def _universo(activos: pd.DataFrame, historico: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def _ciclo_historico(historico: pd.DataFrame) -> pd.DataFrame:
-    """Un renglón por embarque cerrado con las TRES etapas del ciclo:
+    """Un renglón por embarque cerrado con las etapas del ciclo:
       dias_transito: Fecha_Salida -> Fecha_Llegada_Puerto (opcional: falta en
                      bastantes filas porque depende del booking del forwarder)
       dias          : Fecha_Llegada_Puerto -> Fecha_Declaracion
       dias_tramite  : Fecha_Declaracion -> Fecha_Almacen (siempre presente:
-                     se graba solo al archivar)"""
-    columnas = ["dias", "dias_transito", "dias_tramite", "Categoria", "Pais", "Anio", "Via"]
+                     se graba solo al archivar)
+      dias_total    : Fecha_Llegada_Puerto -> Fecha_Almacen, el ciclo COMPLETO
+                     de puerto/aeropuerto. Se calcula directo contra Almacén
+                     (no como dias + dias_tramite) para no perderlo si algún
+                     registro viejo tiene declaración sin fecha de trámite
+                     coherente. Es la base de las comparaciones de fondo
+                     (categoría más lenta, Aéreo vs Marítimo): compararlas
+                     solo por el tramo de declaración deja fuera el trámite
+                     final, que es el tramo con dato más completo de los tres.
+      Mes           : mes de Fecha_Almacen (mismo criterio que _mensual_historico,
+                     que usa Fecha_Recibido = Fecha_Almacen por BASE_FECHA_RECIBIDO),
+                     para las tendencias mensuales por vía."""
+    columnas = ["dias", "dias_transito", "dias_tramite", "dias_total", "Categoria", "Pais", "Anio", "Via", "Mes"]
     if (historico is None or historico.empty or COL_FECHA_LLEGADA_PUERTO not in historico.columns
             or COL_FECHA_DECLARACION not in historico.columns):
         return pd.DataFrame(columns=columnas)
@@ -149,16 +171,29 @@ def _ciclo_historico(historico: pd.DataFrame) -> pd.DataFrame:
         dias_transito = (llegada - salida).days if salida and salida <= llegada else None
         almacen = parsear_fecha(r.get(COL_FECHA_ALMACEN, ""))
         dias_tramite = (almacen - declaracion).days if almacen and almacen >= declaracion else None
+        dias_total = (almacen - llegada).days if almacen and almacen >= llegada else None
         filas.append({
             "dias": (declaracion - llegada).days,
             "dias_transito": dias_transito,
             "dias_tramite": dias_tramite,
+            "dias_total": dias_total,
             "Categoria": r.get("Categoria_Origen", "") or NO_ESPECIFICADO,
             "Pais": pais or NO_ESPECIFICADO,
             "Anio": llegada.year,
-            "Via": VIA_AEREA if es_aereo(r.get(COL_VIA, "")) else "Marítimo",
+            "Via": VIA_AEREA if es_aereo(r.get(COL_VIA, "")) else VIA_MARITIMA,
+            "Mes": date(almacen.year, almacen.month, 1) if almacen else None,
         })
     return pd.DataFrame(filas, columns=columnas)
+
+
+def _mediana_n(serie: pd.Series) -> tuple:
+    """Mediana + cantidad de datos detrás. Se usa en vez de .mean() en toda
+    esta pestaña por el mismo motivo que Herramientas: un solo embarque
+    atípico (trancado meses) no debe mover el número que ve la presidencia."""
+    limpio = pd.to_numeric(serie, errors="coerce").dropna()
+    if limpio.empty:
+        return None, 0
+    return float(limpio.median()), int(len(limpio))
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
@@ -206,19 +241,34 @@ def _en_puerto_ahora(activos_enriq: pd.DataFrame, paises_sel: list, cats_sel: li
 
 
 def _categoria_mas_lenta(dias_df: pd.DataFrame):
+    """Mediana del ciclo COMPLETO (llegada→almacén) por categoría, no del
+    tramo de declaración: mide qué categoría de carga tarda más en salir de
+    puerto de punta a punta, que es la pregunta de negocio real."""
     base = dias_df[dias_df["Categoria"] != CATEGORIA_NO_PRODUCTO] if not dias_df.empty else dias_df
-    if base.empty:
+    if base.empty or "dias_total" not in base.columns or not base["dias_total"].notna().any():
         return None, None
-    prom = base.groupby("Categoria")["dias"].mean().sort_values(ascending=False)
-    return (prom.index[0], prom.iloc[0]) if len(prom) else (None, None)
+    medianas = base.groupby("Categoria")["dias_total"].median().dropna().sort_values(ascending=False)
+    return (medianas.index[0], medianas.iloc[0]) if len(medianas) else (None, None)
 
 
 def _cumplimiento_sla(dias_df: pd.DataFrame):
-    if dias_df.empty:
-        return None, 0
-    umbral = costos_puerto()["umbral"]
-    cumplidos = int((dias_df["dias"] <= umbral).sum())
-    return round(100 * cumplidos / len(dias_df), 1), len(dias_df)
+    """% de embarques cuyo tramo llegada→declaración quedó dentro del SLA
+    operativo de 'Recepción y declaración' (sla_etapas(), el mismo valor que
+    colorea en vivo las tarjetas del dashboard). Antes comparaba contra
+    costos_puerto()['umbral'] (5 días por defecto, sin relación con ningún
+    otro criterio visible en la app); ahora los dos números miden lo mismo.
+    Devuelve (pct, n, limite) -- el límite se necesita para rotular la
+    tarjeta con el número real contra el que se está comparando."""
+    if dias_df.empty or "dias" not in dias_df.columns:
+        return None, 0, None
+    limite = sla_etapas().get("Recepción y declaración")
+    if limite is None:
+        return None, 0, None
+    base = dias_df["dias"].dropna()
+    if base.empty:
+        return None, 0, limite
+    cumplidos = int((base <= limite).sum())
+    return round(100 * cumplidos / len(base), 1), len(base), limite
 
 
 def _puntos_clicados(evento, campo_preferido: str = "y") -> list:
@@ -331,20 +381,22 @@ def _figura_tendencia_mensual(mensual: pd.DataFrame, meses: int = 24) -> go.Figu
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def _figura_tiempo_puerto_categoria(dias_df: pd.DataFrame) -> go.Figure | None:
-    if dias_df.empty:
+    if dias_df.empty or "dias_total" not in dias_df.columns:
         return None
     base = dias_df[dias_df["Categoria"] != CATEGORIA_NO_PRODUCTO]
-    prom = base.groupby("Categoria")["dias"].mean().sort_values()
-    if prom.empty:
+    agg = base.groupby("Categoria")["dias_total"].agg(mediana="median", n="count").dropna(subset=["mediana"])
+    agg = agg.sort_values("mediana")
+    if agg.empty:
         return None
-    colores = [PALETA_BI[i % len(PALETA_BI)] for i in range(len(prom))]
+    colores = [PALETA_BI[i % len(PALETA_BI)] for i in range(len(agg))]
     fig = go.Figure(data=[go.Bar(
-        x=prom.values, y=prom.index, orientation="h", marker=dict(color=colores, line=dict(width=0)),
-        text=[f"{v:.1f} d" for v in prom.values], textposition="outside", textfont=dict(size=12, family=_FUENTE),
-        hovertemplate="<b>%{y}</b><br>%{x:.1f} días promedio<extra></extra>",
+        x=agg["mediana"].values, y=agg.index, orientation="h", marker=dict(color=colores, line=dict(width=0)),
+        text=[f"{v:.0f} d" for v in agg["mediana"].values], textposition="outside", textfont=dict(size=12, family=_FUENTE),
+        customdata=agg["n"].values,
+        hovertemplate="<b>%{y}</b><br>%{x:.0f} días (mediana) · n=%{customdata}<extra></extra>",
     )])
-    fig.update_layout(**_LAYOUT_BASE, height=max(240, 36 * len(prom)),
-                      title=dict(text="⏱️ Días promedio en puerto por categoría"),
+    fig.update_layout(**_LAYOUT_BASE, height=max(240, 36 * len(agg)),
+                      title=dict(text="🕐 Mediana de días en puerto por categoría (ciclo completo)"),
                       xaxis=dict(showgrid=True, gridcolor="#F1F5F9", title=""),
                       yaxis=dict(showgrid=False, title=""))
     return fig
@@ -355,32 +407,34 @@ def _figura_ciclo_etapas(dias_df: pd.DataFrame) -> go.Figure | None:
     if dias_df.empty:
         return None
     etapas, valores, notas, colores = [], [], [], []
-    con_transito = dias_df["dias_transito"].dropna()
-    if len(con_transito):
+    med, n = _mediana_n(dias_df["dias_transito"])
+    if med is not None:
         etapas.append("Tránsito<br>(salida → llegada)")
-        valores.append(con_transito.mean())
-        notas.append(f"n={len(con_transito)}")
+        valores.append(med)
+        notas.append(f"n={n}")
         colores.append(PALETA_BI[0])
-    etapas.append("En puerto<br>(llegada → declaración)")
-    valores.append(dias_df["dias"].mean())
-    notas.append(f"n={len(dias_df)}")
-    colores.append(PALETA_BI[1])
-    con_tramite = dias_df["dias_tramite"].dropna()
-    if len(con_tramite):
+    med, n = _mediana_n(dias_df["dias"])
+    if med is not None:
+        etapas.append("En puerto<br>(llegada → declaración)")
+        valores.append(med)
+        notas.append(f"n={n}")
+        colores.append(PALETA_BI[1])
+    med, n = _mediana_n(dias_df["dias_tramite"])
+    if med is not None:
         etapas.append("Trámite final<br>(declaración → almacén)")
-        valores.append(con_tramite.mean())
-        notas.append(f"n={len(con_tramite)}")
+        valores.append(med)
+        notas.append(f"n={n}")
         colores.append(PALETA_BI[2])
     if len(etapas) < 2:
         return None
     fig = go.Figure(data=[go.Bar(
         x=etapas, y=valores, marker=dict(color=colores, line=dict(width=0)),
-        text=[f"{v:.1f} d ({n})" for v, n in zip(valores, notas)], textposition="outside",
+        text=[f"{v:.0f} d ({n})" for v, n in zip(valores, notas)], textposition="outside",
         textfont=dict(size=12, family=_FUENTE),
-        hovertemplate="%{x}: %{y:.1f} días promedio<extra></extra>",
+        hovertemplate="%{x}: %{y:.0f} días (mediana)<extra></extra>",
     )])
     fig.update_layout(**_LAYOUT_BASE, height=300,
-                      title=dict(text="🔄 Ciclo completo por etapa (días promedio)"),
+                      title=dict(text="🔄 Ciclo completo por etapa (mediana de días)"),
                       xaxis=dict(showgrid=False, title=""),
                       yaxis=dict(showgrid=True, gridcolor="#F1F5F9", title="", rangemode="tozero"))
     return fig
@@ -415,23 +469,108 @@ def _figura_heatmap_pais_categoria(universo: pd.DataFrame, top_paises: int = 8, 
 
 
 def _tarjeta_via(dias_df: pd.DataFrame) -> str:
-    if dias_df.empty or dias_df["Via"].nunique() < 2:
+    """Comparación Aéreo vs Marítimo del ciclo COMPLETO (llegada → almacén),
+    con mediana en vez de promedio. Antes comparaba solo el tramo
+    llegada→declaración -- una sola de las tres piezas del viaje, dejando
+    fuera el trámite final, que es la que tiene el dato más completo."""
+    if dias_df.empty or "dias_total" not in dias_df.columns or dias_df["Via"].nunique() < 2:
         return ""
-    prom = dias_df.groupby("Via")["dias"].mean()
-    aereo, maritimo = prom.get(VIA_AEREA), prom.get("Marítimo")
+    medianas, ns = {}, {}
+    for via, grupo in dias_df.groupby("Via"):
+        med, n = _mediana_n(grupo["dias_total"])
+        if med is not None:
+            medianas[via], ns[via] = med, n
+    aereo, maritimo = medianas.get(VIA_AEREA), medianas.get(VIA_MARITIMA)
     if aereo is None or maritimo is None:
         return ""
-    piezas = ['<div class="paises"><div class="atttl">✈️🚢 Días en puerto: Aéreo vs Marítimo</div>']
+    piezas = ['<div class="paises"><div class="atttl">✈️🚢 Ciclo completo, llegada → almacén (mediana): '
+              'Aéreo vs Marítimo</div>']
     tope = max(aereo, maritimo) or 1
-    for etiqueta, valor, color in ((VIA_AEREA, aereo, COLOR_AEREO), ("Marítimo", maritimo, COLOR_MARITIMO)):
+    for etiqueta, valor, color in ((VIA_AEREA, aereo, COLOR_AEREO), (VIA_MARITIMA, maritimo, COLOR_MARITIMO)):
         ancho = max(4.0, (valor / tope) * 100.0)
         piezas.append(
-            f'<div class="pfila"><div class="pnom">{esc(etiqueta)}</div>'
+            f'<div class="pfila"><div class="pnom">{esc(etiqueta)} (n={ns[etiqueta]})</div>'
             f'<div class="pbarra"><span style="width:{ancho:.1f}%;background:{color};border-radius:6px;"></span></div>'
-            f'<div class="pval">{valor:.1f} d</div></div>'
+            f'<div class="pval">{valor:.0f} d</div></div>'
         )
     piezas.append("</div>")
     return "".join(piezas)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _figura_tendencia_via_mensual(dias_df: pd.DataFrame, meses: int = 18) -> go.Figure | None:
+    """Lo que hoy no existe en esta pestaña y es la pregunta real detrás de
+    'Aéreo vs Marítimo': no solo cuánto tarda cada uno AHORA, sino si esa
+    brecha se está cerrando o abriendo mes a mes. Mediana mensual por vía,
+    sobre el ciclo completo."""
+    if dias_df.empty or "Mes" not in dias_df.columns or "dias_total" not in dias_df.columns:
+        return None
+    base = dias_df.dropna(subset=["Mes", "dias_total"])
+    if base.empty or base["Via"].nunique() < 2:
+        return None
+    meses_disp = sorted(base["Mes"].unique())[-meses:]
+    if len(meses_disp) < 2:
+        return None
+    etiquetas = [f"{MESES_ES_CORTO[m.month]} {m.year}" for m in meses_disp]
+    fig = go.Figure()
+    for via, color in ((VIA_AEREA, COLOR_AEREO), (VIA_MARITIMA, COLOR_MARITIMO)):
+        grupo = base[base["Via"] == via]
+        if grupo.empty:
+            continue
+        por_mes = grupo.groupby("Mes")["dias_total"]
+        serie = por_mes.median().reindex(meses_disp)
+        conteo = por_mes.count().reindex(meses_disp).fillna(0).astype(int)
+        fig.add_trace(go.Scatter(
+            x=etiquetas, y=serie.values, mode="lines+markers", name=via, connectgaps=True,
+            line=dict(color=color, width=3), marker=dict(size=7, color=color),
+            customdata=conteo.values,
+            hovertemplate=f"<b>{via}</b> · %{{x}}<br>%{{y:.0f}} días (mediana) · n=%{{customdata}}<extra></extra>",
+        ))
+    if not fig.data:
+        return None
+    fig.update_layout(**{**_LAYOUT_BASE, "showlegend": True}, height=320,
+                      title=dict(text="📉 Tendencia mensual del ciclo completo — Aéreo vs Marítimo"),
+                      legend=dict(orientation="h", y=-0.22, font=dict(size=11, family=_FUENTE)),
+                      xaxis=dict(showgrid=False, title="", tickangle=-45),
+                      yaxis=dict(showgrid=True, gridcolor="#F1F5F9", title="Días (mediana)", rangemode="tozero"))
+    return fig
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _figura_retrasos_mensual(dias_df: pd.DataFrame, meses: int = 18) -> go.Figure | None:
+    """El pilar de 'retrasos' que hoy no tiene tendencia en esta pestaña: qué
+    porcentaje de lo cerrado cada mes superó el SLA de declaración (el mismo
+    de sla_etapas() que colorea el dashboard en vivo). Un % puntual ya existe
+    en la tarjeta de arriba; esto muestra si va mejorando o empeorando."""
+    if dias_df.empty or "Mes" not in dias_df.columns or "dias" not in dias_df.columns:
+        return None
+    limite = sla_etapas().get("Recepción y declaración")
+    if limite is None:
+        return None
+    base = dias_df.dropna(subset=["Mes", "dias"])
+    if base.empty:
+        return None
+    meses_disp = sorted(base["Mes"].unique())[-meses:]
+    if len(meses_disp) < 2:
+        return None
+    etiquetas = [f"{MESES_ES_CORTO[m.month]} {m.year}" for m in meses_disp]
+    total = base.groupby("Mes").size().reindex(meses_disp, fill_value=0)
+    fuera = base[base["dias"] > limite].groupby("Mes").size().reindex(meses_disp, fill_value=0)
+    pct = [(100.0 * f / t) if t > 0 else None for f, t in zip(fuera, total)]
+    colores = ["#9CA3AF" if v is None else "#EF4444" if v > 30 else "#F59E0B" if v > 10 else "#10B981"
+              for v in pct]
+    fig = go.Figure(data=[go.Bar(
+        x=etiquetas, y=pct, marker=dict(color=colores),
+        text=[f"{v:.0f}" if v is not None else "" for v in pct], textposition="outside",
+        textfont=dict(size=12, family=_FUENTE),
+        customdata=total.values,
+        hovertemplate="%{x}<br>%{y:.0f} de cada 100 fuera de SLA · n=%{customdata}<extra></extra>",
+    )])
+    fig.update_layout(**_LAYOUT_BASE, height=300,
+                      title=dict(text=f"🚨 % fuera del SLA de declaración (>{limite}d) por mes"),
+                      xaxis=dict(showgrid=False, title="", tickangle=-45),
+                      yaxis=dict(showgrid=True, gridcolor="#F1F5F9", title="%", rangemode="tozero"))
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -521,9 +660,9 @@ def panel_analitica(datos: dict):
     pais_top = universo_f["Pais"].replace("", NO_ESPECIFICADO).mode()
     cat_top = universo_f[universo_f["Categoria"] != CATEGORIA_NO_PRODUCTO]["Categoria"] \
         .replace("", NO_ESPECIFICADO).mode()
-    dias_prom = dias_f["dias"].mean() if not dias_f.empty else None
+    dias_mediana, dias_n = _mediana_n(dias_f["dias_total"]) if "dias_total" in dias_f.columns else (None, 0)
     cat_lenta, dias_lenta = _categoria_mas_lenta(dias_f)
-    sla_pct, sla_n = _cumplimiento_sla(dias_f)
+    sla_pct, sla_n, sla_limite = _cumplimiento_sla(dias_f)
 
     st.write("")
     with st.container(key="bikpirow"):
@@ -532,16 +671,22 @@ def panel_analitica(datos: dict):
             ("📦", "Embarques recibidos", str(len(mensual_f)), "#059669", "#10B981"),
             ("🌍", "País principal", pais_top.iloc[0] if len(pais_top) else "—", "#0284C7", "#38BDF8"),
             ("🏷️", "Categoría principal", cat_top.iloc[0] if len(cat_top) else "—", "#1E3A5F", "#0C4A6E"),
-            ("⏱️", "Días en puerto (prom.)", f"{dias_prom:.1f} d" if dias_prom is not None else "—",
+            ("⏱️", "Días en puerto (mediana)",
+             f"{dias_mediana:.0f} d · n={dias_n}" if dias_mediana is not None else "—",
              "#B45309", "#F59E0B"),
-            ("🐢", "Categoría más lenta", f"{cat_lenta} · {dias_lenta:.1f} d" if cat_lenta else "—",
+            ("🐢", "Categoría más lenta",
+             f"{cat_lenta} · {dias_lenta:.0f} d" if cat_lenta else "—",
              "#B91C1C", "#EF4444"),
-            ("✅", "Cumplimiento SLA en puerto", f"{sla_pct}% ({sla_n})" if sla_pct is not None else "—",
+            ("✅", f"SLA declaración (≤{sla_limite}d)" if sla_limite is not None else "SLA declaración",
+             f"{sla_pct}% ({sla_n})" if sla_pct is not None else "—",
              "#0F766E", "#14B8A6"),
         ]
         for col, (icono, label, valor, ca, cb) in zip(cols, tarjetas):
             with col:
                 st.markdown(_tarjeta_kpi_bi(icono, label, valor, ca, cb), unsafe_allow_html=True)
+    st.caption("Días en puerto y categoría más lenta: mediana del ciclo completo (llegada → almacén). "
+              "SLA declaración: % que cerró el tramo llegada → declaración dentro del mismo umbral que "
+              "colorea las tarjetas del dashboard en vivo.")
 
     st.write("")
     ca1, ca2 = st.columns(2)
@@ -553,6 +698,47 @@ def panel_analitica(datos: dict):
                                     COLOR_AEREO, "#1D4ED8"), unsafe_allow_html=True)
     st.caption("Llegada confirmada, todavía sin declarar ante Aduanas — la carga sigue físicamente ahí.")
 
+    # --- Bloque operativo: vía y retrasos, lo que de verdad responde "cómo -
+    # va la operación" para la presidencia. Sube por encima de lo descriptivo
+    # (país/categoría/producto), que es más útil al equipo de Logística que a
+    # quien dirige la empresa. ---
+    st.write("")
+    cv1, cv2 = st.columns(2)
+    with cv1:
+        with st.container(border=True):
+            html_via = _tarjeta_via(dias_f)
+            if html_via:
+                st.markdown(html_via, unsafe_allow_html=True)
+            else:
+                st.caption("Falta variedad de Vía (Aéreo/Marítimo) en el histórico filtrado para comparar.")
+    with cv2:
+        with st.container(border=True):
+            fig = _figura_tendencia_via_mensual(dias_f)
+            if fig:
+                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_via_tendencia")
+            else:
+                st.caption("Todavía no hay al menos 2 meses con ambas vías para trazar la tendencia.")
+
+    st.write("")
+    cr1, cr2 = st.columns(2)
+    with cr1:
+        with st.container(border=True):
+            fig = _figura_retrasos_mensual(dias_f)
+            if fig:
+                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_retrasos")
+            else:
+                st.caption("Todavía no hay al menos 2 meses de histórico para trazar retrasos.")
+    with cr2:
+        with st.container(border=True):
+            fig = _figura_ciclo_etapas(dias_f)
+            if fig:
+                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_ciclo")
+            else:
+                st.caption("Todavía no hay suficientes embarques con fechas completas para partir el ciclo en etapas.")
+
+    # --- Bloque descriptivo: "qué se importa". Útil para el equipo, menos
+    # accionable para la presidencia -- por eso queda debajo del bloque
+    # operativo de arriba. ---
     st.write("")
     with st.container(border=True):
         fig = _figura_heatmap_pais_categoria(universo_f)
@@ -585,22 +771,5 @@ def panel_analitica(datos: dict):
                 st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tiempo")
             else:
                 st.caption("Todavía no hay embarques archivados con llegada y declaración para medir tiempo en puerto.")
-
-    st.write("")
-    c5, c6 = st.columns(2)
-    with c5:
-        with st.container(border=True):
-            fig = _figura_ciclo_etapas(dias_f)
-            if fig:
-                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_ciclo")
-            else:
-                st.caption("Todavía no hay suficientes embarques con fechas completas para partir el ciclo en etapas.")
-    with c6:
-        with st.container(border=True):
-            html_via = _tarjeta_via(dias_f)
-            if html_via:
-                st.markdown(html_via, unsafe_allow_html=True)
-            else:
-                st.caption("Falta variedad de Vía (Aéreo/Marítimo) en el histórico filtrado para comparar.")
 
     st.caption(f"Última actualización de los datos: {datos['hora'].strftime('%H:%M:%S')}")

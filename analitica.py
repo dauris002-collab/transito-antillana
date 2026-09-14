@@ -90,10 +90,19 @@ def _mes_de(valor) -> date | None:
     return date(f.year, f.month, 1) if f else None
 
 
-def _tarjeta_kpi_bi(icono: str, label: str, valor: str, color_a: str, color_b: str) -> str:
+def _tarjeta_kpi_bi(icono: str, label: str, valor: str, color_a: str, color_b: str, delta: str = "") -> str:
     """Tarjeta KPI propia de esta pestaña: degradado, ícono e ícono más grande
     que la tarjeta plana que usa el resto de la app -- aquí es el resumen
-    ejecutivo, así que puede pesar más visualmente."""
+    ejecutivo, así que puede pesar más visualmente. 'delta' es opcional: el
+    texto de tendencia (flecha + magnitud) que agregan las tarjetas que sí
+    tienen una comparación mes a mes; se deja sin color semántico (verde/rojo)
+    a propósito -- un segundo color sobre un fondo ya degradado es más ruido
+    que señal, y qué dirección es "mejor" se explica en el caption de abajo,
+    no en la tarjeta misma."""
+    delta_html = (
+        f'<div style="font-size:0.62rem; font-weight:600; color:rgba(255,255,255,0.88); '
+        f'margin-top:3px;">{esc(delta)}</div>'
+    ) if delta else ""
     return (
         f'<div style="background:linear-gradient(135deg,{color_a} 0%,{color_b} 100%); '
         f'border-radius:16px; padding:16px 12px; min-height:108px; '
@@ -104,6 +113,7 @@ def _tarjeta_kpi_bi(icono: str, label: str, valor: str, color_a: str, color_b: s
         f'font-family:{_FUENTE};">{esc(str(valor))}</div>'
         f'<div style="font-size:0.68rem; font-weight:700; letter-spacing:0.04em; '
         f'text-transform:uppercase; color:rgba(255,255,255,0.92); margin-top:3px;">{esc(label)}</div>'
+        f'{delta_html}'
         f'</div>'
     )
 
@@ -203,6 +213,63 @@ def _mediana_n(serie: pd.Series) -> tuple:
     if limpio.empty:
         return None, 0
     return float(limpio.median()), int(len(limpio))
+
+
+def _ultimos_dos_meses(df: pd.DataFrame) -> tuple:
+    """Los 2 meses más recientes con datos en df, o (None, None) si hay menos
+    de 2. Sirve para las flechas de tendencia de los KPI: 'este mes' se
+    compara siempre contra el mes inmediato anterior CON datos, sin importar
+    el filtro de Año activo en pantalla -- el filtro de Año decide qué años
+    entran al total que se muestra, la flecha siempre mira el pulso más
+    reciente disponible dentro de eso."""
+    if df.empty or "Mes" not in df.columns:
+        return None, None
+    meses = sorted(df["Mes"].dropna().unique())
+    if len(meses) < 2:
+        return None, None
+    return meses[-1], meses[-2]
+
+
+def _flecha(delta, decimales: int = 0, sufijo: str = "") -> str:
+    """Texto de tendencia consistente para las tarjetas KPI. Sin flecha
+    (string vacío) si no hay 2 meses para comparar -- nunca se inventa una
+    tendencia con un solo dato."""
+    if delta is None:
+        return ""
+    if abs(delta) < (10 ** (-decimales)) / 2:
+        return "→ sin cambio vs mes ant."
+    signo = "▲" if delta > 0 else "▼"
+    return f"{signo} {abs(delta):.{decimales}f}{sufijo} vs mes ant."
+
+
+def _tendencias_kpi(mensual_f: pd.DataFrame, dias_f: pd.DataFrame) -> dict:
+    """Delta mes-actual-con-datos vs mes-anterior-con-datos para los 3 KPI
+    que sí tienen una dirección clara de mejor/peor. País principal,
+    Categoría principal y Categoría más lenta se quedan sin flecha a
+    propósito: son etiquetas, o pueden cambiar de cuál es la protagonista de
+    un mes a otro (la categoría más lenta de agosto no tiene por qué ser la
+    misma de septiembre) -- una flecha ahí compararía cosas distintas
+    disfrazada de tendencia, que es peor que no mostrar nada."""
+    resultado = {"conteo": None, "dias": None, "sla": None}
+
+    ult, pen = _ultimos_dos_meses(mensual_f)
+    if ult is not None:
+        resultado["conteo"] = (int((mensual_f["Mes"] == ult).sum())
+                               - int((mensual_f["Mes"] == pen).sum()))
+
+    ult, pen = _ultimos_dos_meses(dias_f)
+    if ult is not None:
+        med_ult, _ = _mediana_n(dias_f.loc[dias_f["Mes"] == ult, "dias_total"])
+        med_pen, _ = _mediana_n(dias_f.loc[dias_f["Mes"] == pen, "dias_total"])
+        if med_ult is not None and med_pen is not None:
+            resultado["dias"] = med_ult - med_pen
+
+        sla_ult, _, _ = _cumplimiento_sla(dias_f[dias_f["Mes"] == ult])
+        sla_pen, _, _ = _cumplimiento_sla(dias_f[dias_f["Mes"] == pen])
+        if sla_ult is not None and sla_pen is not None:
+            resultado["sla"] = sla_ult - sla_pen
+
+    return resultado
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
@@ -651,6 +718,43 @@ def _figura_tendencia_via_mensual(dias_df: pd.DataFrame, meses: int = 18) -> go.
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _figura_retrasos_categoria(dias_df: pd.DataFrame) -> go.Figure | None:
+    """Respaldo de _figura_retrasos_mensual para cuando no hay 2+ meses de
+    histórico (hoy: los 47 cerrados con tramo de declaración caen todos en
+    septiembre 2026). En vez de una tendencia en el tiempo -- imposible con
+    un solo mes, no importa cómo se programe -- corta el mismo dato por
+    categoría: qué tipo de carga concentra más incumplimiento del SLA de
+    declaración ahora mismo. 'Aéreos' se excluye por el mismo motivo que en
+    el resto del panel: es modo de transporte, no categoría de producto."""
+    if dias_df.empty or "dias" not in dias_df.columns:
+        return None
+    limite = sla_etapas().get("Recepción y declaración")
+    if limite is None:
+        return None
+    base = dias_df.dropna(subset=["dias"])
+    base = base[base["Categoria"] != CATEGORIA_NO_PRODUCTO]
+    if base.empty:
+        return None
+    agg = base.groupby("Categoria")["dias"].agg(
+        pct=lambda s: round(100 * (s > limite).sum() / len(s), 0), n="count",
+    ).sort_values("pct")
+    if agg.empty:
+        return None
+    colores = ["#EF4444" if v > 30 else "#F59E0B" if v > 10 else "#10B981" for v in agg["pct"]]
+    fig = go.Figure(data=[go.Bar(
+        x=agg["pct"].values, y=agg.index, orientation="h", marker=dict(color=colores, line=dict(width=0)),
+        text=[f"{v:.0f}%" for v in agg["pct"].values], textposition="outside", textfont=dict(size=12, family=_FUENTE),
+        customdata=agg["n"].values,
+        hovertemplate="<b>%{y}</b><br>%{x:.0f}% fuera de SLA · n=%{customdata}<extra></extra>",
+    )])
+    fig.update_layout(**_LAYOUT_BASE, height=max(240, 36 * len(agg)),
+                      title=dict(text=f"🚨 % fuera del SLA de declaración (>{limite}d) por categoría"),
+                      xaxis=dict(showgrid=True, gridcolor="#F1F5F9", title=""),
+                      yaxis=dict(showgrid=False, title=""))
+    return fig
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def _figura_retrasos_mensual(dias_df: pd.DataFrame, meses: int = 18) -> go.Figure | None:
     """El pilar de 'retrasos' que hoy no tiene tendencia en esta pestaña: qué
     porcentaje de lo cerrado cada mes superó el SLA de declaración (el mismo
@@ -777,30 +881,34 @@ def panel_analitica(datos: dict):
     dias_mediana, dias_n = _mediana_n(dias_f["dias_total"]) if "dias_total" in dias_f.columns else (None, 0)
     cat_lenta, dias_lenta = _categoria_mas_lenta(dias_f)
     sla_pct, sla_n, sla_limite = _cumplimiento_sla(dias_f)
+    tendencias = _tendencias_kpi(mensual_f, dias_f)
 
     st.write("")
     with st.container(key="bikpirow"):
         cols = st.columns(6)
         tarjetas = [
-            ("📦", "Embarques recibidos", str(len(mensual_f)), "#059669", "#10B981"),
-            ("🌍", "País principal", pais_top.iloc[0] if len(pais_top) else "—", "#0284C7", "#38BDF8"),
-            ("🏷️", "Categoría principal", cat_top.iloc[0] if len(cat_top) else "—", "#1E3A5F", "#0C4A6E"),
+            ("📦", "Embarques recibidos", str(len(mensual_f)), "#059669", "#10B981",
+             _flecha(tendencias["conteo"])),
+            ("🌍", "País principal", pais_top.iloc[0] if len(pais_top) else "—", "#0284C7", "#38BDF8", ""),
+            ("🏷️", "Categoría principal", cat_top.iloc[0] if len(cat_top) else "—", "#1E3A5F", "#0C4A6E", ""),
             ("⏱️", "Días en puerto (mediana)",
              f"{dias_mediana:.0f} d · n={dias_n}" if dias_mediana is not None else "—",
-             "#B45309", "#F59E0B"),
+             "#B45309", "#F59E0B", _flecha(tendencias["dias"], sufijo="d")),
             ("🐢", "Categoría más lenta",
              f"{cat_lenta} · {dias_lenta:.0f} d" if cat_lenta else "—",
-             "#B91C1C", "#EF4444"),
+             "#B91C1C", "#EF4444", ""),
             ("✅", f"SLA declaración (≤{sla_limite}d)" if sla_limite is not None else "SLA declaración",
              f"{sla_pct}% ({sla_n})" if sla_pct is not None else "—",
-             "#0F766E", "#14B8A6"),
+             "#0F766E", "#14B8A6", _flecha(tendencias["sla"], decimales=1, sufijo="pp")),
         ]
-        for col, (icono, label, valor, ca, cb) in zip(cols, tarjetas):
+        for col, (icono, label, valor, ca, cb, delta) in zip(cols, tarjetas):
             with col:
-                st.markdown(_tarjeta_kpi_bi(icono, label, valor, ca, cb), unsafe_allow_html=True)
+                st.markdown(_tarjeta_kpi_bi(icono, label, valor, ca, cb, delta), unsafe_allow_html=True)
     st.caption("Días en puerto y categoría más lenta: mediana del ciclo completo (llegada → almacén). "
               "SLA declaración: % que cerró el tramo llegada → declaración dentro del mismo umbral que "
-              "colorea las tarjetas del dashboard en vivo.")
+              "colorea las tarjetas del dashboard en vivo. Flechas: mes más reciente con datos vs el "
+              "inmediato anterior — en Embarques recibidos es solo volumen (ni mejor ni peor); en Días "
+              "en puerto ▼ es mejor, en SLA ▲ es mejor.")
 
     st.write("")
     html_ahora = _tarjeta_ahora(en_puerto, en_aeropuerto)
@@ -844,7 +952,11 @@ def panel_analitica(datos: dict):
             if fig:
                 st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_retrasos")
             else:
-                st.caption("Todavía no hay al menos 2 meses de histórico para trazar retrasos.")
+                fig = _figura_retrasos_categoria(dias_f)
+                if fig:
+                    st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_retrasos_categoria")
+                else:
+                    st.caption("Todavía no hay embarques cerrados suficientes para medir retrasos.")
     with cr2:
         with st.container(border=True):
             fig = _figura_ciclo_etapas(dias_f)
@@ -854,39 +966,42 @@ def panel_analitica(datos: dict):
                 st.caption("Todavía no hay suficientes embarques con fechas completas para partir el ciclo en etapas.")
 
     # --- Bloque descriptivo: "qué se importa". Útil para el equipo, menos
-    # accionable para la presidencia -- por eso queda debajo del bloque
-    # operativo de arriba. ---
+    # accionable para la presidencia -- por eso además de ir debajo de todo lo
+    # operativo, queda colapsado por defecto: el resumen ejecutivo termina
+    # arriba, esto es "para el que quiera entrar al detalle".
     st.write("")
-    with st.container(border=True):
-        fig = _figura_heatmap_pais_categoria(universo_f)
-        if fig:
-            st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_heatmap")
-        else:
-            st.caption("Sin suficiente cruce de país y categoría todavía.")
-
-    st.write("")
-    with st.container(border=True):
-        fig = _figura_top_productos(universo_f)
-        if fig:
-            st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_productos")
-        else:
-            st.caption("Sin descripciones suficientes para el top de productos.")
-
-    st.write("")
-    c3, c4 = st.columns(2)
-    with c3:
+    with st.expander("📂 Detalle: qué se importa (país, categoría, productos)", expanded=False):
         with st.container(border=True):
-            fig = _figura_tendencia_mensual(mensual_f)
+            fig = _figura_heatmap_pais_categoria(universo_f)
             if fig:
-                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tendencia")
+                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_heatmap")
             else:
-                st.caption("Todavía no hay suficiente histórico mes a mes con estos filtros.")
-    with c4:
+                st.caption("Sin suficiente cruce de país y categoría todavía.")
+
+        st.write("")
         with st.container(border=True):
-            fig = _figura_tiempo_puerto_categoria(dias_f)
+            fig = _figura_top_productos(universo_f)
             if fig:
-                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tiempo")
+                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_productos")
             else:
-                st.caption("Todavía no hay embarques archivados con llegada y declaración para medir tiempo en puerto.")
+                st.caption("Sin descripciones suficientes para el top de productos.")
+
+        st.write("")
+        c3, c4 = st.columns(2)
+        with c3:
+            with st.container(border=True):
+                fig = _figura_tendencia_mensual(mensual_f)
+                if fig:
+                    st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tendencia")
+                else:
+                    st.caption("Todavía no hay suficiente histórico mes a mes con estos filtros.")
+        with c4:
+            with st.container(border=True):
+                fig = _figura_tiempo_puerto_categoria(dias_f)
+                if fig:
+                    st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tiempo")
+                else:
+                    st.caption("Todavía no hay embarques archivados con llegada y declaración para medir "
+                              "tiempo en puerto.")
 
     st.caption(f"Última actualización de los datos: {datos['hora'].strftime('%H:%M:%S')}")

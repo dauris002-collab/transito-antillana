@@ -381,25 +381,35 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
         st.info("No hay expedientes de Pagos para esta selección.")
         return
 
-    # Filtro de Mes: agrupa por Fecha Saludable (FechaSinMoraParsed), no por
-    # Llegada ni por Fecha de Pago Real. Es la fecha que responde "¿cuánto
-    # esperamos pagar en octubre?" -- tanto para lo pendiente (una estimación
-    # a futuro) como para lo ya pagado (cuánto se esperaba pagar ese mes,
-    # se haya cumplido o no). Las opciones salen de lo que YA hay en pantalla
-    # (después del filtro de Empresa), no de todo el histórico completo.
-    con_fecha_saludable = vista["FechaSinMoraParsed"].notna()
-    meses_disponibles = sorted({(d.year, d.month) for d in vista.loc[con_fecha_saludable, "FechaSinMoraParsed"]})
+    # Filtro de Mes: agrupa por Llegada (LlegadaEfectiva) -- la fecha real de
+    # llegada del embarque o carga aérea, en vivo desde tránsito cuando el BL
+    # tiene match ahí. Cambiado desde Fecha Saludable (Fecha_SinMora): esa
+    # solo estaba llena en 12 de 82 expedientes reales, contra 80 de 82 con
+    # Llegada -- prácticamente todo agrupable. Las opciones salen de lo que
+    # YA hay en pantalla (después del filtro de Empresa), no de todo el
+    # histórico completo.
+    con_llegada = vista["LlegadaEfectiva"].notna()
+    meses_disponibles = sorted({(d.year, d.month) for d in vista.loc[con_llegada, "LlegadaEfectiva"]})
     opciones_mes = ["Todos"] + [f"{MESES_ES_CORTO[m]} {a}" for a, m in meses_disponibles]
+    # Blindaje contra el atasco: las opciones cambian con el filtro de
+    # Empresa (menos meses si hay menos expedientes), y si el mes que había
+    # quedado elegido ya no existe en la lista nueva, st.selectbox revienta
+    # con una excepción -- que con showErrorDetails="none" se ve como que la
+    # página se congeló, sin ningún aviso de por qué. Se resetea a "Todos"
+    # ANTES de crear el widget, nunca después, para que nunca reciba un
+    # valor inválido.
+    if st.session_state.get("pago_filtro_mes") not in opciones_mes:
+        st.session_state["pago_filtro_mes"] = "Todos"
     with c3:
-        mes_sel = st.selectbox("Mes (Fecha Saludable)", opciones_mes, key="pago_filtro_mes")
+        mes_sel = st.selectbox("Mes (Llegada)", opciones_mes, key="pago_filtro_mes")
 
     if mes_sel != "Todos":
         anio_sel, mes_num_sel = next((a, m) for a, m in meses_disponibles if f"{MESES_ES_CORTO[m]} {a}" == mes_sel)
-        vista = vista[vista["FechaSinMoraParsed"].apply(
+        vista = vista[vista["LlegadaEfectiva"].apply(
             lambda d: d is not None and d.year == anio_sel and d.month == mes_num_sel)]
-        sin_fecha_saludable = int((~con_fecha_saludable).sum())
-        if sin_fecha_saludable:
-            st.caption(f"{sin_fecha_saludable} expediente(s) de esta selección no tienen Fecha Saludable "
+        sin_llegada = int((~con_llegada).sum())
+        if sin_llegada:
+            st.caption(f"{sin_llegada} expediente(s) de esta selección no tienen Llegada confirmada "
                       "todavía, así que no aparecen bajo ningún mes.")
 
     if vista.empty:

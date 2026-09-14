@@ -15,15 +15,11 @@ Rediseño (sep 2026): los tiempos que resume esta pestaña ahora usan MEDIANA en
 vez de promedio (mismo criterio que ya usaba Herramientas: un embarque
 trancado tres meses no debe mover el número de toda una categoría o vía), y
 el ciclo completo llegada→almacén en vez de solo el tramo llegada→declaración
-para las comparaciones de fondo (categoría más lenta, Aéreo vs Marítimo). Las
-gráficas de retrasos leen el mismo umbral de sla_etapas() que ya colorea las
-tarjetas del dashboard en vivo -- antes comparaban contra
-costos_puerto()['umbral'], un valor que quedó huérfano cuando se retiró el
-filtro de "atrasados" del panel operativo y que ningún otro lugar de la app
-usa. La palabra "SLA" se quitó de todo lo que ve el usuario (títulos,
-captions): aquí es un umbral operativo que Logística se fijó a sí misma, no
-un acuerdo contractual con un tercero, y llamarlo "SLA" sin más generaba esa
-confusión.
+para las comparaciones de fondo (categoría más lenta, Aéreo vs Marítimo). Se
+quitaron las gráficas de "retrasos" basadas en el umbral de días de
+sla_etapas() para el tramo de declaración -- Logística no lo está usando como
+criterio real, así que mostrar un % de incumplimiento contra ese número
+habría sido más ruido que señal.
 
 Fecha_Almacen (para dias_total y Mes) tiene respaldo en Fecha_Recibido cuando
 falta: julio y agosto (29 de 47 filas del histórico real) se archivaron antes
@@ -53,7 +49,7 @@ from sheets_io import (
     CACHE_TTL, COL_BL, COL_DESC, COL_ETA, COL_FECHA_ALMACEN, COL_FECHA_DECLARACION,
     COL_FECHA_LLEGADA_PUERTO, COL_FECHA_SALIDA, COL_PAIS, COL_VIA,
     MESES_ES_CORTO, NO_ESPECIFICADO, VIA_AEREA, VIA_MARITIMA,
-    parsear_fecha, sla_etapas, unificar_paises,
+    parsear_fecha, unificar_paises,
 )
 from logica import ETAPAS_PUERTO, es_aereo
 from ui_componentes import _enriquecer_cacheado, esc
@@ -267,14 +263,14 @@ def _flecha(delta, decimales: int = 0, sufijo: str = "") -> str:
 
 
 def _tendencias_kpi(mensual_f: pd.DataFrame, dias_f: pd.DataFrame) -> dict:
-    """Delta mes-actual-con-datos vs mes-anterior-con-datos para los 3 KPI
-    que sí tienen una dirección clara de mejor/peor. País principal,
-    Categoría principal y Categoría más lenta se quedan sin flecha a
-    propósito: son etiquetas, o pueden cambiar de cuál es la protagonista de
-    un mes a otro (la categoría más lenta de agosto no tiene por qué ser la
-    misma de septiembre) -- una flecha ahí compararía cosas distintas
-    disfrazada de tendencia, que es peor que no mostrar nada."""
-    resultado = {"conteo": None, "dias": None, "sla": None}
+    """Delta mes-actual-con-datos vs mes-anterior-con-datos para los KPI que
+    sí tienen una dirección clara de mejor/peor. País principal, Categoría
+    principal y Categoría más lenta se quedan sin flecha a propósito: son
+    etiquetas, o pueden cambiar de cuál es la protagonista de un mes a otro
+    (la categoría más lenta de agosto no tiene por qué ser la misma de
+    septiembre) -- una flecha ahí compararía cosas distintas disfrazada de
+    tendencia, que es peor que no mostrar nada."""
+    resultado = {"conteo": None, "dias": None}
 
     ult, pen = _ultimos_dos_meses(mensual_f)
     if ult is not None:
@@ -287,11 +283,6 @@ def _tendencias_kpi(mensual_f: pd.DataFrame, dias_f: pd.DataFrame) -> dict:
         med_pen, _ = _mediana_n(dias_f.loc[dias_f["Mes"] == pen, "dias_total"])
         if med_ult is not None and med_pen is not None:
             resultado["dias"] = med_ult - med_pen
-
-        sla_ult, _, _ = _cumplimiento_sla(dias_f[dias_f["Mes"] == ult])
-        sla_pen, _, _ = _cumplimiento_sla(dias_f[dias_f["Mes"] == pen])
-        if sla_ult is not None and sla_pen is not None:
-            resultado["sla"] = sla_ult - sla_pen
 
     return resultado
 
@@ -349,26 +340,6 @@ def _categoria_mas_lenta(dias_df: pd.DataFrame):
         return None, None
     medianas = base.groupby("Categoria")["dias_total"].median().dropna().sort_values(ascending=False)
     return (medianas.index[0], medianas.iloc[0]) if len(medianas) else (None, None)
-
-
-def _cumplimiento_sla(dias_df: pd.DataFrame):
-    """% de embarques cuyo tramo llegada→declaración quedó dentro del SLA
-    operativo de 'Recepción y declaración' (sla_etapas(), el mismo valor que
-    colorea en vivo las tarjetas del dashboard). Antes comparaba contra
-    costos_puerto()['umbral'] (5 días por defecto, sin relación con ningún
-    otro criterio visible en la app); ahora los dos números miden lo mismo.
-    Devuelve (pct, n, limite) -- el límite se necesita para rotular la
-    tarjeta con el número real contra el que se está comparando."""
-    if dias_df.empty or "dias" not in dias_df.columns:
-        return None, 0, None
-    limite = sla_etapas().get("Recepción y declaración")
-    if limite is None:
-        return None, 0, None
-    base = dias_df["dias"].dropna()
-    if base.empty:
-        return None, 0, limite
-    cumplidos = int((base <= limite).sum())
-    return round(100 * cumplidos / len(base), 1), len(base), limite
 
 
 def _puntos_clicados(evento, campo_preferido: str = "y") -> list:
@@ -741,83 +712,6 @@ def _figura_tendencia_via_mensual(dias_df: pd.DataFrame, meses: int = 18) -> go.
     return fig
 
 
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def _figura_retrasos_categoria(dias_df: pd.DataFrame) -> go.Figure | None:
-    """Respaldo de _figura_retrasos_mensual para cuando no hay 2+ meses de
-    histórico (hoy: solo septiembre tiene Mes conocido con certeza -- ver
-    AlmacenAprox en _ciclo_historico). En vez de una tendencia en el tiempo,
-    corta el mismo dato por categoría: qué tipo de carga concentra más
-    incumplimiento del plazo de declaración ahora mismo. 'Aéreos' se excluye
-    por el mismo motivo que en el resto del panel: es modo de transporte, no
-    categoría de producto. Esta gráfica SÍ usa 'dias' (llegada→declaración),
-    que no depende de Fecha_Almacen ni de su respaldo -- están las 47 filas
-    del histórico, incluidas julio y agosto."""
-    if dias_df.empty or "dias" not in dias_df.columns:
-        return None
-    limite = sla_etapas().get("Recepción y declaración")
-    if limite is None:
-        return None
-    base = dias_df.dropna(subset=["dias"])
-    base = base[base["Categoria"] != CATEGORIA_NO_PRODUCTO]
-    if base.empty:
-        return None
-    agg = base.groupby("Categoria")["dias"].agg(
-        pct=lambda s: round(100 * (s > limite).sum() / len(s), 0), n="count",
-    ).sort_values("pct")
-    if agg.empty:
-        return None
-    colores = ["#EF4444" if v > 30 else "#F59E0B" if v > 10 else "#10B981" for v in agg["pct"]]
-    fig = go.Figure(data=[go.Bar(
-        x=agg["pct"].values, y=agg.index, orientation="h", marker=dict(color=colores, line=dict(width=0)),
-        text=[f"{v:.0f}%" for v in agg["pct"].values], textposition="outside", textfont=dict(size=12, family=_FUENTE),
-        customdata=agg["n"].values,
-        hovertemplate="<b>%{y}</b><br>%{x:.0f}% con declaración fuera de tiempo · n=%{customdata}<extra></extra>",
-    )])
-    fig.update_layout(**_LAYOUT_BASE, height=max(240, 36 * len(agg)),
-                      title=dict(text=f"🚨 % con declaración fuera de tiempo (>{limite}d), por categoría"),
-                      xaxis=dict(showgrid=True, gridcolor="#F1F5F9", title=""),
-                      yaxis=dict(showgrid=False, title=""))
-    return fig
-
-
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def _figura_retrasos_mensual(dias_df: pd.DataFrame, meses: int = 18) -> go.Figure | None:
-    """El pilar de 'retrasos' que hoy no tiene tendencia en esta pestaña: qué
-    porcentaje de lo cerrado cada mes superó el plazo operativo de
-    declaración (el mismo umbral de sla_etapas() que colorea el dashboard en
-    vivo). Un % puntual ya existe en la gráfica de respaldo por categoría;
-    esto muestra si va mejorando o empeorando."""
-    if dias_df.empty or "Mes" not in dias_df.columns or "dias" not in dias_df.columns:
-        return None
-    limite = sla_etapas().get("Recepción y declaración")
-    if limite is None:
-        return None
-    base = dias_df.dropna(subset=["Mes", "dias"])
-    if base.empty:
-        return None
-    meses_disp = sorted(base["Mes"].unique())[-meses:]
-    if len(meses_disp) < 2:
-        return None
-    etiquetas = [f"{MESES_ES_CORTO[m.month]} {m.year}" for m in meses_disp]
-    total = base.groupby("Mes").size().reindex(meses_disp, fill_value=0)
-    fuera = base[base["dias"] > limite].groupby("Mes").size().reindex(meses_disp, fill_value=0)
-    pct = [(100.0 * f / t) if t > 0 else None for f, t in zip(fuera, total)]
-    colores = ["#9CA3AF" if v is None else "#EF4444" if v > 30 else "#F59E0B" if v > 10 else "#10B981"
-              for v in pct]
-    fig = go.Figure(data=[go.Bar(
-        x=etiquetas, y=pct, marker=dict(color=colores),
-        text=[f"{v:.0f}" if v is not None else "" for v in pct], textposition="outside",
-        textfont=dict(size=12, family=_FUENTE),
-        customdata=total.values,
-        hovertemplate="%{x}<br>%{y:.0f} de cada 100 con declaración fuera de tiempo · n=%{customdata}<extra></extra>",
-    )])
-    fig.update_layout(**_LAYOUT_BASE, height=300,
-                      title=dict(text=f"🚨 % con declaración fuera de tiempo (>{limite}d), por mes"),
-                      xaxis=dict(showgrid=False, title="", tickangle=-45),
-                      yaxis=dict(showgrid=True, gridcolor="#F1F5F9", title="%", rangemode="tozero"))
-    return fig
-
-
 # ---------------------------------------------------------------------------
 # PANEL
 # ---------------------------------------------------------------------------
@@ -982,25 +876,12 @@ def panel_analitica(datos: dict):
                     st.caption("Todavía no hay embarques cerrados de ambas vías para comparar.")
 
     st.write("")
-    cr1, cr2 = st.columns(2)
-    with cr1:
-        with st.container(border=True):
-            fig = _figura_retrasos_mensual(dias_f)
-            if fig:
-                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_retrasos")
-            else:
-                fig = _figura_retrasos_categoria(dias_f)
-                if fig:
-                    st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_retrasos_categoria")
-                else:
-                    st.caption("Todavía no hay embarques cerrados suficientes para medir retrasos.")
-    with cr2:
-        with st.container(border=True):
-            fig = _figura_ciclo_etapas(dias_f)
-            if fig:
-                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_ciclo")
-            else:
-                st.caption("Todavía no hay suficientes embarques con fechas completas para partir el ciclo en etapas.")
+    with st.container(border=True):
+        fig = _figura_ciclo_etapas(dias_f)
+        if fig:
+            st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_ciclo")
+        else:
+            st.caption("Todavía no hay suficientes embarques con fechas completas para partir el ciclo en etapas.")
 
     # --- Bloque descriptivo: "qué se importa". Útil para el equipo, menos
     # accionable para la presidencia -- por eso además de ir debajo de todo lo

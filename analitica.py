@@ -15,12 +15,21 @@ Rediseño (sep 2026): los tiempos que resume esta pestaña ahora usan MEDIANA en
 vez de promedio (mismo criterio que ya usaba Herramientas: un embarque
 trancado tres meses no debe mover el número de toda una categoría o vía), y
 el ciclo completo llegada→almacén en vez de solo el tramo llegada→declaración
-para las comparaciones de fondo (categoría más lenta, Aéreo vs Marítimo). El
-"Cumplimiento SLA" pasó a leer el mismo umbral de sla_etapas() que ya colorea
-las tarjetas del dashboard en vivo -- antes comparaba contra
+para las comparaciones de fondo (categoría más lenta, Aéreo vs Marítimo). Las
+gráficas de retrasos leen el mismo umbral de sla_etapas() que ya colorea las
+tarjetas del dashboard en vivo -- antes comparaban contra
 costos_puerto()['umbral'], un valor que quedó huérfano cuando se retiró el
 filtro de "atrasados" del panel operativo y que ningún otro lugar de la app
-usa; los dos números podían no coincidir sin que nada lo explicara.
+usa. La palabra "SLA" se quitó de todo lo que ve el usuario (títulos,
+captions): aquí es un umbral operativo que Logística se fijó a sí misma, no
+un acuerdo contractual con un tercero, y llamarlo "SLA" sin más generaba esa
+confusión.
+
+Fecha_Almacen (para dias_total y Mes) tiene respaldo en Fecha_Recibido cuando
+falta: julio y agosto (29 de 47 filas del histórico real) se archivaron antes
+de que esa columna se empezara a llenar, así que sin el respaldo el ciclo
+completo y la comparación de vía solo reflejaban septiembre. Ver AlmacenAprox
+en _ciclo_historico().
 
 Nota sobre el clic-para-filtrar (on_select de st.plotly_chart, disponible
 desde Streamlit 1.35+ y confirmado en la versión fijada, 1.61.0): clicar una
@@ -154,20 +163,31 @@ def _ciclo_historico(historico: pd.DataFrame) -> pd.DataFrame:
       dias_transito: Fecha_Salida -> Fecha_Llegada_Puerto (opcional: falta en
                      bastantes filas porque depende del booking del forwarder)
       dias          : Fecha_Llegada_Puerto -> Fecha_Declaracion
-      dias_tramite  : Fecha_Declaracion -> Fecha_Almacen (siempre presente:
-                     se graba solo al archivar)
-      dias_total    : Fecha_Llegada_Puerto -> Fecha_Almacen, el ciclo COMPLETO
-                     de puerto/aeropuerto. Se calcula directo contra Almacén
-                     (no como dias + dias_tramite) para no perderlo si algún
+      dias_tramite  : Fecha_Declaracion -> Almacén (ver AlmacenAprox abajo)
+      dias_total    : Fecha_Llegada_Puerto -> Almacén, el ciclo COMPLETO de
+                     puerto/aeropuerto. Se calcula directo contra Almacén (no
+                     como dias + dias_tramite) para no perderlo si algún
                      registro viejo tiene declaración sin fecha de trámite
                      coherente. Es la base de las comparaciones de fondo
                      (categoría más lenta, Aéreo vs Marítimo): compararlas
                      solo por el tramo de declaración deja fuera el trámite
                      final, que es el tramo con dato más completo de los tres.
-      Mes           : mes de Fecha_Almacen (mismo criterio que _mensual_historico,
-                     que usa Fecha_Recibido = Fecha_Almacen por BASE_FECHA_RECIBIDO),
-                     para las tendencias mensuales por vía."""
-    columnas = ["dias", "dias_transito", "dias_tramite", "dias_total", "Categoria", "Pais", "Anio", "Via", "Mes"]
+      Mes           : mes de Almacén, para las tendencias mensuales por vía.
+      AlmacenAprox  : True si Fecha_Almacen venía vacía y se usó Fecha_Recibido
+                     como respaldo -- en el histórico real, julio y agosto
+                     (29 de 47 filas cerradas) no tienen Fecha_Almacen porque
+                     esa columna se empezó a llenar más adelante; sin este
+                     respaldo, todo lo que mide 'días en puerto' (incluida la
+                     comparación Aéreo vs Marítimo) ignoraba julio y agosto por
+                     completo y solo reflejaba septiembre. Fecha_Recibido es
+                     razonable como respaldo porque, por diseño de la app
+                     (BASE_FECHA_RECIBIDO='almacen'), se graba igual a Almacén
+                     al archivar -- pero en un puñado de filas muy viejas
+                     (de antes de ese criterio) puede reflejar en cambio la
+                     llegada; ahí el candado de orden (almacén >= declaración)
+                     ya descarta el dato en vez de dar un número incoherente."""
+    columnas = ["dias", "dias_transito", "dias_tramite", "dias_total", "Categoria", "Pais", "Anio", "Via", "Mes",
+               "AlmacenAprox"]
     if (historico is None or historico.empty or COL_FECHA_LLEGADA_PUERTO not in historico.columns
             or COL_FECHA_DECLARACION not in historico.columns):
         return pd.DataFrame(columns=columnas)
@@ -180,7 +200,10 @@ def _ciclo_historico(historico: pd.DataFrame) -> pd.DataFrame:
             continue
         salida = parsear_fecha(r.get(COL_FECHA_SALIDA, ""))
         dias_transito = (llegada - salida).days if salida and salida <= llegada else None
-        almacen = parsear_fecha(r.get(COL_FECHA_ALMACEN, ""))
+        almacen_real = parsear_fecha(r.get(COL_FECHA_ALMACEN, ""))
+        almacen_aprox_val = None if almacen_real else parsear_fecha(r.get("Fecha_Recibido", ""))
+        almacen = almacen_real or almacen_aprox_val
+        almacen_es_aprox = almacen_real is None and almacen_aprox_val is not None
         dias_tramite = (almacen - declaracion).days if almacen and almacen >= declaracion else None
         dias_total = (almacen - llegada).days if almacen and almacen >= llegada else None
         # Mismo fallback que enriquecer() en logica.py para los activos: Vía
@@ -201,6 +224,7 @@ def _ciclo_historico(historico: pd.DataFrame) -> pd.DataFrame:
             "Anio": llegada.year,
             "Via": VIA_AEREA if es_aerea else VIA_MARITIMA,
             "Mes": date(almacen.year, almacen.month, 1) if almacen else None,
+            "AlmacenAprox": almacen_es_aprox if dias_total is not None else None,
         })
     return pd.DataFrame(filas, columns=columnas)
 
@@ -720,12 +744,14 @@ def _figura_tendencia_via_mensual(dias_df: pd.DataFrame, meses: int = 18) -> go.
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def _figura_retrasos_categoria(dias_df: pd.DataFrame) -> go.Figure | None:
     """Respaldo de _figura_retrasos_mensual para cuando no hay 2+ meses de
-    histórico (hoy: los 47 cerrados con tramo de declaración caen todos en
-    septiembre 2026). En vez de una tendencia en el tiempo -- imposible con
-    un solo mes, no importa cómo se programe -- corta el mismo dato por
-    categoría: qué tipo de carga concentra más incumplimiento del SLA de
-    declaración ahora mismo. 'Aéreos' se excluye por el mismo motivo que en
-    el resto del panel: es modo de transporte, no categoría de producto."""
+    histórico (hoy: solo septiembre tiene Mes conocido con certeza -- ver
+    AlmacenAprox en _ciclo_historico). En vez de una tendencia en el tiempo,
+    corta el mismo dato por categoría: qué tipo de carga concentra más
+    incumplimiento del plazo de declaración ahora mismo. 'Aéreos' se excluye
+    por el mismo motivo que en el resto del panel: es modo de transporte, no
+    categoría de producto. Esta gráfica SÍ usa 'dias' (llegada→declaración),
+    que no depende de Fecha_Almacen ni de su respaldo -- están las 47 filas
+    del histórico, incluidas julio y agosto."""
     if dias_df.empty or "dias" not in dias_df.columns:
         return None
     limite = sla_etapas().get("Recepción y declaración")
@@ -745,10 +771,10 @@ def _figura_retrasos_categoria(dias_df: pd.DataFrame) -> go.Figure | None:
         x=agg["pct"].values, y=agg.index, orientation="h", marker=dict(color=colores, line=dict(width=0)),
         text=[f"{v:.0f}%" for v in agg["pct"].values], textposition="outside", textfont=dict(size=12, family=_FUENTE),
         customdata=agg["n"].values,
-        hovertemplate="<b>%{y}</b><br>%{x:.0f}% fuera de SLA · n=%{customdata}<extra></extra>",
+        hovertemplate="<b>%{y}</b><br>%{x:.0f}% con declaración fuera de tiempo · n=%{customdata}<extra></extra>",
     )])
     fig.update_layout(**_LAYOUT_BASE, height=max(240, 36 * len(agg)),
-                      title=dict(text=f"🚨 % fuera del SLA de declaración (>{limite}d) por categoría"),
+                      title=dict(text=f"🚨 % con declaración fuera de tiempo (>{limite}d), por categoría"),
                       xaxis=dict(showgrid=True, gridcolor="#F1F5F9", title=""),
                       yaxis=dict(showgrid=False, title=""))
     return fig
@@ -757,9 +783,10 @@ def _figura_retrasos_categoria(dias_df: pd.DataFrame) -> go.Figure | None:
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def _figura_retrasos_mensual(dias_df: pd.DataFrame, meses: int = 18) -> go.Figure | None:
     """El pilar de 'retrasos' que hoy no tiene tendencia en esta pestaña: qué
-    porcentaje de lo cerrado cada mes superó el SLA de declaración (el mismo
-    de sla_etapas() que colorea el dashboard en vivo). Un % puntual ya existe
-    en la tarjeta de arriba; esto muestra si va mejorando o empeorando."""
+    porcentaje de lo cerrado cada mes superó el plazo operativo de
+    declaración (el mismo umbral de sla_etapas() que colorea el dashboard en
+    vivo). Un % puntual ya existe en la gráfica de respaldo por categoría;
+    esto muestra si va mejorando o empeorando."""
     if dias_df.empty or "Mes" not in dias_df.columns or "dias" not in dias_df.columns:
         return None
     limite = sla_etapas().get("Recepción y declaración")
@@ -782,10 +809,10 @@ def _figura_retrasos_mensual(dias_df: pd.DataFrame, meses: int = 18) -> go.Figur
         text=[f"{v:.0f}" if v is not None else "" for v in pct], textposition="outside",
         textfont=dict(size=12, family=_FUENTE),
         customdata=total.values,
-        hovertemplate="%{x}<br>%{y:.0f} de cada 100 fuera de SLA · n=%{customdata}<extra></extra>",
+        hovertemplate="%{x}<br>%{y:.0f} de cada 100 con declaración fuera de tiempo · n=%{customdata}<extra></extra>",
     )])
     fig.update_layout(**_LAYOUT_BASE, height=300,
-                      title=dict(text=f"🚨 % fuera del SLA de declaración (>{limite}d) por mes"),
+                      title=dict(text=f"🚨 % con declaración fuera de tiempo (>{limite}d), por mes"),
                       xaxis=dict(showgrid=False, title="", tickangle=-45),
                       yaxis=dict(showgrid=True, gridcolor="#F1F5F9", title="%", rangemode="tozero"))
     return fig
@@ -909,6 +936,14 @@ def panel_analitica(datos: dict):
         fig = _figura_tiempo_puerto_categoria(dias_f)
         if fig:
             st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tiempo_visible")
+            if "dias_total" in dias_f.columns and "AlmacenAprox" in dias_f.columns:
+                con_ciclo = dias_f["dias_total"].notna()
+                n_aprox = int(dias_f.loc[con_ciclo, "AlmacenAprox"].fillna(False).sum())
+                n_total = int(con_ciclo.sum())
+                if n_aprox:
+                    st.caption(f"Incluye julio y agosto: {n_aprox} de {n_total} embarques con ciclo medido "
+                              "usan la fecha de recepción como aproximación de la fecha de almacén, porque "
+                              "esa columna todavía no se llenaba cuando se archivaron.")
         else:
             st.caption("Todavía no hay embarques archivados con llegada y declaración para medir tiempo en puerto.")
 

@@ -341,7 +341,7 @@ ESTADO_SLUG = {v: k for k, v in ESTADO_DISPLAY.items()}
 
 
 def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
         empresa_sel = st.selectbox("Empresa", ["Todas"] + EMPRESAS_PAGO, key="pago_filtro_empresa")
 
@@ -376,6 +376,31 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
 
     vista = enriquecido if empresa_sel == "Todas" or enriquecido.empty \
         else enriquecido[enriquecido["EmpresaEfectiva"] == empresa_sel]
+
+    if vista.empty:
+        st.info("No hay expedientes de Pagos para esta selección.")
+        return
+
+    # Filtro de Mes: agrupa por Fecha Saludable (FechaSinMoraParsed), no por
+    # Llegada ni por Fecha de Pago Real. Es la fecha que responde "¿cuánto
+    # esperamos pagar en octubre?" -- tanto para lo pendiente (una estimación
+    # a futuro) como para lo ya pagado (cuánto se esperaba pagar ese mes,
+    # se haya cumplido o no). Las opciones salen de lo que YA hay en pantalla
+    # (después del filtro de Empresa), no de todo el histórico completo.
+    con_fecha_saludable = vista["FechaSinMoraParsed"].notna()
+    meses_disponibles = sorted({(d.year, d.month) for d in vista.loc[con_fecha_saludable, "FechaSinMoraParsed"]})
+    opciones_mes = ["Todos"] + [f"{MESES_ES_CORTO[m]} {a}" for a, m in meses_disponibles]
+    with c3:
+        mes_sel = st.selectbox("Mes (Fecha Saludable)", opciones_mes, key="pago_filtro_mes")
+
+    if mes_sel != "Todos":
+        anio_sel, mes_num_sel = next((a, m) for a, m in meses_disponibles if f"{MESES_ES_CORTO[m]} {a}" == mes_sel)
+        vista = vista[vista["FechaSinMoraParsed"].apply(
+            lambda d: d is not None and d.year == anio_sel and d.month == mes_num_sel)]
+        sin_fecha_saludable = int((~con_fecha_saludable).sum())
+        if sin_fecha_saludable:
+            st.caption(f"{sin_fecha_saludable} expediente(s) de esta selección no tienen Fecha Saludable "
+                      "todavía, así que no aparecen bajo ningún mes.")
 
     if vista.empty:
         st.info("No hay expedientes de Pagos para esta selección.")

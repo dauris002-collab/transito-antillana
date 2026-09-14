@@ -880,12 +880,11 @@ def panel_analitica(datos: dict):
         .replace("", NO_ESPECIFICADO).mode()
     dias_mediana, dias_n = _mediana_n(dias_f["dias_total"]) if "dias_total" in dias_f.columns else (None, 0)
     cat_lenta, dias_lenta = _categoria_mas_lenta(dias_f)
-    sla_pct, sla_n, sla_limite = _cumplimiento_sla(dias_f)
     tendencias = _tendencias_kpi(mensual_f, dias_f)
 
     st.write("")
     with st.container(key="bikpirow"):
-        cols = st.columns(6)
+        cols = st.columns(5)
         tarjetas = [
             ("📦", "Embarques recibidos", str(len(mensual_f)), "#059669", "#10B981",
              _flecha(tendencias["conteo"])),
@@ -897,18 +896,21 @@ def panel_analitica(datos: dict):
             ("🐢", "Categoría más lenta",
              f"{cat_lenta} · {dias_lenta:.0f} d" if cat_lenta else "—",
              "#B91C1C", "#EF4444", ""),
-            ("✅", f"SLA declaración (≤{sla_limite}d)" if sla_limite is not None else "SLA declaración",
-             f"{sla_pct}% ({sla_n})" if sla_pct is not None else "—",
-             "#0F766E", "#14B8A6", _flecha(tendencias["sla"], decimales=1, sufijo="pp")),
         ]
         for col, (icono, label, valor, ca, cb, delta) in zip(cols, tarjetas):
             with col:
                 st.markdown(_tarjeta_kpi_bi(icono, label, valor, ca, cb, delta), unsafe_allow_html=True)
     st.caption("Días en puerto y categoría más lenta: mediana del ciclo completo (llegada → almacén). "
-              "SLA declaración: % que cerró el tramo llegada → declaración dentro del mismo umbral que "
-              "colorea las tarjetas del dashboard en vivo. Flechas: mes más reciente con datos vs el "
-              "inmediato anterior — en Embarques recibidos es solo volumen (ni mejor ni peor); en Días "
-              "en puerto ▼ es mejor, en SLA ▲ es mejor.")
+              "Flechas: mes más reciente con datos vs el inmediato anterior — en Embarques recibidos es "
+              "solo volumen (ni mejor ni peor); en Días en puerto ▼ es mejor.")
+
+    st.write("")
+    with st.container(border=True):
+        fig = _figura_tiempo_puerto_categoria(dias_f)
+        if fig:
+            st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tiempo_visible")
+        else:
+            st.caption("Todavía no hay embarques archivados con llegada y declaración para medir tiempo en puerto.")
 
     st.write("")
     html_ahora = _tarjeta_ahora(en_puerto, en_aeropuerto)
@@ -987,21 +989,11 @@ def panel_analitica(datos: dict):
                 st.caption("Sin descripciones suficientes para el top de productos.")
 
         st.write("")
-        c3, c4 = st.columns(2)
-        with c3:
-            with st.container(border=True):
-                fig = _figura_tendencia_mensual(mensual_f)
-                if fig:
-                    st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tendencia")
-                else:
-                    st.caption("Todavía no hay suficiente histórico mes a mes con estos filtros.")
-        with c4:
-            with st.container(border=True):
-                fig = _figura_tiempo_puerto_categoria(dias_f)
-                if fig:
-                    st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tiempo")
-                else:
-                    st.caption("Todavía no hay embarques archivados con llegada y declaración para medir "
-                              "tiempo en puerto.")
+        with st.container(border=True):
+            fig = _figura_tendencia_mensual(mensual_f)
+            if fig:
+                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tendencia")
+            else:
+                st.caption("Todavía no hay suficiente histórico mes a mes con estos filtros.")
 
     st.caption(f"Última actualización de los datos: {datos['hora'].strftime('%H:%M:%S')}")

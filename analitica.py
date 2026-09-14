@@ -270,7 +270,7 @@ def _tendencias_kpi(mensual_f: pd.DataFrame, dias_f: pd.DataFrame) -> dict:
     (la categoría más lenta de agosto no tiene por qué ser la misma de
     septiembre) -- una flecha ahí compararía cosas distintas disfrazada de
     tendencia, que es peor que no mostrar nada."""
-    resultado = {"conteo": None, "dias": None}
+    resultado = {"conteo": None, "dias_puerto": None, "dias_aeropuerto": None}
 
     ult, pen = _ultimos_dos_meses(mensual_f)
     if ult is not None:
@@ -279,10 +279,12 @@ def _tendencias_kpi(mensual_f: pd.DataFrame, dias_f: pd.DataFrame) -> dict:
 
     ult, pen = _ultimos_dos_meses(dias_f)
     if ult is not None:
-        med_ult, _ = _mediana_n(dias_f.loc[dias_f["Mes"] == ult, "dias_total"])
-        med_pen, _ = _mediana_n(dias_f.loc[dias_f["Mes"] == pen, "dias_total"])
-        if med_ult is not None and med_pen is not None:
-            resultado["dias"] = med_ult - med_pen
+        base_ult, base_pen = dias_f[dias_f["Mes"] == ult], dias_f[dias_f["Mes"] == pen]
+        for clave, via in (("dias_puerto", VIA_MARITIMA), ("dias_aeropuerto", VIA_AEREA)):
+            med_ult, _ = _mediana_n(base_ult.loc[base_ult["Via"] == via, "dias_total"])
+            med_pen, _ = _mediana_n(base_pen.loc[base_pen["Via"] == via, "dias_total"])
+            if med_ult is not None and med_pen is not None:
+                resultado[clave] = med_ult - med_pen
 
     return resultado
 
@@ -799,21 +801,28 @@ def panel_analitica(datos: dict):
     pais_top = universo_f["Pais"].replace("", NO_ESPECIFICADO).mode()
     cat_top = universo_f[universo_f["Categoria"] != CATEGORIA_NO_PRODUCTO]["Categoria"] \
         .replace("", NO_ESPECIFICADO).mode()
-    dias_mediana, dias_n = _mediana_n(dias_f["dias_total"]) if "dias_total" in dias_f.columns else (None, 0)
+    tiene_dias_total = "dias_total" in dias_f.columns
+    dias_puerto_mediana, dias_puerto_n = _mediana_n(
+        dias_f.loc[dias_f["Via"] == VIA_MARITIMA, "dias_total"]) if tiene_dias_total else (None, 0)
+    dias_aeropuerto_mediana, dias_aeropuerto_n = _mediana_n(
+        dias_f.loc[dias_f["Via"] == VIA_AEREA, "dias_total"]) if tiene_dias_total else (None, 0)
     cat_lenta, dias_lenta = _categoria_mas_lenta(dias_f)
     tendencias = _tendencias_kpi(mensual_f, dias_f)
 
     st.write("")
     with st.container(key="bikpirow"):
-        cols = st.columns(5)
+        cols = st.columns(6)
         tarjetas = [
             ("📦", "Embarques recibidos", str(len(mensual_f)), "#059669", "#10B981",
              _flecha(tendencias["conteo"])),
             ("🌍", "País principal", pais_top.iloc[0] if len(pais_top) else "—", "#0284C7", "#38BDF8", ""),
             ("🏷️", "Categoría principal", cat_top.iloc[0] if len(cat_top) else "—", "#1E3A5F", "#0C4A6E", ""),
-            ("⏱️", "Días en puerto (mediana)",
-             f"{dias_mediana:.0f} d · n={dias_n}" if dias_mediana is not None else "—",
-             "#B45309", "#F59E0B", _flecha(tendencias["dias"], sufijo="d")),
+            ("⚓", "Días en puerto (mediana)",
+             f"{dias_puerto_mediana:.0f} d · n={dias_puerto_n}" if dias_puerto_mediana is not None else "—",
+             "#059669", "#10B981", _flecha(tendencias["dias_puerto"], sufijo="d")),
+            ("✈️", "Días en aeropuerto (mediana)",
+             f"{dias_aeropuerto_mediana:.0f} d · n={dias_aeropuerto_n}" if dias_aeropuerto_mediana is not None else "—",
+             "#1D4ED8", "#2563EB", _flecha(tendencias["dias_aeropuerto"], sufijo="d")),
             ("🐢", "Categoría más lenta",
              f"{cat_lenta} · {dias_lenta:.0f} d" if cat_lenta else "—",
              "#B91C1C", "#EF4444", ""),
@@ -821,9 +830,9 @@ def panel_analitica(datos: dict):
         for col, (icono, label, valor, ca, cb, delta) in zip(cols, tarjetas):
             with col:
                 st.markdown(_tarjeta_kpi_bi(icono, label, valor, ca, cb, delta), unsafe_allow_html=True)
-    st.caption("Días en puerto y categoría más lenta: mediana del ciclo completo (llegada → almacén). "
+    st.caption("Días en puerto/aeropuerto y categoría más lenta: mediana del ciclo completo (llegada → almacén). "
               "Flechas: mes más reciente con datos vs el inmediato anterior — en Embarques recibidos es "
-              "solo volumen (ni mejor ni peor); en Días en puerto ▼ es mejor.")
+              "solo volumen (ni mejor ni peor); en Días en puerto/aeropuerto ▼ es mejor.")
 
     st.write("")
     with st.container(border=True):

@@ -173,16 +173,8 @@ html { -webkit-text-size-adjust: 100%; }
 .chip b { font-size:0.98rem; color:#111827; }
 .chip.on { border-color:#F0B90B; background:#FFFBEB; }
 
-/* ---------- Alertas de cuello de botella ---------- */
-.alerta-caja { border:1px solid #FDE68A; background:#FFFBEB; border-radius:12px;
-               padding:12px 16px; margin-bottom:12px; }
-.alerta-titulo { font-size:0.78rem; text-transform:uppercase; letter-spacing:0.05em;
-                 font-weight:800; color:#92400E; margin-bottom:8px; }
 .alerta-fila { display:flex; gap:10px; align-items:baseline; padding:3px 0;
                font-size:0.87rem; color:#1F2937; flex-wrap:wrap; }
-.alerta-fila .dias { font-weight:800; color:#B45309; min-width:64px; }
-.alerta-fila .bl { font-weight:700; }
-.alerta-fila .que { color:#6B7280; }
 
 /* ---------- Diagrama de flujo (HTML puro, sin Plotly) ---------- */
 .flujo { display:flex; align-items:flex-start; margin:8px 0 4px 0; }
@@ -990,38 +982,6 @@ def _resumen_ejecutivo(df: pd.DataFrame, recibidas_mes: int) -> str:
     return f'<div class="resumen">{" · ".join(piezas)}.</div>'
 
 
-def _panel_alertas(df: pd.DataFrame, tope: int = 6):
-    """Dónde se está trabando. No es lo mismo saber que hay 14 embarques en
-    puerto que saber que 4 llevan más de una semana sin declarar: lo primero es
-    un dato, lo segundo es una decisión."""
-    con_alerta = df[df["Alerta"].astype(str).str.strip() != ""]
-    if con_alerta.empty:
-        return
-    con_alerta = con_alerta.sort_values("AlertaDias", ascending=False, na_position="last")
-
-    resumen = {}
-    for etapa, texto in zip(con_alerta["EtapaActual"], con_alerta["Alerta"]):
-        clave = ETIQUETA_CORTA_ETAPA.get(etapa, "Sin confirmar llegada") if etapa else "Sin confirmar llegada"
-        resumen[clave] = resumen.get(clave, 0) + 1
-    detalle = " · ".join(f"{n} en {nombre.lower()}" for nombre, n in resumen.items())
-
-    filas = []
-    for _, r in con_alerta.head(tope).iterrows():
-        filas.append(
-            f'<div class="alerta-fila"><span class="dias">{int(r["AlertaDias"])} d</span>'
-            f'<span class="bl">{esc(r[COL_BL]) or "(sin BL)"}</span>'
-            f'<span class="que">{esc(r[COL_DESC])} · {esc(r["Categoria"])} — {esc(r["Alerta"])}</span></div>'
-        )
-    extra = (f'<div class="alerta-fila"><span class="que">…y {len(con_alerta) - tope} más. '
-             f'Ordena la lista por "Más días detenido" para verlos todos.</span></div>'
-             if len(con_alerta) > tope else "")
-    st.markdown(
-        f'<div class="alerta-caja"><div class="alerta-titulo">⚠ Dónde se está trabando · '
-        f'{len(con_alerta)} embarque(s) — {esc(detalle)}</div>{"".join(filas)}{extra}</div>',
-        unsafe_allow_html=True,
-    )
-
-
 def _archivar(fila, clave: str, etiqueta: str = "Marcar como recibido", df=None):
     """Botón de archivo + rescate cuando falta la declaración.
 
@@ -1460,8 +1420,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
         st.write("")
 
     st.write("")
-    _panel_alertas(df)
-
     if rol == "admin":
         _panel_confirmacion(df, tab_key)
         if sin_fecha_n:
@@ -1716,7 +1674,6 @@ def mostrar_dashboard(datos: dict):
         st.markdown(html_chips(en_proceso_df["EtapaActual"].value_counts().to_dict()),
                     unsafe_allow_html=True)
         html_atraso_puerto(en_proceso_df, contexto=VISTA_EN_PROCESO_PUERTO)
-        _panel_alertas(en_proceso_df)
         st.divider()
         _panel_en_proceso(en_proceso_df, rol, contexto=VISTA_EN_PROCESO_PUERTO)
         return

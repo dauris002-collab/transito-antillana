@@ -213,19 +213,19 @@ def resumen_atraso_puerto(df) -> dict:
     Cada fila del detalle trae "lugar" ("puerto" o "aeropuerto") calculado a
     partir de su propia columna Via_Transporte, para que un embarque aéreo
     nunca aparezca etiquetado como si estuviera en un puerto marítimo."""
-    vacio = {"n_puerto": 0, "n_sin_declarar": 0, "dias_mediana": 0.0, "detalle": []}
+    vacio = {"n_puerto": 0, "n_sin_declarar": 0, "dias_promedio": 0.0, "detalle": []}
     if df is None or df.empty or "DiasEnPuerto" not in df.columns:
         return vacio
 
     n_puerto = n_sin_dec = 0
-    lista_dias = []
+    suma_dias = 0
     detalle = []
     for _, fila in df.iterrows():
         dias = fila.get("DiasEnPuerto")
         if not es_numero(dias):
             continue
         n_puerto += 1
-        lista_dias.append(int(dias))
+        suma_dias += int(dias)
         sin_declarar = not _lleno(fila.get("F_Declaracion"))
         if sin_declarar:
             n_sin_dec += 1
@@ -241,9 +241,7 @@ def resumen_atraso_puerto(df) -> dict:
     detalle.sort(key=lambda d: d["dias"], reverse=True)
     return {
         "n_puerto": n_puerto, "n_sin_declarar": n_sin_dec,
-        # Mediana y no promedio: con pocos embarques en puerto, uno solo que
-        # se tranque un mes infla el promedio y no representa la operación.
-        "dias_mediana": float(pd.Series(lista_dias).median()) if lista_dias else 0.0,
+        "dias_promedio": (suma_dias / n_puerto) if n_puerto else 0.0,
         "detalle": detalle,
     }
 
@@ -756,11 +754,11 @@ def resumen_pagos(df: pd.DataFrame) -> dict:
     """Estadística objetivo del módulo: de los expedientes con montos, cuántos
     ya están Pagados y cuántos siguen Pendientes, cuánto suma lo que TODAVÍA
     se debe (los pendientes), cuántos de los pagados se pagaron dentro de la
-    ventana saludable, la mediana de días de mora, y el sobrecosto acumulado
+    ventana saludable, el promedio de días de mora, y el sobrecosto acumulado
     por moneda (el extra que Logística escribió a mano; solo se suma cuando es
     positivo — un pago más barato que lo estimado no "resta" sobrecosto,
     simplemente no genera ninguno)."""
-    vacio = {"n_pagados": 0, "n_abiertos": 0, "n_a_tiempo": 0, "dias_mora_mediana": None,
+    vacio = {"n_pagados": 0, "n_abiertos": 0, "n_a_tiempo": 0, "dias_mora_promedio": None,
              "sobrecosto": {"USD": 0.0, "DOP": 0.0}, "total_por_pagar": {"USD": 0.0, "DOP": 0.0}}
     if df is None or df.empty or "EstadoEfectivo" not in df.columns:
         return vacio
@@ -797,10 +795,7 @@ def resumen_pagos(df: pd.DataFrame) -> dict:
         "n_pagados": len(cerrados),
         "n_abiertos": vacio["n_abiertos"],
         "n_a_tiempo": a_tiempo,
-        # Mediana y no promedio: un expediente trancado meses le mueve el
-        # promedio a todo el grupo y no representa la operación. Mismo
-        # criterio que los ciclos del histórico y de la analítica.
-        "dias_mora_mediana": float(pd.Series(dias).median()) if dias else None,
+        "dias_mora_promedio": (sum(dias) / len(dias)) if dias else None,
         "sobrecosto": sobrecosto,
         "total_por_pagar": total_por_pagar,
     }

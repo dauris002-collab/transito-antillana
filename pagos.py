@@ -81,6 +81,18 @@ PAGOS_CSS = """
                   display:block; text-align:center; }
 .pago-total-val { font-size:1.2rem; font-weight:800; color:#111827; display:block; text-align:center; }
 .pago-cerrado { text-align:center; color:#9CA3AF; font-size:0.78rem; margin-top:10px; }
+.pago-aging-wrap { overflow-x:auto; margin:6px 0 16px; }
+.pago-aging { width:100%; border-collapse:separate; border-spacing:0; background:#fff;
+              border:1px solid #E5E7EB; border-radius:12px; overflow:hidden;
+              box-shadow:0 1px 4px rgba(17,24,39,0.06); }
+.pago-aging th { background:#111827; color:#fff; font-size:0.72rem; font-weight:700;
+                 text-transform:uppercase; letter-spacing:0.05em; padding:11px 14px;
+                 text-align:center; white-space:nowrap; }
+.pago-aging td { padding:9px 14px; text-align:center; font-size:0.88rem; color:#111827;
+                 border-top:1px solid #F3F4F6; white-space:nowrap; }
+.pago-aging tbody tr:nth-child(even) { background:#F9FAFB; }
+.pago-aging td.pago-aging-dias { font-weight:800; }
+.pago-aging td.pago-aging-vacio { color:#9CA3AF; }
 @media (max-width:640px) { .pago-totales { gap:14px 18px; } }
 </style>
 """
@@ -215,12 +227,12 @@ def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
     misma que ya está activa la vuelve a 'todos'. Una 6ta tarjeta, estática,
     muestra el total que aún se debe. Devuelve el filtro que quedó activo
     después del clic (o el mismo de antes, si no se clickeó nada)."""
-    med = resumen["dias_mora_mediana"]
+    prom = resumen["dias_mora_promedio"]
     sobre = resumen["sobrecosto"]
     kpis = [
         ("Pagados", str(resumen["n_pagados"]), COLOR_TOTAL, "cerrados"),
         ("Pendientes", str(resumen["n_abiertos"]), COLOR_ABIERTOS, "abiertos"),
-        ("Mora mediana", f"{med:.0f} d" if med is not None else "—", COLOR_MORA_PROMEDIO, "con_mora"),
+        ("Mora promedio", f"{prom:.0f} d" if prom is not None else "—", COLOR_MORA_PROMEDIO, "con_mora"),
         ("Sobrecosto acumulado", f"USD {sobre['USD']:,.0f} · DOP {sobre['DOP']:,.0f}",
          COLOR_SOBRECOSTO, "con_sobrecosto"),
     ]
@@ -351,11 +363,16 @@ def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
     mirando lo pagado/con mora/con sobrecosto, lo que interesa es el pasado y
     una lista de deudas pendientes ahí sería ruido.
 
+    Se renderiza como tabla HTML propia y no con st.dataframe por dos motivos:
+    centrar el contenido y darle peso visual a los encabezados —que es como
+    esta lista se lee mejor— y controlar lo que se muestra cuando no hay dato
+    ('—'), porque st.dataframe imprime el nulo de pandas como literal 'None'.
+
     'Días sin pagar' es DiasSinPagar tal cual lo calcula enriquecer_pagos():
     corre desde la llegada CONFIRMADA en tránsito. Para expedientes cuyo BL no
     está en tránsito (Tecnicaribe, Motor Ibérico, o BLs dados de baja ahí) no
-    hay llegada confirmada, así que la celda queda vacía y caen al final —
-    nunca un número construido sobre una fecha que nadie verificó."""
+    hay llegada confirmada, así que sale '—' y caen al final — nunca un número
+    construido sobre una fecha que nadie verificó."""
     if filtro_activo not in ("todos", "abiertos"):
         return
     pendientes = con_montos[con_montos["EstadoEfectivo"] != ESTADO_PAGO_PAGADO]
@@ -370,28 +387,39 @@ def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
         usd, dop = total.get("USD") or 0.0, total.get("DOP") or 0.0
         llegada = r.get("LlegadaEfectiva")
         filas.append({
-            "BL": str(r.get(COL_BL, "") or "").strip() or "(sin BL)",
-            "Empresa": r.get("EmpresaEfectiva", "") or EMPRESA_ANTILLANA,
-            "Descripción": str(r.get(COL_DESC, "") or "").strip(),
-            "Llegada": formato_eta(llegada) if llegada else "—",
-            "Días sin pagar": dias,
-            "USD pendiente": _fmt(usd, "USD") if usd else "—",
-            "DOP pendiente": _fmt(dop, "DOP") if dop else "—",
-            # Orden de triaje: los que llevan más días arriba; sin contador
-            # al final. Los montos quedan como texto ya formateado (US$/RD$),
-            # así que la ordenación real la manda esta clave, no la columna.
-            "_dias": dias if dias is not None else -1,
+            "bl": str(r.get(COL_BL, "") or "").strip() or "(sin BL)",
+            "empresa": r.get("EmpresaEfectiva", "") or EMPRESA_ANTILLANA,
+            "desc": str(r.get(COL_DESC, "") or "").strip(),
+            "llegada": formato_eta(llegada) if llegada else "—",
+            "dias": dias,
+            "usd": _fmt(usd, "USD") if usd else "—",
+            "dop": _fmt(dop, "DOP") if dop else "—",
         })
-    filas.sort(key=lambda f: f["_dias"], reverse=True)
+    # Orden de triaje: los que llevan más días sin pagar arriba; los que no
+    # tienen contador (sin llegada confirmada) al final.
+    filas.sort(key=lambda f: f["dias"] if f["dias"] is not None else -1, reverse=True)
 
-    tabla = pd.DataFrame(filas).drop(columns="_dias")
-    # Int64 (nullable) a propósito: mezclar int y "—" en la misma columna
-    # rompe la conversión a Arrow que hace st.dataframe y Streamlit termina
-    # convirtiendo TODO a texto, con su warning en consola. Con Int64 los
-    # None viajan como nulos de verdad y la columna sigue siendo numérica.
-    tabla["Días sin pagar"] = pd.array(tabla["Días sin pagar"], dtype="Int64")
+    cuerpo = "".join(
+        "<tr>"
+        f"<td>{esc(f['bl'])}</td>"
+        f"<td>{esc(f['empresa'])}</td>"
+        f"<td>{esc(f['desc'])}</td>"
+        f"<td>{esc(f['llegada'])}</td>"
+        + (f'<td class="pago-aging-dias">{f["dias"]}</td>' if f["dias"] is not None
+           else '<td class="pago-aging-vacio">—</td>')
+        + f"<td>{esc(f['usd'])}</td>"
+        f"<td>{esc(f['dop'])}</td>"
+        "</tr>"
+        for f in filas
+    )
     st.markdown("**Pendientes por antigüedad** — qué se debe y desde cuándo corre el reloj")
-    st.dataframe(tabla, hide_index=True, width="stretch")
+    st.markdown(
+        '<div class="pago-aging-wrap"><table class="pago-aging">'
+        "<thead><tr><th>BL</th><th>Empresa</th><th>Descripción</th><th>Llegada</th>"
+        "<th>Días sin pagar</th><th>USD pendiente</th><th>DOP pendiente</th></tr></thead>"
+        f"<tbody>{cuerpo}</tbody></table></div>",
+        unsafe_allow_html=True,
+    )
 
 
 def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):

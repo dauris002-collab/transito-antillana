@@ -215,12 +215,12 @@ def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
     misma que ya está activa la vuelve a 'todos'. Una 6ta tarjeta, estática,
     muestra el total que aún se debe. Devuelve el filtro que quedó activo
     después del clic (o el mismo de antes, si no se clickeó nada)."""
-    prom = resumen["dias_mora_promedio"]
+    med = resumen["dias_mora_mediana"]
     sobre = resumen["sobrecosto"]
     kpis = [
         ("Pagados", str(resumen["n_pagados"]), COLOR_TOTAL, "cerrados"),
         ("Pendientes", str(resumen["n_abiertos"]), COLOR_ABIERTOS, "abiertos"),
-        ("Mora promedio", f"{prom:.0f} d" if prom is not None else "—", COLOR_MORA_PROMEDIO, "con_mora"),
+        ("Mora mediana", f"{med:.0f} d" if med is not None else "—", COLOR_MORA_PROMEDIO, "con_mora"),
         ("Sobrecosto acumulado", f"USD {sobre['USD']:,.0f} · DOP {sobre['DOP']:,.0f}",
          COLOR_SOBRECOSTO, "con_sobrecosto"),
     ]
@@ -340,6 +340,60 @@ ESTADO_DISPLAY = {"todos": "Todos", "abiertos": "Pendiente", "cerrados": "Pagado
 ESTADO_SLUG = {v: k for k, v in ESTADO_DISPLAY.items()}
 
 
+def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
+    """Los pendientes ordenados de más viejo a más reciente: la respuesta
+    directa a "qué pagos están pendientes y cuál lleva más tiempo esperando",
+    que las tarjetas de expediente de abajo no dan de un vistazo (están en
+    orden de hoja, no de urgencia). Respeta los filtros de Empresa y Mes ya
+    aplicados arriba, porque con_montos ya viene filtrado.
+
+    Solo aparece con el filtro de tarjeta en 'todos' o 'abiertos': si se está
+    mirando lo pagado/con mora/con sobrecosto, lo que interesa es el pasado y
+    una lista de deudas pendientes ahí sería ruido.
+
+    'Días sin pagar' es DiasSinPagar tal cual lo calcula enriquecer_pagos():
+    corre desde la llegada CONFIRMADA en tránsito. Para expedientes cuyo BL no
+    está en tránsito (Tecnicaribe, Motor Ibérico, o BLs dados de baja ahí) no
+    hay llegada confirmada, así que la celda queda vacía y caen al final —
+    nunca un número construido sobre una fecha que nadie verificó."""
+    if filtro_activo not in ("todos", "abiertos"):
+        return
+    pendientes = con_montos[con_montos["EstadoEfectivo"] != ESTADO_PAGO_PAGADO]
+    if pendientes.empty:
+        return
+
+    filas = []
+    for _, r in pendientes.iterrows():
+        dias = r.get("DiasSinPagar")
+        dias = None if dias is None or pd.isna(dias) else int(dias)
+        total = r.get("TotalActual") or {}
+        usd, dop = total.get("USD") or 0.0, total.get("DOP") or 0.0
+        llegada = r.get("LlegadaEfectiva")
+        filas.append({
+            "BL": str(r.get(COL_BL, "") or "").strip() or "(sin BL)",
+            "Empresa": r.get("EmpresaEfectiva", "") or EMPRESA_ANTILLANA,
+            "Descripción": str(r.get(COL_DESC, "") or "").strip(),
+            "Llegada": formato_eta(llegada) if llegada else "—",
+            "Días sin pagar": dias,
+            "USD pendiente": _fmt(usd, "USD") if usd else "—",
+            "DOP pendiente": _fmt(dop, "DOP") if dop else "—",
+            # Orden de triaje: los que llevan más días arriba; sin contador
+            # al final. Los montos quedan como texto ya formateado (US$/RD$),
+            # así que la ordenación real la manda esta clave, no la columna.
+            "_dias": dias if dias is not None else -1,
+        })
+    filas.sort(key=lambda f: f["_dias"], reverse=True)
+
+    tabla = pd.DataFrame(filas).drop(columns="_dias")
+    # Int64 (nullable) a propósito: mezclar int y "—" en la misma columna
+    # rompe la conversión a Arrow que hace st.dataframe y Streamlit termina
+    # convirtiendo TODO a texto, con su warning en consola. Con Int64 los
+    # None viajan como nulos de verdad y la columna sigue siendo numérica.
+    tabla["Días sin pagar"] = pd.array(tabla["Días sin pagar"], dtype="Int64")
+    st.markdown("**Pendientes por antigüedad** — qué se debe y desde cuándo corre el reloj")
+    st.dataframe(tabla, hide_index=True, width="stretch")
+
+
 def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -440,6 +494,8 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
     if len(con_montos) < len(vista):
         st.caption(f"{len(vista) - len(con_montos)} expediente(s) de esta selección aún no tienen "
                    "montos cargados.")
+
+    _tabla_antiguedad_pendientes(con_montos, filtro_activo)
 
     filtrado = _aplicar_filtro_kpi(con_montos, filtro_activo)
     st.markdown(PAGOS_CSS, unsafe_allow_html=True)

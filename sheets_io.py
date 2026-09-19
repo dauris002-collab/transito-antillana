@@ -206,20 +206,6 @@ SLA_ETAPA_DEFECTO = {
 SLA_RETRASO_DEFECTO = 7   # días de retraso sin actualizar el ETA antes de avisar
 
 
-# Atraso en puerto. Son DOS umbrales distintos y confundirlos falsea el número:
-# UMBRAL_ATRASO_PUERTO es a partir de cuándo TÚ consideras que un embarque está
-# atrasado (criterio interno), y DIAS_LIBRES es a partir de cuándo la naviera o
-# la terminal EMPIEZAN A COBRAR (criterio del proveedor, viene en el contrato).
-# El conteo de atrasados usa el primero; el módulo de pagos usará el segundo.
-UMBRAL_ATRASO_PUERTO_DEFECTO = 5   # alerta a partir de 5 días en puerto/aeropuerto
-
-
-DIAS_LIBRES_DEFECTO = 0   # sin días libres declarados, el reloj corre desde la llegada
-
-
-MONEDA_DEFECTO = "RD$"
-
-
 # Qué fecha manda para decidir a qué mes pertenece un embarque recibido:
 #   "llegada" -> fecha de llegada confirmada (respaldo: ETA)
 #   "almacen" -> fecha de entrada a almacén
@@ -414,43 +400,6 @@ def es_llego_no(valor) -> bool:
     """True solo si se verificó explícitamente que NO llegó. Vacío no es NO:
     vacío significa que nadie ha revisado, y son cosas distintas."""
     return _norm(valor) in {"no", "n"}
-
-
-@st.cache_resource
-def costos_puerto() -> dict:
-    """Parámetros del atraso en puerto. Se ajustan desde Secrets:
-
-        [costo_puerto]
-        umbral = 5
-        moneda = "RD$"
-        dias_libres = 5
-
-        [costo_puerto.dias_libres_por_categoria]
-        Elevadores = 2
-
-    Aquí NO hay tarifa diaria. El costo de la demora no se estima con una tarifa
-    por día — que en la práctica varía por naviera, terminal, volumen y espacio —
-    sino que se observa: se registra el monto estimado con su fecha de pago
-    saludable y luego el monto realmente pagado, y el sobrecosto es la
-    diferencia. Eso vive en el módulo de Estatus de Pago, no en tránsito."""
-    cfg = {}
-    try:
-        cfg = st.secrets.get("costo_puerto", None) or {}
-    except Exception:
-        cfg = {}
-
-    def _num(valor, defecto):
-        try:
-            return float(valor)
-        except (TypeError, ValueError):
-            return defecto
-
-    return {
-        "umbral": int(_num(cfg.get("umbral"), UMBRAL_ATRASO_PUERTO_DEFECTO)),
-        "moneda": str(cfg.get("moneda") or MONEDA_DEFECTO),
-        "dias_libres": _num(cfg.get("dias_libres"), DIAS_LIBRES_DEFECTO),
-        "libres_por_cat": dict(cfg.get("dias_libres_por_categoria", {}) or {}),
-    }
 
 
 @st.cache_resource

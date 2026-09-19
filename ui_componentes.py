@@ -420,7 +420,7 @@ def html_atraso_puerto(df, contexto: str = "") -> None:
                     st.session_state[clave_click] = True
                     rerun_fragmento()
 
-    st.caption(f"Mediana: {r['dias_mediana']:.0f} días en puerto/aeropuerto")
+    st.caption(f"Promedio: {r['dias_promedio']:.0f} días en puerto/aeropuerto")
 
     # El detalle se queda oculto hasta que se clickee alguno de los botones de
     # arriba, aunque sea "Todos": antes se desplegaba de una vez y era la tabla

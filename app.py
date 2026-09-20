@@ -78,18 +78,6 @@ LARGO_PIN = 4               # dígitos del PIN
 VIDA_SESION_MIN = {"admin": 120, "viewer": 720}
 
 
-MAX_INTENTOS_SESION = 5
-
-
-MAX_FALLOS_GLOBAL = 40      # freno global: el bloqueo por sesión se evade en incógnito
-
-
-VENTANA_FALLOS = 10 * 60
-
-
-BLOQUEO_SEGUNDOS = 15 * 60
-
-
 # ---------------------------------------------------------------------------
 # ACCESO
 # ---------------------------------------------------------------------------
@@ -172,13 +160,6 @@ def cerrar_sesion():
     st.query_params.clear()
 
 
-@st.cache_resource
-def _registro_fallos() -> dict:
-    """Contador de fallos COMPARTIDO entre sesiones. El bloqueo por session_state
-    se evade abriendo una pestaña de incógnito; este no."""
-    return {"marcas": [], "bloqueo_hasta": 0.0}
-
-
 def _resolver_pin(pin: str):
     """Devuelve (rol, nombre) o (None, None). Soporta PIN por persona con la
     tabla [pins] de secrets:  [pins.1234]  nombre = "Dauris"  rol = "admin".
@@ -210,21 +191,7 @@ def login_screen():
         unsafe_allow_html=True,
     )
 
-    st.session_state.setdefault("intentos", 0)
-    st.session_state.setdefault("bloqueado_hasta", 0.0)
-
-    registro = _registro_fallos()
-    ahora = time.time()
-    registro["marcas"] = [m for m in registro["marcas"] if ahora - m < VENTANA_FALLOS]
-
     _, centro, _ = st.columns([1, 1.2, 1])
-    bloqueo = max(st.session_state.bloqueado_hasta, registro["bloqueo_hasta"])
-    if ahora < bloqueo:
-        restante = int(bloqueo - ahora)
-        with centro:
-            st.error(f"Demasiados intentos fallidos. Intenta de nuevo en {restante // 60} min {restante % 60} seg.")
-        return
-
     with centro:
         # El PIN va dentro de un st.form a propósito: con un text_input suelto +
         # st.button, presionar Enter solo dispara un rerun y el botón nunca queda
@@ -241,30 +208,19 @@ def login_screen():
 
     rol, nombre = _resolver_pin(pin)
     if rol:
-        st.session_state.intentos = 0
         _abrir_sesion(rol, nombre)
         registrar_log("Inicio de sesión", detalle=f"rol={rol}")
         st.rerun()
         return
 
-    time.sleep(1.0)  # freno artificial contra fuerza bruta
-    st.session_state.intentos += 1
-    registro["marcas"].append(ahora)
-    restantes = MAX_INTENTOS_SESION - st.session_state.intentos
-
-    if len(registro["marcas"]) >= MAX_FALLOS_GLOBAL:
-        registro["bloqueo_hasta"] = ahora + BLOQUEO_SEGUNDOS
-        registro["marcas"] = []
-        with centro:
-            st.error("Demasiados intentos fallidos desde varios accesos. Bloqueado por 15 minutos.")
-    elif restantes <= 0:
-        st.session_state.bloqueado_hasta = ahora + BLOQUEO_SEGUNDOS
-        st.session_state.intentos = 0
-        with centro:
-            st.error("PIN incorrecto. Acceso bloqueado por 15 minutos.")
-    else:
-        with centro:
-            st.error(f"PIN incorrecto. Te quedan {restantes} intento(s).")
+    # Sin bloqueo por intentos fallidos (pedido expreso: fallar el PIN
+    # simplemente no deja entrar, sin el castigo de 15 minutos). Lo único que
+    # se queda es este freno de 1 segundo por intento fallido — imperceptible
+    # para una persona, pero estira probar los 10,000 PINs posibles a horas
+    # en vez de minutos.
+    time.sleep(1.0)
+    with centro:
+        st.error("PIN incorrecto.")
 
 
 # ---------------------------------------------------------------------------

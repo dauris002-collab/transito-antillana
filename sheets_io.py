@@ -733,7 +733,16 @@ def _asegurar_columnas(ws, nombres: list) -> list:
     if not faltan:
         return headers
     inicio = len(headers) + 1
-    rango = f"{rowcol_to_a1(1, inicio)}:{rowcol_to_a1(1, inicio + len(faltan) - 1)}"
+    fin = inicio + len(faltan) - 1
+    # values.update NO agranda la cuadrícula: si la pestaña tiene menos
+    # columnas que `fin`, la API responde 400 ("exceeds grid limits") y no se
+    # escribe nada. Las pestañas creadas por la app nacen con la cuadrícula
+    # JUSTA (cols=len(esquema) al crearlas), así que cualquier columna que se
+    # agregue al esquema después —como Prioridad en v4.1— cae fuera de la
+    # cuadrícula y hay que agrandarla antes de escribir el encabezado.
+    if ws.col_count < fin:
+        _con_reintento(lambda: ws.add_cols(fin - ws.col_count))
+    rango = f"{rowcol_to_a1(1, inicio)}:{rowcol_to_a1(1, fin)}"
     _con_reintento(lambda: ws.update(range_name=rango, values=[faltan], value_input_option="RAW"))
     # Solo esta pestaña cambió: limpiar el caché completo de _headers (como se
     # hacía antes) obligaba a releer por API los encabezados de TODAS las

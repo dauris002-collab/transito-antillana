@@ -1,7 +1,18 @@
 """
 Antillana Comercial - Visibilidad de embarques en transito
 ===========================================================
-app.py - v4.2
+app.py - v4.3
+
+Que cambio en v4.3 (resumen para mantenimiento):
+
+ 1. CORREGIDO un bug de la v4.1 que bloqueaba TODA escritura en la pestana
+    Pagos (guardar pago, fijar prioridad, sincronizacion con transito y el
+    boton "Activar selectores"): la pestana se creo con la cuadricula justa
+    de columnas y la API de Google no la expande sola, asi que escribir el
+    encabezado nuevo "Prioridad" fallaba con APIError 400. Ahora
+    _asegurar_columnas agranda la cuadricula (add_cols) antes de escribir
+    encabezados nuevos. Aplica a cualquier columna futura en cualquier
+    pestana.
 
 Que cambio en v4.2 (resumen para mantenimiento):
 

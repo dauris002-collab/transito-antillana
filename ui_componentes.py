@@ -23,7 +23,7 @@ from sheets_io import (
     COL_OC, COL_PAIS, COL_VIA, ETAPA_ALMACEN, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES,
     MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO, VIA_MARITIMA,
     _norm, _slug_css, avanzar_estado_puerto, columnas_extra, confirmar_llegada,
-    eliminar_embarque, es_numero, fijar_fecha_declaracion, formato_dinero,
+    eliminar_embarque, es_llego_si, es_numero, fijar_fecha_declaracion, formato_dinero,
     formato_eta, hoy_rd, invalidar_caches, marcar_como_recibido, marcar_no_llego,
     registrar_log, sla_etapas,
 )
@@ -42,7 +42,7 @@ from logica import (
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------------------------
-VERSION_APP = "4.0"
+VERSION_APP = "4.1"
 
 
 VISTA_EN_PROCESO_PUERTO = "Puerto/Aeropuerto · Estatus"
@@ -986,29 +986,34 @@ def _archivar(fila, clave: str, etiqueta: str = "Marcar como recibido", df=None)
     """Botón de archivo + rescate cuando falta la declaración.
 
     El candado que impide archivar sin haber pasado por el flujo se mantiene (si
-    no, el histórico se llena de embarques sin trazabilidad). Lo que cambia es
-    que no es un callejón sin salida: si falta la declaración, la app la pide
-    aquí mismo con su fecha REAL, en vez de rellenarla sola con la de hoy — que
-    era rápido, pero metía datos falsos en los contadores de desempeño."""
+    no, el histórico se llena de embarques sin trazabilidad). Y la fecha de
+    entrada a almacén se PIDE SIEMPRE antes de archivar: antes el botón
+    archivaba de un solo clic grabando la fecha de hoy en silencio, y eso
+    falseaba el ciclo puerto→almacén de la analítica igual que la declaración
+    inventada que ya se corrigió — la carga casi nunca entra al almacén el mismo
+    día en que alguien se sienta a archivarla. Si además falta la declaración,
+    el mismo formulario la pide con su fecha REAL, en vez de rellenarla sola
+    con la de hoy."""
     bl = str(fila[COL_BL]).strip()
     categoria = fila["Categoria"]
     n_fila = fila.get("FilaSheet")
     pendiente_key = f"faltan_{clave}"
 
     if st.button(etiqueta, key=f"rec_{clave}", type="primary", width="stretch"):
-        ok, mensaje = marcar_como_recibido(bl, categoria, fila_sugerida=n_fila)
-        if ok:
-            registrar_log("Recibido", bl, categoria, f"fila {n_fila}")
-            invalidar_caches()
-            st.rerun()
-        elif str(mensaje).startswith("FALTAN_ETAPAS::"):
-            st.session_state[pendiente_key] = mensaje.split("::", 1)[1].split("|")
-            rerun_fragmento()
-        else:
-            st.error(mensaje)
+        # Ya no se archiva de una vez: primero se abre el formulario con la
+        # fecha de almacén. Lo que falte del flujo se detecta con lo que ya
+        # muestra la pantalla (sin llamada extra a la API); al guardar, el
+        # servidor lo vuelve a validar — el candado no se movió de sitio.
+        faltantes = []
+        if not es_llego_si(fila.get(COL_LLEGO, "")):
+            faltantes.append(ETAPAS_PUERTO[0])
+        elif not _lleno(fila.get("F_Declaracion")):
+            faltantes.append(ETAPAS_PUERTO[1])
+        st.session_state[pendiente_key] = faltantes
+        rerun_fragmento()
 
     faltan = st.session_state.get(pendiente_key)
-    if not faltan:
+    if faltan is None:
         return
 
     # Rescate huérfano: si la fila que lo abrió ya no está en la vista actual
@@ -1026,11 +1031,17 @@ def _archivar(fila, clave: str, etiqueta: str = "Marcar como recibido", df=None)
             rerun_fragmento()
         return
 
+    falta_declaracion = ETAPAS_PUERTO[1] in faltan
     with st.form(f"form_faltan_{clave}"):
-        st.warning("Falta registrar la recepción y declaración. Pon la fecha real en que ocurrió y "
-                   "el embarque se archiva completo, con su trazabilidad.")
-        fecha_dec = st.date_input(f"{ICONO_ETAPA['Recepción y declaración']} Recepción y declaración",
-                                  value=hoy_rd(), format="DD/MM/YYYY", key=f"falta_dec_{clave}")
+        if falta_declaracion:
+            st.warning("Falta registrar la recepción y declaración. Pon la fecha real en que ocurrió y "
+                       "el embarque se archiva completo, con su trazabilidad.")
+            fecha_dec = st.date_input(f"{ICONO_ETAPA['Recepción y declaración']} Recepción y declaración",
+                                      value=hoy_rd(), format="DD/MM/YYYY", key=f"falta_dec_{clave}")
+        else:
+            st.caption("Pon la fecha REAL en que la mercancía entró al almacén (si fue hoy, déjala "
+                       "como está). Es la fecha con la que se miden los ciclos en la analítica.")
+            fecha_dec = None
         fecha_almacen = st.date_input(f"{ICONO_ALMACEN} {ETAPA_ALMACEN}", value=hoy_rd(),
                                       format="DD/MM/YYYY", key=f"almacen_{clave}")
         c1, c2 = st.columns(2)
@@ -1045,10 +1056,19 @@ def _archivar(fila, clave: str, etiqueta: str = "Marcar como recibido", df=None)
                                            fecha_declaracion=fecha_dec, fecha_almacen=fecha_almacen)
         if ok:
             st.session_state.pop(pendiente_key, None)
-            registrar_log("Recibido (declaración completada)", bl, categoria,
-                          f"declaración={fecha_dec.isoformat()}")
+            registrar_log("Recibido" + (" (declaración completada)" if fecha_dec else ""),
+                          bl, categoria,
+                          f"almacén={fecha_almacen.isoformat()}"
+                          + (f" · declaración={fecha_dec.isoformat()}" if fecha_dec else ""))
             invalidar_caches()
             st.rerun()
+        elif str(mensaje).startswith("FALTAN_ETAPAS::"):
+            # La pantalla estaba desactualizada (alguien tocó la fila mientras
+            # tanto): ahora sí se sabe qué falta y el formulario se reabre
+            # pidiéndolo. La fecha de almacén ya elegida se conserva sola,
+            # porque vive en el widget con su clave.
+            st.session_state[pendiente_key] = mensaje.split("::", 1)[1].split("|")
+            rerun_fragmento()
         else:
             st.error(mensaje)
 

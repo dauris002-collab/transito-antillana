@@ -1,7 +1,15 @@
 """
 Antillana Comercial - Visibilidad de embarques en transito
 ===========================================================
-app.py - v4.1
+app.py - v4.2
+
+Que cambio en v4.2 (resumen para mantenimiento):
+
+ 1. Se quita el filtro "Prioridad de pago" de Estatus de Pago (pedido expreso:
+    sobraba como control). La prioridad se sigue PONIENDO como numero (1-4)
+    desde el formulario de admin o directo en la columna 'Prioridad' del
+    Sheet, y la plataforma la sigue mostrando (distintivo con borde) y
+    ordenando la lista de la 1 a la 4.
 
 Que cambio en v4.1 (resumen para mantenimiento):
 

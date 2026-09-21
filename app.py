@@ -185,7 +185,7 @@ def login_screen():
     st.markdown(
         '<div class="ant-head" style="margin-top:2.4rem;">'
         '<div style="font-size:2.6rem;">🚢</div>'
-        '<div class="ant-title" style="font-size:1.7rem;">Antillana Comercial · Cargas en Tránsito</div>'
+        '<div class="ant-title" style="font-size:1.7rem;">Antillana Comercial · Tránsito y Estatus de Pago</div>'
         '<div class="ant-sub">Acceso restringido.</div>'
         "</div>",
         unsafe_allow_html=True,

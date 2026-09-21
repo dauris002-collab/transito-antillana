@@ -521,27 +521,11 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
             st.caption(f"{sin_llegada} expediente(s) de esta selección no tienen Llegada confirmada "
                       "todavía, así que no aparecen bajo ningún mes.")
 
-    # Filtro de Prioridad de pago (1 = pagar primero ... 4 = puede esperar).
-    # La prioridad la fija Logística en la columna 'Prioridad' de la pestaña
-    # Pagos del Sheet (o con el formulario de admin de abajo). Se aplica sobre
-    # la misma 'vista' que Empresa/Mes para que las tarjetas, la tabla de
-    # antigüedad y la lista de expedientes hablen siempre de lo mismo. El
-    # blindaje de session_state es el mismo del filtro de Mes: si el valor
-    # guardado ya no es una opción válida, se resetea ANTES de crear el widget.
-    opciones_prio = ["Todas"] + [str(n) for n in PRIORIDADES_PAGO] + ["Sin prioridad"]
-    if st.session_state.get("pago_filtro_prioridad") not in opciones_prio:
-        st.session_state["pago_filtro_prioridad"] = "Todas"
-    f_prio, _resto = st.columns([1, 2])
-    with f_prio:
-        prio_sel = st.selectbox(
-            "Prioridad de pago", opciones_prio, key="pago_filtro_prioridad",
-            help="Se fija en la columna 'Prioridad' de la pestaña Pagos (1 = pagar primero, "
-                 "4 = puede esperar). La lista de expedientes se ordena de la 1 a la 4; "
-                 "los que no tienen prioridad quedan al final.")
-    if prio_sel == "Sin prioridad":
-        vista = vista[vista["PrioridadPago"].isna()]
-    elif prio_sel != "Todas":
-        vista = vista[vista["PrioridadPago"] == int(prio_sel)]
+    # Sin filtro de Prioridad a propósito (pedido expreso tras verlo en
+    # producción): la prioridad se PONE —con el formulario de admin de abajo o
+    # escribiendo el número (1-4) en la columna 'Prioridad' de la pestaña Pagos
+    # del Sheet— y aquí solo se MUESTRA (distintivo con borde) y se ORDENA la
+    # lista de la 1 a la 4. No hay control de filtro por prioridad.
 
     if vista.empty:
         st.info("No hay expedientes de Pagos para esta selección.")

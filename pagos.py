@@ -25,9 +25,11 @@ from sheets_io import (
     CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
     COL_DESC, COL_EMPRESA, COL_ESTADO_PAGO, COL_ETA, COL_FECHA_LLEGADA_PUERTO,
     COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA, COL_PAGO_LLEGADA, COL_PAGOREAL_DOP,
-    COL_PAGOREAL_USD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO,
+    COL_PAGOREAL_USD, COL_PRIORIDAD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO,
     ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE, MESES_ES_CORTO, MONEDA_CONCEPTO,
-    _norm, a_numero, aplicar_selectores_pagos, fecha_llegada_fila, formato_eta,
+    PRIORIDADES_PAGO,
+    _norm, a_numero, aplicar_selectores_pagos, fecha_llegada_fila, fijar_prioridad_pago,
+    formato_eta,
     guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago,
     mover_empresa_primera_columna, parsear_fecha, parsear_marca, registrar_log,
     registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
@@ -51,6 +53,24 @@ COLOR_MORA_PROMEDIO = "#B45309"
 COLOR_CONCEPTO = {c: PALETA_PAISES[i % len(PALETA_PAISES)] for i, c in enumerate(CONCEPTOS_PAGO)}
 
 
+# Un color por prioridad de pago: 1 es lo más urgente (rojo) y 4 lo que más
+# puede esperar (gris). El distintivo usa BORDE, no relleno: resalta sin
+# competir con la pastilla de estado Pendiente/Pagado que va al lado.
+COLOR_PRIORIDAD = {1: "#B91C1C", 2: "#B45309", 3: "#0C447C", 4: "#6B7280"}
+
+
+def _badge_prioridad(prio) -> str:
+    """Pastilla con borde que dice qué prioridad de pago tiene el expediente
+    ('PRIORIDAD 3'). Vacío si no tiene una válida — solo cuentan enteros 1-4,
+    que es lo que enriquecer_pagos() deja pasar."""
+    if prio is None or pd.isna(prio):
+        return ""
+    n = int(prio)
+    color = COLOR_PRIORIDAD.get(n, "#6B7280")
+    return (f'<span class="pago-prio" style="border-color:{color}; color:{color};">'
+            f'PRIORIDAD&nbsp;<b>{n}</b></span>')
+
+
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def _enriquecer_pagos_cacheado(df_pagos: pd.DataFrame, activos: pd.DataFrame,
                                historico: pd.DataFrame) -> pd.DataFrame:
@@ -71,6 +91,10 @@ PAGOS_CSS = """
                 font-weight:700; padding:2px 10px; border-radius:999px; margin-left:8px; }
 .pago-estado { display:inline-block; font-size:0.75rem; font-weight:700; color:#fff;
                padding:3px 12px; border-radius:999px; white-space:nowrap; }
+.pago-prio { display:inline-block; font-size:0.72rem; font-weight:800; letter-spacing:0.03em;
+             padding:1px 10px; border-radius:999px; border:2px solid; background:#fff;
+             white-space:nowrap; margin-left:8px; vertical-align:2px; }
+.pago-prio b { font-size:0.95rem; }
 .pago-meta { color:#6B7280; font-size:0.85rem; margin-top:2px; }
 .pago-conceptos { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:14px 0; }
 .pago-chip { padding:6px 15px; border-radius:999px; color:#fff; font-size:0.83rem; font-weight:700;
@@ -327,7 +351,8 @@ def _html_expediente(r) -> str:
 
     return (
         '<div class="pago-tarjeta">'
-        f'<div class="pago-cabeza"><span class="pago-bl">{bl}<span class="pago-empresa">{empresa}</span></span>'
+        f'<div class="pago-cabeza"><span class="pago-bl">{bl}<span class="pago-empresa">{empresa}</span>'
+        f'{_badge_prioridad(r.get("PrioridadPago"))}</span>'
         f'<span class="pago-estado" style="background:{color_estado};">{esc(estado)}</span></div>'
         f'<div class="pago-meta">{desc} · {cant} · Llegada: {llegada}</div>'
         f'<div class="pago-conceptos">{"".join(chips)}</div>'
@@ -389,6 +414,7 @@ def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
         filas.append({
             "bl": str(r.get(COL_BL, "") or "").strip() or "(sin BL)",
             "empresa": r.get("EmpresaEfectiva", "") or EMPRESA_ANTILLANA,
+            "prio": _badge_prioridad(r.get("PrioridadPago")),
             "desc": str(r.get(COL_DESC, "") or "").strip(),
             "llegada": formato_eta(llegada) if llegada else "—",
             "dias": dias,
@@ -403,7 +429,8 @@ def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
         "<tr>"
         f"<td>{esc(f['bl'])}</td>"
         f"<td>{esc(f['empresa'])}</td>"
-        f"<td>{esc(f['desc'])}</td>"
+        + (f"<td>{f['prio']}</td>" if f["prio"] else '<td class="pago-aging-vacio">—</td>')
+        + f"<td>{esc(f['desc'])}</td>"
         f"<td>{esc(f['llegada'])}</td>"
         + (f'<td class="pago-aging-dias">{f["dias"]}</td>' if f["dias"] is not None
            else '<td class="pago-aging-vacio">—</td>')
@@ -415,7 +442,7 @@ def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
     st.markdown("**Pendientes por antigüedad** — qué se debe y desde cuándo corre el reloj")
     st.markdown(
         '<div class="pago-aging-wrap"><table class="pago-aging">'
-        "<thead><tr><th>BL</th><th>Empresa</th><th>Descripción</th><th>Llegada</th>"
+        "<thead><tr><th>BL</th><th>Empresa</th><th>Prioridad</th><th>Descripción</th><th>Llegada</th>"
         "<th>Días sin pagar</th><th>USD pendiente</th><th>DOP pendiente</th></tr></thead>"
         f"<tbody>{cuerpo}</tbody></table></div>",
         unsafe_allow_html=True,
@@ -494,6 +521,28 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
             st.caption(f"{sin_llegada} expediente(s) de esta selección no tienen Llegada confirmada "
                       "todavía, así que no aparecen bajo ningún mes.")
 
+    # Filtro de Prioridad de pago (1 = pagar primero ... 4 = puede esperar).
+    # La prioridad la fija Logística en la columna 'Prioridad' de la pestaña
+    # Pagos del Sheet (o con el formulario de admin de abajo). Se aplica sobre
+    # la misma 'vista' que Empresa/Mes para que las tarjetas, la tabla de
+    # antigüedad y la lista de expedientes hablen siempre de lo mismo. El
+    # blindaje de session_state es el mismo del filtro de Mes: si el valor
+    # guardado ya no es una opción válida, se resetea ANTES de crear el widget.
+    opciones_prio = ["Todas"] + [str(n) for n in PRIORIDADES_PAGO] + ["Sin prioridad"]
+    if st.session_state.get("pago_filtro_prioridad") not in opciones_prio:
+        st.session_state["pago_filtro_prioridad"] = "Todas"
+    f_prio, _resto = st.columns([1, 2])
+    with f_prio:
+        prio_sel = st.selectbox(
+            "Prioridad de pago", opciones_prio, key="pago_filtro_prioridad",
+            help="Se fija en la columna 'Prioridad' de la pestaña Pagos (1 = pagar primero, "
+                 "4 = puede esperar). La lista de expedientes se ordena de la 1 a la 4; "
+                 "los que no tienen prioridad quedan al final.")
+    if prio_sel == "Sin prioridad":
+        vista = vista[vista["PrioridadPago"].isna()]
+    elif prio_sel != "Todas":
+        vista = vista[vista["PrioridadPago"] == int(prio_sel)]
+
     if vista.empty:
         st.info("No hay expedientes de Pagos para esta selección.")
         return
@@ -526,6 +575,15 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
     _tabla_antiguedad_pendientes(con_montos, filtro_activo)
 
     filtrado = _aplicar_filtro_kpi(con_montos, filtro_activo)
+    # La lista de expedientes se ordena por prioridad de pago: la 1 arriba del
+    # todo, luego 2, 3 y 4, y al final los que no tienen — de arriba hacia
+    # abajo, de menor a mayor, como se definió la escala. Sort ESTABLE sobre
+    # una llave numérica auxiliar: mientras nadie use la columna Prioridad del
+    # Sheet, todos empatan y el orden queda exactamente como estaba.
+    if not filtrado.empty and "PrioridadPago" in filtrado.columns:
+        filtrado = (filtrado.assign(_prio=pd.to_numeric(filtrado["PrioridadPago"], errors="coerce"))
+                            .sort_values("_prio", na_position="last", kind="stable")
+                            .drop(columns="_prio"))
     st.markdown(PAGOS_CSS, unsafe_allow_html=True)
     if filtrado.empty:
         st.caption("Ningún expediente coincide con este filtro.")
@@ -763,6 +821,36 @@ def form_estado_pago(enriquecido: pd.DataFrame):
             st.error(mensaje)
 
 
+def form_prioridad_pago(enriquecido: pd.DataFrame):
+    """Prioridad de pago (1 = pagar primero ... 4 = puede esperar). Es exactamente
+    la misma columna 'Prioridad' de la pestaña Pagos del Sheet: lo que se guarde
+    aquí se ve allá y viceversa — esto solo evita abrir el Sheet para cambiarla."""
+    st.markdown("**Fijar prioridad de pago (1-4)**")
+    if enriquecido.empty:
+        st.info("No hay expedientes registrados.")
+        return
+    opciones = sorted(enriquecido[COL_BL].astype(str).str.strip().unique())
+    bl = st.selectbox("Expediente (BL)", opciones, key="sel_bl_prioridad")
+    fila = enriquecido[enriquecido[COL_BL].astype(str).str.strip() == bl].iloc[0]
+    actual = fila.get("PrioridadPago")
+    tiene_actual = actual is not None and not pd.isna(actual)
+    st.caption(f"Prioridad actual: {int(actual)}." if tiene_actual
+               else "Sin prioridad asignada todavía.")
+    etiquetas = ["1 — pagar primero", "2", "3", "4 — puede esperar", "Quitar prioridad"]
+    indice = (int(actual) - 1) if tiene_actual else 0
+    eleccion = st.radio("Prioridad", etiquetas, index=indice, key=f"radio_prio_{bl}")
+    if st.button("Guardar prioridad", type="primary", key="btn_prioridad"):
+        nueva = None if eleccion == "Quitar prioridad" else int(eleccion[0])
+        ok, mensaje = fijar_prioridad_pago(bl, nueva)
+        if ok:
+            registrar_log("Prioridad de pago actualizada", bl, "",
+                          f"Prioridad {nueva}" if nueva else "Prioridad quitada")
+            invalidar_caches()
+            st.rerun()
+        else:
+            st.error(mensaje)
+
+
 # ---------------------------------------------------------------------------
 # PANEL PRINCIPAL — lo único que app.py necesita llamar
 # ---------------------------------------------------------------------------
@@ -854,10 +942,13 @@ def panel_pagos(datos: dict, es_admin: bool):
         form_pago_realizado(enriquecido)
     with st.expander("Marcar estado (Pendiente/Pagado)"):
         form_estado_pago(enriquecido)
-    with st.expander("Activar selectores en Sheets (fechas y Empresa)"):
+    with st.expander("Fijar prioridad de pago (1-4)"):
+        form_prioridad_pago(enriquecido)
+    with st.expander("Activar selectores en Sheets (fechas, Empresa y Prioridad)"):
         st.caption("Solo hace falta correrlo una vez. Agrega el ícono de calendario nativo de Google "
-                  "Sheets en las fechas, y una lista desplegable en Empresa, para elegir con clic en "
-                  "vez de teclear.")
+                  "Sheets en las fechas, y una lista desplegable en Empresa y en Prioridad (1-4), "
+                  "para elegir con clic en vez de teclear. Si la columna 'Prioridad' todavía no "
+                  "existe en la pestaña Pagos, este botón también la crea.")
         if st.button("Activar selectores", key="btn_selector_fecha"):
             ok, mensaje = aplicar_selectores_pagos()
             (st.success if ok else st.error)(mensaje)

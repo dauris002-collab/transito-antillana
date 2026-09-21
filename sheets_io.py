@@ -264,6 +264,17 @@ ESTADO_PAGO_PENDIENTE = "Pendiente"
 ESTADO_PAGO_PAGADO = "Pagado"
 
 
+# Prioridad de pago (1 = pagar primero ... 4 = puede esperar). Campo MANUAL de
+# Logística, como Estado_Pago: se escribe a mano en el Sheet o desde el
+# formulario de la app. Vacío = sin prioridad — y "sin prioridad" no es lo
+# mismo que prioridad 4: son los expedientes a los que nadie les ha asignado
+# turno todavía, y en la plataforma quedan DEBAJO de los que sí tienen.
+COL_PRIORIDAD = "Prioridad"
+
+
+PRIORIDADES_PAGO = [1, 2, 3, 4]
+
+
 # Fecha límite saludable que fija Logística a criterio propio. Ya NO congela
 # montos: el total se calcula en vivo desde los conceptos (ver TotalActual en
 # logica.py), así que no hace falta guardar una foto de esos números aquí —
@@ -307,7 +318,7 @@ EMPRESAS_PAGO = [EMPRESA_ANTILLANA, "Tecnicaribe", "Motor Ibérico"]
 
 COLUMNAS_PAGOS = [
     COL_EMPRESA, COL_BL, COL_DESC, COL_CANT, COL_PAGO_LLEGADA, *CONCEPTOS_PAGO, COL_ESTADO_PAGO,
-    COL_FECHA_SIN_MORA, COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
+    COL_PRIORIDAD, COL_FECHA_SIN_MORA, COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
     COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
 ]
 
@@ -1680,8 +1691,8 @@ def _buscar_fila_pago(ws, bl: str):
 def _aplicar_validaciones_pagos(ws):
     """Mejor esfuerzo: agrega los selectores nativos de Google Sheets —
     calendario en Fecha_SinMora / Fecha_PagoRealizado, lista desplegable en
-    Empresa — para que esas columnas se elijan con clic en vez de tecleo
-    libre.
+    Empresa y en Prioridad (1-4) — para que esas columnas se elijan con clic
+    en vez de tecleo libre.
 
     'strict': False en ambos casos a propósito: si algo no calza exactamente,
     Sheets lo marca con una advertencia visual en vez de RECHAZAR la
@@ -1732,10 +1743,29 @@ def _aplicar_validaciones_pagos(ws):
                     },
                 },
             })
+        idx_prioridad = _columna_indice(headers, COL_PRIORIDAD)
+        if idx_prioridad:
+            requests.append({
+                "setDataValidation": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": 1,
+                        "endRowIndex": 2000,
+                        "startColumnIndex": idx_prioridad - 1,
+                        "endColumnIndex": idx_prioridad,
+                    },
+                    "rule": {
+                        "condition": {"type": "ONE_OF_LIST",
+                                      "values": [{"userEnteredValue": str(p)} for p in PRIORIDADES_PAGO]},
+                        "showCustomUi": True,
+                        "strict": False,
+                    },
+                },
+            })
         if not requests:
-            return False, "No se encontraron las columnas esperadas (fechas / Empresa) en la pestaña."
+            return False, "No se encontraron las columnas esperadas (fechas / Empresa / Prioridad) en la pestaña."
         get_spreadsheet().batch_update({"requests": requests})
-        return True, "Selectores aplicados: calendario en las fechas, lista desplegable en Empresa."
+        return True, "Selectores aplicados: calendario en las fechas, lista desplegable en Empresa y en Prioridad (1-4)."
     except Exception as e:  # noqa: BLE001
         return False, f"No se pudo aplicar los selectores: {e}"
 
@@ -1943,6 +1973,34 @@ def marcar_estado_pago(bl: str, estado: str):
     indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
     peticiones = [
         {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ESTADO_PAGO)]), "values": [[estado]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+    ]
+    _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    return True, ""
+
+
+@_con_manejo_apierror
+def fijar_prioridad_pago(bl: str, prioridad):
+    """Fija la prioridad de pago de un expediente (1-4, donde 1 = pagar
+    primero), o la quita con None (celda vacía). Mismo patrón que
+    marcar_estado_pago(): campo manual de Logística, una sola celda más los
+    sellos de auditoría, sin tocar nada más de la fila."""
+    if prioridad is not None and prioridad not in PRIORIDADES_PAGO:
+        return False, f"Prioridad '{prioridad}' no reconocida: usa 1, 2, 3 o 4."
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}'."
+    fila, ambiguo = _buscar_fila_pago(ws, bl)
+    if ambiguo:
+        return False, f"Hay más de un registro de pago para el BL '{bl}'."
+    if fila is None:
+        return False, f"El BL '{bl}' no tiene conceptos registrados todavía."
+    headers = _asegurar_columnas(ws, [COL_PRIORIDAD, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_PRIORIDAD)]),
+         "values": [[prioridad if prioridad is not None else ""]]},
         {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
         {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
     ]

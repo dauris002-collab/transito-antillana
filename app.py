@@ -1,7 +1,19 @@
 """
 Antillana Comercial - Visibilidad de embarques en transito
 ===========================================================
-app.py - v4.0
+app.py - v4.1
+
+Que cambio en v4.1 (resumen para mantenimiento):
+
+ 1. Archivar ya no graba la fecha de almacen "de hoy" en silencio: el boton
+    de archivar abre SIEMPRE un mini-formulario pidiendo la fecha REAL de
+    entrada a almacen (por defecto hoy). Antes, ese dato inventado falseaba
+    el ciclo puerto->almacen de la analitica y movia el embarque de mes en el
+    historico (BASE_FECHA_RECIBIDO = "almacen").
+ 2. Estatus de Pago gana prioridad de pago: columna "Prioridad" (1-4) en la
+    pestana Pagos, filtro en la plataforma, lista ordenada de la 1 a la 4
+    (sin prioridad al final) y distintivo con borde en cada expediente. Se
+    escribe a mano en el Sheet o desde el formulario de admin.
 
 Que cambio en v4.0 (resumen para mantenimiento):
 

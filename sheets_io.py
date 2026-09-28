@@ -999,19 +999,19 @@ def formato_dinero(monto: float) -> str:
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def cargar_todo() -> dict:
-    """UNA sola llamada a la API trae las 5 pestañas de categoría + el histórico."""
-    vacio = {
-        "activos": pd.DataFrame(columns=ALL_COLUMNS + ["Categoria", "FilaSheet"]),
-        "historico": pd.DataFrame(columns=COLUMNAS_RECIBIDO),
-        "pagos": pd.DataFrame(columns=COLUMNAS_PAGOS + ["FilaSheet"]),
-        "hora": ahora_rd(), "ultima_carga": None, "ultima_persona": "", "avisos": [], "error": None,
-    }
+def _cargar_todo_remoto() -> dict:
+    """UNA sola llamada a la API trae las 5 pestañas de categoría + el histórico.
+
+    A propósito NO atrapa errores de lectura: st.cache_data solo guarda retornos
+    exitosos, así que si Google falla la excepción sube y nada queda cacheado —
+    el siguiente rerun reintenta al instante. Quien convierte el fallo en un
+    dict con "error" (sin cachearlo) es la envoltura cargar_todo().
+    """
     try:
         ss = get_spreadsheet()
         indice = _indice_hojas()
     except Exception as e:
-        return {**vacio, "error": f"No se pudo conectar con el Google Sheet: {e}"}
+        raise RuntimeError(f"No se pudo conectar con el Google Sheet: {e}") from e
 
     objetivos = []  # (etiqueta, titulo_real)
     for cat in CATEGORIAS:
@@ -1028,13 +1028,13 @@ def cargar_todo() -> dict:
         objetivos.append((PAGOS_SHEET, ws_pagos.title))
 
     if not objetivos:
-        return {**vacio, "error": "El Google Sheet no tiene ninguna de las pestañas esperadas."}
+        raise RuntimeError("El Google Sheet no tiene ninguna de las pestañas esperadas.")
 
     rangos = [f"'{titulo}'!A1:AZ{MAX_FILAS_LECTURA}" for _, titulo in objetivos]
     try:
         respuesta = _con_reintento(lambda: ss.values_batch_get(rangos))
     except gspread.exceptions.APIError as e:
-        return {**vacio, "error": f"Google Sheets no respondió (posible límite de cuota): {e}"}
+        raise RuntimeError(f"Google Sheets no respondió (posible límite de cuota): {e}") from e
 
     bloques = respuesta.get("valueRanges", [])
     frames, historico, avisos = [], pd.DataFrame(columns=COLUMNAS_RECIBIDO), []
@@ -1109,8 +1109,36 @@ def cargar_todo() -> dict:
             "avisos": avisos, "error": None}
 
 
+def _tablero_vacio() -> dict:
+    """El dict de datos sin una sola fila: lo que el dashboard muestra como
+    'Todavía no hay embarques cargados'. Las claves y columnas son fijas porque
+    el resto de la app las espera siempre, haya o no haya datos."""
+    return {
+        "activos": pd.DataFrame(columns=ALL_COLUMNS + ["Categoria", "FilaSheet"]),
+        "historico": pd.DataFrame(columns=COLUMNAS_RECIBIDO),
+        "pagos": pd.DataFrame(columns=COLUMNAS_PAGOS + ["FilaSheet"]),
+        "hora": ahora_rd(), "ultima_carga": None, "ultima_persona": "", "avisos": [], "error": None,
+    }
+
+
+def cargar_todo() -> dict:
+    """Lectura cacheada del libro completo, con un matiz: el FRACASO no se cachea.
+
+    Antes el return con error quedaba guardado por el @st.cache_data(ttl=45) y
+    durante hasta 45 segundos TODOS los reruns (tocar un filtro, cambiar de
+    sección, darle a actualizar) recibían el tablero vacío aunque Google ya
+    respondiera bien — de ahí el 'tengo que refrescar o cambiar el filtro varias
+    veces hasta que muestre todo'. Ahora el error se muestra una sola vez y el
+    siguiente rerun reintenta contra Google al instante.
+    """
+    try:
+        return _cargar_todo_remoto()
+    except Exception as e:  # noqa: BLE001 - la UI muestra este mensaje; nunca un traceback
+        return {**_tablero_vacio(), "error": str(e)}
+
+
 def invalidar_caches():
-    cargar_todo.clear()
+    _cargar_todo_remoto.clear()
     _headers.clear()
 
 

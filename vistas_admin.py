@@ -16,7 +16,7 @@ import streamlit as st
 
 from sheets_io import (
     CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_BL, COL_CANT, COL_CLIENTE_STOCK, COL_DESC,
-    COL_EE, COL_ETA, COL_FECHA_ALMACEN, COL_FECHA_DECLARACION,
+    COL_EE, COL_EMPRESA_EMBARQUE, COL_ETA, COL_FECHA_ALMACEN, COL_FECHA_DECLARACION,
     COL_FECHA_LLEGADA_PUERTO, COL_FECHA_SALIDA, COL_LLEGO, COL_MODELO, COL_OC,
     COL_PAIS, COL_VIA, MAX_FILAS_LECTURA, MESES_ES, MESES_ES_CORTO, NO_ESPECIFICADO,
     REQUIRED_COLUMNS, VIA_AEREA, VIA_MARITIMA,
@@ -28,8 +28,9 @@ from sheets_io import (
 )
 from logica import (
     CATEGORIAS_CON_CLIENTE_STOCK, CATEGORIAS_CON_MODELO, CATEGORIAS_CON_OC_EE,
+    EMPRESA_POR_CATEGORIA, EMPRESAS_POR_CATEGORIA_FILA,
     EST_SIN_FECHA, ETIQUETA_CORTA_ETAPA, _columna_fechas, _etiquetas_desambiguadas,
-    analizar_eta,
+    analizar_eta, canonizar_empresa,
 )
 from ui_componentes import (
     COLOR_RECIBIDAS_MES, COLOR_TOTAL, VERSION_APP, _df_a_excel,
@@ -57,6 +58,7 @@ def form_alta_manual(datos: dict):
     con_oc_ee = categoria in CATEGORIAS_CON_OC_EE
     con_modelo = categoria in CATEGORIAS_CON_MODELO
     con_cliente = categoria in CATEGORIAS_CON_CLIENTE_STOCK
+    opciones_empresa = EMPRESAS_POR_CATEGORIA_FILA.get(categoria)
     opciones_via = [VIA_MARITIMA, VIA_AEREA]
     indice_via_defecto = opciones_via.index(VIA_AEREA) if categoria == "Aéreos" else 0
 
@@ -79,6 +81,12 @@ def form_alta_manual(datos: dict):
             oc = c7.text_input("OC")
             ee = c8.text_input("EE")
         cliente = st.text_input("Cliente / Stock") if con_cliente else ""
+        empresa = ""
+        if opciones_empresa:
+            empresa = st.selectbox("Empresa", ["— Sin asignar —", *opciones_empresa])
+            empresa = "" if empresa.startswith("—") else empresa
+        elif categoria in EMPRESA_POR_CATEGORIA:
+            st.caption(f"Empresa: {EMPRESA_POR_CATEGORIA[categoria]} (la define la categoría).")
         salida = st.date_input("Fecha de salida (opcional)", value=None, format="DD/MM/YYYY",
                                help="Si no la sabes, déjala vacía y agrégala después desde 'Editar'.")
         st.caption("El embarque entra sin confirmar. Cuando llegue, se confirma desde el tablero: "
@@ -119,6 +127,8 @@ def form_alta_manual(datos: dict):
             datos_nuevos[COL_EE] = ee.strip()
     if con_cliente and cliente.strip():
         datos_nuevos[COL_CLIENTE_STOCK] = cliente.strip()
+    if empresa:
+        datos_nuevos[COL_EMPRESA_EMBARQUE] = empresa
 
     ok, mensaje = append_row(datos_nuevos, categoria)
     if ok:
@@ -184,6 +194,7 @@ def form_editar(datos: dict):
     con_oc_ee = categoria in CATEGORIAS_CON_OC_EE
     con_modelo = categoria in CATEGORIAS_CON_MODELO
     con_cliente = categoria in CATEGORIAS_CON_CLIENTE_STOCK
+    opciones_empresa = EMPRESAS_POR_CATEGORIA_FILA.get(categoria)
     via_actual = str(fila.get(COL_VIA, "") or "").strip() or VIA_MARITIMA
 
     if confirmado:
@@ -214,6 +225,24 @@ def form_editar(datos: dict):
             ee = c7.text_input("EE", value=str(fila.get(COL_EE, "")))
         cliente = (st.text_input("Cliente / Stock", value=str(fila.get(COL_CLIENTE_STOCK, "")))
                    if con_cliente else "")
+        empresa = ""
+        if opciones_empresa:
+            # Si el Sheet trae un texto que no es ninguna empresa válida, se ofrece
+            # tal cual como opción para que guardar otra cosa no lo borre en silencio.
+            actual_crudo = str(fila.get(COL_EMPRESA_EMBARQUE, "") or "").strip()
+            actual = canonizar_empresa(actual_crudo)
+            lista = ["— Sin asignar —", *opciones_empresa]
+            if actual_crudo and actual is None:
+                lista.append(actual_crudo)
+            elif actual and actual not in lista:
+                lista.append(actual)
+            seleccion_actual = (actual if actual
+                                else actual_crudo if (actual_crudo and actual is None)
+                                else "— Sin asignar —")
+            empresa = st.selectbox("Empresa", lista, index=lista.index(seleccion_actual))
+            empresa = "" if empresa.startswith("—") else empresa
+        elif categoria in EMPRESA_POR_CATEGORIA:
+            st.caption(f"Empresa: {EMPRESA_POR_CATEGORIA[categoria]} (la define la categoría).")
         st.caption(f"Fila {n_fila} de '{categoria}' · ETA actual en el Sheet: {fila[COL_ETA] or '(vacío)'} "
                    f"· ¿Llegó?: {llego_actual or 'sin revisar'}")
         forzar = st.checkbox("Sobrescribir aunque otra persona lo haya cambiado mientras tanto")
@@ -255,6 +284,8 @@ def form_editar(datos: dict):
         cambios[COL_EE] = ee.strip()
     if con_cliente:
         cambios[COL_CLIENTE_STOCK] = cliente.strip()
+    if opciones_empresa:
+        cambios[COL_EMPRESA_EMBARQUE] = empresa
 
     ok, mensaje = actualizar_embarque(bl_original, categoria, cambios, fila_sugerida=n_fila,
                                       sello_esperado=sello, forzar=forzar)
@@ -278,7 +309,8 @@ def form_editar(datos: dict):
 @st.cache_data(show_spinner=False)
 def _plantilla_excel() -> bytes:
     buffer = io.BytesIO()
-    columnas = REQUIRED_COLUMNS + [COL_MODELO, COL_FECHA_SALIDA, COL_CLIENTE_STOCK, COL_VIA]
+    columnas = REQUIRED_COLUMNS + [COL_MODELO, COL_FECHA_SALIDA, COL_CLIENTE_STOCK, COL_VIA,
+                                   COL_EMPRESA_EMBARQUE]
     ejemplo = pd.DataFrame(
         [{
             COL_BL: "EGLV142653674620",
@@ -290,6 +322,7 @@ def _plantilla_excel() -> bytes:
             COL_FECHA_SALIDA: "",
             COL_CLIENTE_STOCK: "",
             COL_VIA: VIA_MARITIMA,
+            COL_EMPRESA_EMBARQUE: "",
         }],
         columns=columnas,
     )
@@ -315,11 +348,19 @@ def form_carga_masiva(datos: dict):
         columnas_opcionales.append(COL_CLIENTE_STOCK)
     if categoria in CATEGORIAS_CON_OC_EE:
         columnas_opcionales += [COL_OC, COL_EE]
+    if categoria in EMPRESAS_POR_CATEGORIA_FILA:
+        columnas_opcionales.append(COL_EMPRESA_EMBARQUE)
     via_defecto_caption = VIA_AEREA if categoria == "Aéreos" else VIA_MARITIMA
     st.caption("Columnas obligatorias: " + ", ".join(REQUIRED_COLUMNS) +
                ". Opcionales para esta categoría: " + ", ".join(f"'{c}'" for c in columnas_opcionales) +
                f". Si no incluyes '{COL_VIA}', se asume {via_defecto_caption} (según la categoría de destino). "
                "El ETA puede venir en cualquier formato reconocible; se guarda como AAAA-MM-DD.")
+    if categoria in EMPRESAS_POR_CATEGORIA_FILA:
+        st.caption(f"'{COL_EMPRESA_EMBARQUE}' (opcional) debe ser una de: " +
+                   ", ".join(EMPRESAS_POR_CATEGORIA_FILA[categoria]) + ". Vacía = sin asignar.")
+    elif categoria in EMPRESA_POR_CATEGORIA:
+        st.caption(f"La empresa de esta categoría es {EMPRESA_POR_CATEGORIA[categoria]}: "
+                   "no hace falta columna de empresa.")
 
     archivo = st.file_uploader("Archivo .xlsx", type=["xlsx"], key="masiva_archivo")
     if archivo is None:
@@ -368,6 +409,26 @@ def form_carga_masiva(datos: dict):
         nuevo[COL_FECHA_SALIDA] = [
             (parsear_fecha(v).isoformat() if parsear_fecha(v) else "") for v in nuevo[COL_FECHA_SALIDA]
         ]
+
+    if COL_EMPRESA_EMBARQUE in nuevo.columns:
+        # Lista cerrada: se normaliza (mayúsculas/acentos) contra las empresas de
+        # esta categoría; un nombre que no calza detiene la carga, igual que un
+        # ETA ilegible, en vez de guardar "Tecni caribe" como si fuera otra empresa.
+        validas_emp = EMPRESAS_POR_CATEGORIA_FILA[categoria]
+        empresas_norm, empresas_mal = [], []
+        for i, valor in enumerate(nuevo[COL_EMPRESA_EMBARQUE]):
+            canon = canonizar_empresa(valor)
+            if canon is None or (canon and canon not in validas_emp):
+                empresas_mal.append((i + 2, valor))
+                empresas_norm.append("")
+            else:
+                empresas_norm.append(canon)
+        if empresas_mal:
+            st.error(f"Hay empresas no válidas para '{categoria}' en las filas: " +
+                     ", ".join(f"{fila} ('{val}')" for fila, val in empresas_mal) +
+                     ". Valores permitidos: " + ", ".join(validas_emp) + ".")
+            return
+        nuevo[COL_EMPRESA_EMBARQUE] = empresas_norm
 
     # Texto libre tolerante: cualquier variante reconocible de "aéreo" o de
     # "marítimo" (con/sin acento, mayúsculas, sinónimos) se guarda como tal.

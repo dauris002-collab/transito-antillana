@@ -64,6 +64,7 @@ Borrador generado el 2026-10-01.
 ## 10. Empresa en Pagos
 - **Decisión:** lista cerrada de 3 (`EMPRESAS_PAGO`); la fija Logística a mano. La sincronización con tránsito la deja en blanco a propósito. [CHAT, CÓDIGO]
 - **Por qué:** tránsito solo trackea Antillana; quién debe cada expediente lo decide Logística.
+- **Nota v5.0:** esa premisa ya no es exacta: tránsito ahora conoce la empresa de cada embarque (decisión 18). La sincronización con Pagos sigue SIN copiarla.
 - **Reconsiderar si:** [?]
 
 ## 11. Prioridad de pago
@@ -98,6 +99,17 @@ Borrador generado el 2026-10-01.
 - Columnas opcionales por categoría: la app solo las crea cuando el dato trae valor. [CÓDIGO]
 - Tema claro forzado y `showErrorDetails = "none"`: los fallos de Google Sheets salen como mensajes en español, no como traceback. [CÓDIGO]
 - El respaldo automático corre en Apps Script dentro del Sheet, no en la app. [CÓDIGO]
+
+## 17. Tránsito termina al confirmar la llegada a puerto/aeropuerto
+- **Decisión:** un embarque es "en tránsito" mientras no tenga `¿Llegó?` = SI. Al confirmarse sale de Todos y de cada categoría y pasa a la vista Puerto/Aeropuerto, donde se ve su estatus, hasta que se archive al recibirse en almacén. El filtro/KPI rojo "Retrasado" y el orden "Urgencia" se quitaron de la vista; el estado Retrasado se sigue calculando y mostrando en cada fila. [PE, 1 oct 2026]
+- **Por qué:** antes las cargas ya llegadas seguían contando como tránsito hasta archivarse.
+- **Reconsiderar si:** [?]
+
+## 18. Empresa en tránsito
+- **Decisión:** la empresa sale de la categoría en Montacargas y Construcción y Minería (Antillana Comercial), Elevadores y Generadores (Tecnicaribe) y Agrícola (Motor Ibérico). En General, Aéreos, Carga Suelta y Consolidados se llena fila por fila en la columna `Empresa` (Sheet o Excel de carga masiva); Consolidados solo admite Antillana Comercial y Tecnicaribe. Vacía = "Sin empresa". [PE, 1 oct 2026]
+- **Por qué:** Logística necesita ver el tránsito por empresa.
+- **Costo aceptado:** en las categorías de empresa fija, lo que alguien escriba en la columna `Empresa` se ignora.
+- **Reconsiderar si:** [?]
 
 ## Limitación, no decisión
 - **Repo público:** quedó público por un problema de permisos con repos privados que no se resolvió [CHAT]. No contiene credenciales. Es una limitación, no una elección.

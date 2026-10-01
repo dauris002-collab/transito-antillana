@@ -21,14 +21,14 @@ from sheets_io import (
     CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
     COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_LLEGO, COL_MODELO,
     COL_OC, COL_PAIS, COL_VIA, ETAPA_ALMACEN, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES,
-    MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO, VIA_MARITIMA,
+    MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO, VIA_MARITIMA, EMPRESAS_PAGO,
     _norm, _slug_css, avanzar_estado_puerto, columnas_extra, confirmar_llegada,
     eliminar_embarque, es_llego_si, es_numero, fijar_fecha_declaracion, formato_dinero,
     formato_eta, hoy_rd, invalidar_caches, marcar_como_recibido, marcar_no_llego,
     registrar_log, sla_etapas,
 )
 from logica import (
-    CATEGORIAS_CON_OC_EE, EST_PROXIMO,
+    CATEGORIAS_CON_OC_EE, EMPRESA_SIN_ASIGNAR, EST_PROXIMO,
     EST_PUERTO, EST_RETRASADO, EST_SIN_FECHA, EST_TRANSITO, ETIQUETA_CORTA_ETAPA,
     ICONO_ALMACEN, ICONO_ETAPA, PALETA_PAISES, SEMANAS_HORIZONTE, STATUS_COLOR,
     STATUS_ORDER, UMBRAL_PROXIMO,
@@ -42,7 +42,7 @@ from logica import (
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------------------------
-VERSION_APP = "4.3"
+VERSION_APP = "5.0"
 
 
 VISTA_EN_PROCESO_PUERTO = "Puerto/Aeropuerto · Estatus"
@@ -474,42 +474,6 @@ def rerun_fragmento():
         st.rerun()
 
 
-def _filtro_eta_por_mes(df_todo: pd.DataFrame):
-    """Filtro ÚNICO de "ETA por Mes" en el Dashboard (vista Todos): un solo
-    selectbox, con el conteo de cada mes ya sumado en la propia etiqueta de la
-    opción (p. ej. 'sep 2026 · 12'). Reemplaza a la fila de pastillas clicables
-    que había antes.
-
-    Usa DIRECTAMENTE la misma clave de session_state ("mes_eta_Todos") que
-    consume el filtrado de la lista de abajo (ver _render_categoria): no es un
-    control aparte que haya que mantener sincronizado con otro, es el ÚNICO
-    lugar donde ese valor se fija cuando la categoría activa es 'Todos' --
-    _render_categoria, para esa pestaña, ya no dibuja su propio selectbox de
-    Mes ETA, solo lee este mismo valor.
-
-    El conteo se lee directo de la columna MesETA que ya calculó enriquecer()
-    -- en vivo, así que si alguien mueve la ETA de una fila, la próxima vez
-    que se dibuje esto ya sale en su mes correcto sin que nadie tenga que
-    tocar nada. Cuenta todo lo activo, sin importar la etapa; lo ya archivado
-    no entra, porque salió del tablero."""
-    if df_todo.empty or "MesETA" not in df_todo.columns:
-        return
-    conteo = df_todo["MesETA"].value_counts().to_dict()
-    meses = sorted(k for k in conteo if k != "sin_eta")
-    claves = meses + (["sin_eta"] if "sin_eta" in conteo else [])
-    if not claves:
-        return
-
-    opciones = ["Todos"] + claves
-
-    def _etiqueta(clave):
-        if clave == "Todos":
-            return f"Todos · {len(df_todo)}"
-        return f"{_etiqueta_mes_eta(clave)} · {conteo[clave]}"
-
-    st.selectbox("ETA por Mes", opciones, key="mes_eta_Todos", format_func=_etiqueta)
-
-
 # ---------------------------------------------------------------------------
 # COMPONENTES DE UI
 # ---------------------------------------------------------------------------
@@ -877,6 +841,7 @@ def _ficha_embarque(fila):
         ("Cantidad", fila[COL_CANT]),
         ("País de origen", fila[COL_PAIS]),
         ("Categoría", categoria),
+        ("Empresa", fila.get("EmpresaTransito", "") or EMPRESA_SIN_ASIGNAR),
         ("Vía", via or VIA_MARITIMA),
         ("ETA", formato_eta(fila[COL_ETA])),
         ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"], via)),
@@ -1355,7 +1320,7 @@ def _df_a_excel(df: pd.DataFrame, hoja: str) -> bytes:
 @st.fragment
 def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: int):
     if df.empty:
-        st.info("No hay embarques en esta categoría.")
+        st.info("No hay embarques en tránsito en esta categoría.")
         return
 
     conteo = df["EstadoTexto"].value_counts().to_dict()
@@ -1365,7 +1330,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     # entró al flujo no está pendiente de nada.
     etapa_col = df["EtapaActual"].astype(str).str.strip()
     en_puerto_n = int(((df["EstadoTexto"] == EST_PUERTO) & (etapa_col == "")).sum())
-    retrasados_n = conteo.get(EST_RETRASADO, 0)
     sin_fecha_n = conteo.get(EST_SIN_FECHA, 0)
 
     valores = [v for v in df.get("ValorNum", []) if es_numero(v)]
@@ -1380,7 +1344,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
         ("Total en tránsito", len(df), COLOR_TOTAL, "Todos", "total"),
         (f"Próximos {UMBRAL_PROXIMO} días", proximos_n, STATUS_COLOR[EST_PROXIMO], EST_PROXIMO, "proximos"),
         ("Por confirmar llegada", en_puerto_n, STATUS_COLOR[EST_PUERTO], EST_PUERTO, "enpuerto"),
-        ("Retrasados", retrasados_n, STATUS_COLOR[EST_RETRASADO], EST_RETRASADO, "retrasados"),
         (f"Recibidas en {MESES_ES[hoy_rd().month]}", recibidas_mes, COLOR_RECIBIDAS_MES, "__historico__", "recibidas"),
     ]
     # OJO con la clave del contenedor: Streamlit la usa TAL CUAL como clase CSS
@@ -1484,13 +1447,36 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     st.divider()
 
     # -------------------- FILTROS --------------------
+    # Todos los controles de filtro (incluido el Mes ETA, también en la vista
+    # "Todos") viven DENTRO de este fragmento: antes el de Todos estaba fuera y
+    # esta lista lo leía por session_state a través del límite del fragmento.
     paises = ["Todos"] + sorted({p for p in df[COL_PAIS] if str(p).strip()})
-    estados = ["Todos"] + [e for e in STATUS_ORDER]
-    etapas = ["Todas", "Sin confirmar llegada"] + list(ETAPAS_PUERTO)
-    criterios = ["Urgencia", "Más días detenido", "ETA más próximo", "ETA más lejano",
+    # "Retrasado" ya no se ofrece como filtro (v5.0). El estado se sigue
+    # calculando y se ve en cada fila; solo salió de este desplegable.
+    estados = ["Todos"] + [e for e in STATUS_ORDER if e != EST_RETRASADO]
+    criterios = ["ETA más próximo", "Más días detenido", "ETA más lejano",
                  "BL", "País", "Descripción"]
     if valor_total:
         criterios.append("Valor")
+
+    conteo_mes = df["MesETA"].value_counts().to_dict()
+    meses_presentes = sorted(k for k in conteo_mes if k != "sin_eta")
+    mes_opciones = ["Todos"] + meses_presentes + (["sin_eta"] if "sin_eta" in conteo_mes else [])
+
+    conteo_emp = df["EmpresaTransito"].value_counts().to_dict() if "EmpresaTransito" in df.columns else {}
+    empresas_orden = [e for e in EMPRESAS_PAGO if e in conteo_emp]
+    empresas_orden += sorted(e for e in conteo_emp if e not in EMPRESAS_PAGO and e != EMPRESA_SIN_ASIGNAR)
+    if EMPRESA_SIN_ASIGNAR in conteo_emp:
+        empresas_orden.append(EMPRESA_SIN_ASIGNAR)
+    empresa_opciones = ["Todas"] + empresas_orden
+
+    # Un valor que quedó guardado en la sesión pero ya no es una opción (el mes
+    # se vació tras un refresco, o es un orden/estado que ya no existe) se
+    # descarta: si no, el selectbox falla o muestra algo distinto a lo filtrado.
+    for k, validas in ((f"estado_{tab_key}", estados), (f"orden_{tab_key}", criterios),
+                       (f"mes_eta_{tab_key}", mes_opciones), (f"empresa_{tab_key}", empresa_opciones)):
+        if k in st.session_state and st.session_state[k] not in validas:
+            st.session_state.pop(k, None)
 
     f1, f2, f3 = st.columns([2, 1, 1])
     busqueda = f1.text_input("Buscar", key=f"busca_{tab_key}",
@@ -1498,55 +1484,40 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     pais_sel = f2.selectbox("País", paises, key=f"pais_{tab_key}", label_visibility="collapsed")
     estado_sel = f3.selectbox("Estado", estados, key=f"estado_{tab_key}", label_visibility="collapsed")
 
-    # Mes ETA: en la vista "Todos" el filtro ya vive arriba del todo, como el
-    # ÚNICO selectbox "ETA por Mes" (ver _filtro_eta_por_mes) -- no se repite
-    # aquí para que sea de verdad un único control, no dos que puedan quedar
-    # desincronizados. Se lee directo el mismo session_state que ese
-    # selectbox ya dejó puesto. En cualquier otra categoría, que no tiene ese
-    # control arriba, el filtro de mes vive aquí como siempre, con sus
-    # opciones limitadas a los meses que de verdad aparecen en ESA categoría.
-    es_todos = tab_key == "Todos"
-    if es_todos:
-        mes_sel = st.session_state.get("mes_eta_Todos", "Todos")
-        f5, f6, f7 = st.columns([1, 1, 1])
-    else:
-        meses_presentes = sorted(k for k in df["MesETA"].unique() if k != "sin_eta")
-        mes_opciones = ["Todos"] + meses_presentes + (["sin_eta"] if "sin_eta" in df["MesETA"].unique() else [])
-        f4, f5, f6, f7 = st.columns([1, 1, 1, 1])
-        mes_sel = f4.selectbox("Mes ETA", mes_opciones, key=f"mes_eta_{tab_key}",
-                               format_func=lambda k: "Todos" if k == "Todos" else _etiqueta_mes_eta(k))
-    etapa_sel = f5.selectbox("Etapa", etapas, key=f"etapa_filtro_{tab_key}")
+    f4, f5, f6, f7 = st.columns([1, 1, 1, 1])
+    mes_sel = f4.selectbox("Mes ETA", mes_opciones, key=f"mes_eta_{tab_key}",
+                           format_func=lambda k: (f"Todos · {len(df)}" if k == "Todos"
+                                                  else f"{_etiqueta_mes_eta(k)} · {conteo_mes.get(k, 0)}"))
+    empresa_sel = f5.selectbox("Empresa", empresa_opciones, key=f"empresa_{tab_key}",
+                               format_func=lambda e: (f"Todas · {len(df)}" if e == "Todas"
+                                                      else f"{e} · {conteo_emp.get(e, 0)}"))
     orden_sel = f6.selectbox("Ordenar por", criterios, key=f"orden_{tab_key}")
     with f7:
         st.write("")
         st.write("")
         if st.button("Limpiar filtros", key=f"limpiar_{tab_key}", width="stretch"):
             for k in (f"busca_{tab_key}", f"pais_{tab_key}", f"estado_{tab_key}",
-                      f"orden_{tab_key}", f"etapa_filtro_{tab_key}", f"mes_eta_{tab_key}"):
+                      f"orden_{tab_key}", f"mes_eta_{tab_key}", f"empresa_{tab_key}"):
                 st.session_state.pop(k, None)
-            if es_todos:
-                # "mes_eta_Todos" también respalda el selectbox "ETA por Mes"
-                # de arriba, que vive FUERA de este fragmento (@st.fragment):
-                # un rerun de solo el fragmento no lo vuelve a dibujar, así que
-                # se quedaría mostrando visualmente el mes viejo aunque la
-                # lista de abajo ya se haya limpiado. Rerun completo aquí para
-                # que ese selectbox también vuelva a "Todos".
-                st.rerun()
             rerun_fragmento()
 
     filtrado = df
+    activos_txt = []
     if pais_sel != "Todos":
         filtrado = filtrado[filtrado[COL_PAIS] == pais_sel]
+        activos_txt.append(f"país: {pais_sel}")
     if estado_sel != "Todos":
         filtrado = filtrado[filtrado["EstadoTexto"] == estado_sel]
+        activos_txt.append(f"estado: {estado_sel}")
     if mes_sel != "Todos":
         filtrado = filtrado[filtrado["MesETA"] == mes_sel]
-    if etapa_sel == "Sin confirmar llegada":
-        filtrado = filtrado[filtrado["EtapaActual"].astype(str).str.strip() == ""]
-    elif etapa_sel != "Todas":
-        filtrado = filtrado[filtrado["EtapaActual"] == etapa_sel]
+        activos_txt.append(f"mes ETA: {_etiqueta_mes_eta(mes_sel)}")
+    if empresa_sel != "Todas":
+        filtrado = filtrado[filtrado["EmpresaTransito"] == empresa_sel]
+        activos_txt.append(f"empresa: {empresa_sel}")
     if busqueda and busqueda.strip():
         filtrado = filtrado[filtrado["Buscar"].str.contains(_norm(busqueda), regex=False, na=False)]
+        activos_txt.append(f"búsqueda: {busqueda.strip()}")
     filtrado = ordenar_vista(filtrado, orden_sel)
 
     resumen_valor = ""
@@ -1554,7 +1525,10 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
         parcial = sum(v for v in filtrado.get("ValorNum", []) if es_numero(v))
         if parcial:
             resumen_valor = f" · {formato_dinero(parcial)}"
-    st.caption(f"Mostrando {len(filtrado)} de {len(df)} embarque(s){resumen_valor}")
+    # Lista los filtros que están recortando la lista: así un Estado o un País
+    # que quedó puesto de antes no pasa desapercibido cuando "faltan" embarques.
+    detalle_filtros = f" · filtros activos → {'; '.join(activos_txt)}" if activos_txt else ""
+    st.caption(f"Mostrando {len(filtrado)} de {len(df)} embarque(s){resumen_valor}{detalle_filtros}")
 
     render_lista(filtrado)
 
@@ -1669,13 +1643,21 @@ def mostrar_dashboard(datos: dict):
     recibidas_mes = contar_recibidas_mes(datos["historico"])
     rol = st.session_state.get("rol", "viewer")
 
-    opciones = ["Todos"] + [c for c in CATEGORIAS if (df_todo["Categoria"] == c).any()]
+    # Tránsito = salió y NO tiene confirmada su llegada a puerto/aeropuerto. En
+    # cuanto se confirma, deja de ser tránsito: sale de "Todos" y de cada
+    # categoría y pasa a la vista Puerto/Aeropuerto, donde se ve su estatus
+    # hasta que se reciba en almacén (ahí se archiva, como siempre).
     en_proceso_df = _en_proceso(df_todo)
+    df_transito = df_todo[df_todo["EtapaActual"].astype(str).str.strip() == ""]
+    # Las pestañas salen de TODO lo activo (no solo del tránsito), para que una
+    # categoría cuya carga ya llegó entera no desaparezca bajo los pies de quien
+    # la tenía seleccionada; muestra su conteo de tránsito (0 si ya no hay).
+    opciones = ["Todos"] + [c for c in CATEGORIAS if (df_todo["Categoria"] == c).any()]
     if not en_proceso_df.empty:
         opciones.append(VISTA_EN_PROCESO_PUERTO)
-    conteos = df_todo["Categoria"].value_counts().to_dict()
+    conteos = df_transito["Categoria"].value_counts().to_dict()
     etiquetas = {
-        c: (f"{c} · {len(df_todo)}" if c == "Todos"
+        c: (f"{c} · {len(df_transito)}" if c == "Todos"
             else f"{c} · {len(en_proceso_df)}" if c == VISTA_EN_PROCESO_PUERTO
             else f"{c} · {conteos.get(c, 0)}")
         for c in opciones
@@ -1691,15 +1673,27 @@ def mostrar_dashboard(datos: dict):
         st.session_state.pop(k, None)
 
     if seleccion == VISTA_EN_PROCESO_PUERTO:
-        st.markdown(html_chips(en_proceso_df["EtapaActual"].value_counts().to_dict()),
+        # Filtro por categoría de tránsito: deja solo lo que ya llegó de esa
+        # categoría, con sus estatus.
+        conteo_cat = en_proceso_df["Categoria"].value_counts().to_dict()
+        cats_puerto = [c for c in CATEGORIAS if c in conteo_cat]
+        cats_puerto += sorted(c for c in conteo_cat if c not in CATEGORIAS)
+        opciones_cat = ["Todas"] + cats_puerto
+        if st.session_state.get("puerto_categoria", "Todas") not in opciones_cat:
+            st.session_state.pop("puerto_categoria", None)
+        cat_sel = st.selectbox(
+            "Categoría", opciones_cat, key="puerto_categoria",
+            format_func=lambda c: (f"Todas · {len(en_proceso_df)}" if c == "Todas"
+                                   else f"{c} · {conteo_cat.get(c, 0)}"),
+        )
+        vista_puerto = (en_proceso_df if cat_sel == "Todas"
+                        else en_proceso_df[en_proceso_df["Categoria"] == cat_sel])
+        st.markdown(html_chips(vista_puerto["EtapaActual"].value_counts().to_dict()),
                     unsafe_allow_html=True)
-        html_atraso_puerto(en_proceso_df, contexto=VISTA_EN_PROCESO_PUERTO)
+        html_atraso_puerto(vista_puerto, contexto=VISTA_EN_PROCESO_PUERTO)
         st.divider()
-        _panel_en_proceso(en_proceso_df, rol, contexto=VISTA_EN_PROCESO_PUERTO)
+        _panel_en_proceso(vista_puerto, rol, contexto=VISTA_EN_PROCESO_PUERTO)
         return
 
-    if seleccion == "Todos":
-        _filtro_eta_por_mes(df_todo)
-
-    sub = df_todo if seleccion == "Todos" else df_todo[df_todo["Categoria"] == seleccion]
+    sub = df_transito if seleccion == "Todos" else df_transito[df_transito["Categoria"] == seleccion]
     _render_categoria(sub, rol, seleccion, recibidas_mes)

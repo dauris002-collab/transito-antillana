@@ -15,13 +15,14 @@ from datetime import date, datetime
 import pandas as pd
 
 from sheets_io import (
-    COL_BL, COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_EMPRESA, COL_ETA,
+    COL_BL, COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_EMPRESA, COL_EMPRESA_EMBARQUE, COL_ETA,
     COL_FECHA_DECLARACION, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL,
     COL_FECHA_SALIDA, COL_FECHA_SIN_MORA, COL_LLEGO, COL_MODELO, COL_OC,
     COL_PAGO_LLEGADA, COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS, COL_ESTADO_PAGO,
     COL_PRIORIDAD, COL_VIA,
     ESTADO_PAGO_PAGADO, PRIORIDADES_PAGO, VIA_AEREA,
-    CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO, ETAPAS_PUERTO,
+    CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESA_MOTOR_IBERICO, EMPRESA_TECNICARIBE,
+    EMPRESAS_PAGO, ETAPAS_PUERTO,
     INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
     _fecha_de_tokens, _interpretar_tokens, _norm, _slug_css, _tokenizar_fecha,
     a_numero, columna_de_valor, es_llego_no, es_llego_si,
@@ -45,6 +46,60 @@ CATEGORIAS_CON_MODELO = ["Montacargas", "Construcción y Minería", "Agrícola",
 # Dónde se rastrea la carga por cliente y stock disponible.
 CATEGORIAS_CON_CLIENTE_STOCK = ["Montacargas", "Construcción y Minería", "Agrícola", "Elevadores",
                                 "Generadores", "Aéreos"]
+
+
+# Empresa de cada embarque en tránsito (v5.0). En estas categorías la empresa es
+# fija y sale de la categoría: lo que alguien escriba en la columna Empresa de
+# esas pestañas se ignora a propósito, para que una celda mal tecleada no mande
+# un montacargas a otra empresa.
+EMPRESA_POR_CATEGORIA = {
+    "Montacargas": EMPRESA_ANTILLANA,
+    "Construcción y Minería": EMPRESA_ANTILLANA,
+    "Elevadores": EMPRESA_TECNICARIBE,
+    "Generadores": EMPRESA_TECNICARIBE,
+    "Agrícola": EMPRESA_MOTOR_IBERICO,
+}
+
+
+# En estas categorías la empresa se escribe fila por fila (columna Empresa del
+# Sheet o del Excel de carga masiva), con las opciones que se listan aquí.
+# Consolidados solo reparte entre Antillana y Tecnicaribe.
+EMPRESAS_POR_CATEGORIA_FILA = {
+    "General": EMPRESAS_PAGO,
+    "Aéreos": EMPRESAS_PAGO,
+    "Carga Suelta": EMPRESAS_PAGO,
+    "Consolidados": [EMPRESA_ANTILLANA, EMPRESA_TECNICARIBE],
+}
+
+
+# Etiqueta para el embarque cuya empresa se escribe por fila y quedó vacía.
+EMPRESA_SIN_ASIGNAR = "Sin empresa"
+
+
+def canonizar_empresa(valor):
+    """Nombre canónico de una empresa escrito a mano, sin importar mayúsculas ni
+    acentos ("antillana" vale como Antillana Comercial). Devuelve "" si viene
+    vacío y None si no es ninguna empresa conocida (para que quien carga el
+    dato pueda rechazarlo en vez de guardar basura)."""
+    v = str(valor if valor is not None else "").strip()
+    if not v or v.lower() == "nan":
+        return ""
+    conocidas = {_norm(e): e for e in EMPRESAS_PAGO}
+    conocidas["antillana"] = EMPRESA_ANTILLANA
+    return conocidas.get(_norm(v))
+
+
+def empresa_de_embarque(categoria, valor_fila) -> str:
+    """Empresa que se le atribuye a un embarque en tránsito: la fija de su
+    categoría si la tiene; si no, la que trae la fila (canonizada si se
+    reconoce, tal cual si no); y "Sin empresa" si la fila no trae nada."""
+    fija = EMPRESA_POR_CATEGORIA.get(str(categoria or "").strip())
+    if fija:
+        return fija
+    v = str(valor_fila if valor_fila is not None else "").strip()
+    if not v or v.lower() == "nan":
+        return EMPRESA_SIN_ASIGNAR
+    return canonizar_empresa(v) or v
 
 
 def es_aereo(via) -> bool:
@@ -395,7 +450,7 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     calculadas = ["EstadoTexto", "DiasRel", "ETAFecha", "MesETA", "Prioridad", "OrdenSec", "ValorNum",
                   "DiasTransito", "DiasEnPuerto", "DiasEnEtapa", "EtapaActual", "EtapaIdx",
                   "Alerta", "AlertaDias", "Buscar", "F_Salida", "F_Puerto", "F_Declaracion",
-                  "BLRepetido", "FlujoRaro"]
+                  "BLRepetido", "FlujoRaro", "EmpresaTransito"]
     if df.empty:
         for c in calculadas:
             df[c] = []
@@ -432,6 +487,11 @@ def enriquecer(df: pd.DataFrame) -> pd.DataFrame:
     # guarda en el Sheet: se recalcula cada vez que se enriquece, así que si
     # alguien mueve la ETA de una fila, el mes al que pertenece se mueve solo.
     df["MesETA"] = [_clave_mes_eta(f) for f in etas]
+    # Empresa del embarque: fija por categoría, o la de la fila donde no lo es.
+    # Se calcula en vivo; no se guarda en el Sheet (ver empresa_de_embarque).
+    _cats = df["Categoria"] if "Categoria" in df.columns else [""] * len(df)
+    _emps = df[COL_EMPRESA_EMBARQUE] if COL_EMPRESA_EMBARQUE in df.columns else [""] * len(df)
+    df["EmpresaTransito"] = [empresa_de_embarque(c, e) for c, e in zip(_cats, _emps)]
     df["Prioridad"] = df["EstadoTexto"].map(PRIORIDAD_ESTADO).fillna(9).astype(int)
 
     salidas = _columna_fechas(df, COL_FECHA_SALIDA)

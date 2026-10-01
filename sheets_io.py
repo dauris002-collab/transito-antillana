@@ -107,7 +107,15 @@ COL_EE = "EE"                        # Carga Suelta y General
 COL_CLIENTE_STOCK = "CLIENTE / STOCK"   # Montacargas, Construcción y Minería, Agrícola, Elevadores, Generadores
 
 
-OPCIONALES_CATEGORIA = [COL_MODELO, COL_FECHA_SALIDA, COL_OC, COL_EE, COL_CLIENTE_STOCK]
+# Empresa dueña del embarque en tránsito. Solo se LLENA en las pestañas donde la
+# empresa no sale de la categoría (General, Aéreos, Carga Suelta, Consolidados);
+# en el resto la app la deduce de la categoría (ver logica.EMPRESA_POR_CATEGORIA).
+# Mismo encabezado que COL_EMPRESA de Pagos, pero es otra pestaña y otro dato.
+COL_EMPRESA_EMBARQUE = "Empresa"
+
+
+OPCIONALES_CATEGORIA = [COL_MODELO, COL_FECHA_SALIDA, COL_OC, COL_EE, COL_CLIENTE_STOCK,
+                        COL_EMPRESA_EMBARQUE]
 
 
 # Congelado de la llegada. Esta columna NO vive en las pestañas de categoría
@@ -155,7 +163,7 @@ COLUMNAS_INTERNAS = {
     "ValorNum", "Buscar", "EtapaActual", "EtapaIdx", "Alerta", "AlertaDias",
     "DiasTransito", "DiasEnPuerto", "DiasEnEtapa",
     "F_Salida", "F_Puerto", "F_Declaracion",
-    "BLRepetido", "FlujoRaro",
+    "BLRepetido", "FlujoRaro", "EmpresaTransito",
     COL_DIAS_PUERTO,
 }
 
@@ -303,17 +311,23 @@ COL_PAGOREAL_DOP = "PagoRealizado_DOP"
 COL_PAGO_LLEGADA = "Llegada"
 
 
-# Razón social del expediente. Tránsito solo trackea embarques de Antillana
-# Comercial, así que todo lo que llega por sincronizar_pagos_con_transito()
-# se marca así de una vez. Tecnicaribe y Motor Ibérico no tienen tránsito
-# propio en esta app: sus expedientes se agregan directo en el Sheet.
+# Razón social del expediente. La sincronización con tránsito la deja en blanco
+# a propósito (ver DECISIONS.md, punto 10): quién debe cada expediente lo decide
+# Logística a mano. Desde la v5.0 tránsito también conoce la empresa de cada
+# embarque (COL_EMPRESA_EMBARQUE), pero eso NO se copia aquí.
 COL_EMPRESA = "Empresa"
 
 
 EMPRESA_ANTILLANA = "Antillana Comercial"
 
 
-EMPRESAS_PAGO = [EMPRESA_ANTILLANA, "Tecnicaribe", "Motor Ibérico"]
+EMPRESA_TECNICARIBE = "Tecnicaribe"
+
+
+EMPRESA_MOTOR_IBERICO = "Motor Ibérico"
+
+
+EMPRESAS_PAGO = [EMPRESA_ANTILLANA, EMPRESA_TECNICARIBE, EMPRESA_MOTOR_IBERICO]
 
 
 COLUMNAS_PAGOS = [

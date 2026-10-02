@@ -217,8 +217,8 @@ def _aplicar_filtro_kpi(df: pd.DataFrame, filtro: str) -> pd.DataFrame:
         return df[pagado]
     if filtro == "abiertos":
         return df[~pagado]
-    if filtro == "con_mora":
-        return df[pagado & (df["DiasMora"] > 0)]
+    if filtro == "tiempo_pago":
+        return df[pagado & df["DiasHastaPago"].notna()]
     if filtro == "con_sobrecosto":
         def _tiene_extra(e):
             e = e or {}
@@ -251,12 +251,13 @@ def _tarjetas_resumen(resumen: dict, filtro_activo: str) -> str:
     misma que ya está activa la vuelve a 'todos'. Una 6ta tarjeta, estática,
     muestra el total que aún se debe. Devuelve el filtro que quedó activo
     después del clic (o el mismo de antes, si no se clickeó nada)."""
-    prom = resumen["dias_mora_promedio"]
+    prom = resumen["dias_pago_promedio"]
     sobre = resumen["sobrecosto"]
     kpis = [
         ("Pagados", str(resumen["n_pagados"]), COLOR_TOTAL, "cerrados"),
         ("Pendientes", str(resumen["n_abiertos"]), COLOR_ABIERTOS, "abiertos"),
-        ("Mora promedio", f"{prom:.0f} d" if prom is not None else "—", COLOR_MORA_PROMEDIO, "con_mora"),
+        ("Tiempo promedio de pago", f"{prom:.0f} d" if prom is not None else "—", COLOR_MORA_PROMEDIO,
+         "tiempo_pago"),
         ("Sobrecosto acumulado", f"USD {sobre['USD']:,.0f} · DOP {sobre['DOP']:,.0f}",
          COLOR_SOBRECOSTO, "con_sobrecosto"),
     ]
@@ -377,6 +378,19 @@ ESTADO_DISPLAY = {"todos": "Todos", "abiertos": "Pendiente", "cerrados": "Pagado
 ESTADO_SLUG = {v: k for k, v in ESTADO_DISPLAY.items()}
 
 
+def _clave_antiguedad(prio, dias, llegada):
+    """Llave de orden para la lista de pagos (menor = más arriba):
+    1) con prioridad primero, la 1 antes que la 4; sin prioridad al final;
+    2) dentro de cada nivel, más días sin pagar primero;
+    3) sin contador de días (llegada sin confirmar) después de los que sí lo
+       tienen, por llegada más antigua. Una carga con 17 días sin prioridad
+       queda DEBAJO de una con prioridad 1 aunque lleve menos días."""
+    p = int(prio) if prio is not None and not pd.isna(prio) else 99
+    if dias is not None and not pd.isna(dias):
+        return (p, 0, -int(dias), 0)
+    return (p, 1, 0, llegada.toordinal() if llegada else 10 ** 9)
+
+
 def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
     """Los pendientes ordenados de más viejo a más reciente: la respuesta
     directa a "qué pagos están pendientes y cuál lleva más tiempo esperando",
@@ -415,15 +429,17 @@ def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
             "bl": str(r.get(COL_BL, "") or "").strip() or "(sin BL)",
             "empresa": r.get("EmpresaEfectiva", "") or EMPRESA_ANTILLANA,
             "prio": _badge_prioridad(r.get("PrioridadPago")),
+            "prio_n": r.get("PrioridadPago"),
+            "llegada_d": llegada,
             "desc": str(r.get(COL_DESC, "") or "").strip(),
             "llegada": formato_eta(llegada) if llegada else "—",
             "dias": dias,
             "usd": _fmt(usd, "USD") if usd else "—",
             "dop": _fmt(dop, "DOP") if dop else "—",
         })
-    # Orden de triaje: los que llevan más días sin pagar arriba; los que no
-    # tienen contador (sin llegada confirmada) al final.
-    filas.sort(key=lambda f: f["dias"] if f["dias"] is not None else -1, reverse=True)
+    # Orden de triaje (ver _clave_antiguedad): primero los que tienen prioridad,
+    # y dentro de cada nivel los que llevan más días sin pagar.
+    filas.sort(key=lambda f: _clave_antiguedad(f["prio_n"], f["dias"], f["llegada_d"]))
 
     cuerpo = "".join(
         "<tr>"
@@ -439,7 +455,7 @@ def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
         "</tr>"
         for f in filas
     )
-    st.markdown("**Pendientes por antigüedad** — qué se debe y desde cuándo corre el reloj")
+    st.markdown("**Pendientes por antigüedad**")
     st.markdown(
         '<div class="pago-aging-wrap"><table class="pago-aging">'
         "<thead><tr><th>BL</th><th>Empresa</th><th>Prioridad</th><th>Descripción</th><th>Llegada</th>"
@@ -449,7 +465,7 @@ def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
     )
 
 
-def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
+def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False):
     c1, c2, c3 = st.columns(3)
     with c1:
         empresa_sel = st.selectbox("Empresa", ["Todas"] + EMPRESAS_PAGO, key="pago_filtro_empresa")
@@ -463,7 +479,7 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
     if slug_actual not in ESTADO_DISPLAY:
         st.caption("🔎 Filtro de tarjeta activo — el selector Estatus no aplica; quítalo pulsando "
                    "la misma tarjeta o eligiendo 'Todos' aquí.")
-        slug_actual = "todos"  # "con_mora"/"con_sobrecosto" no tienen equivalente en este selector
+        slug_actual = "todos"  # "tiempo_pago"/"con_sobrecosto" no tienen equivalente en este selector
     opciones_estatus = ["Todos", "Pendiente", "Pagado"]
 
     def _al_elegir_estatus():
@@ -534,7 +550,7 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
     con_montos = vista[vista["TieneMontos"]]
 
     sin_transito = int(vista["BLSinTransito"].sum())
-    if sin_transito:
+    if sin_transito and es_admin:   # aviso de mantenimiento: el viewer no puede actuar sobre él
         st.warning(f"{sin_transito} expediente(s) de Pagos ya no tienen un BL coincidente en tránsito "
                    "(activo ni histórico) — puede que se hayan eliminado o cambiado de BL ahí.")
 
@@ -546,6 +562,9 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
 
     resumen = resumen_pagos(con_montos)
     filtro_activo = _tarjetas_resumen(resumen, st.session_state.get("pago_filtro_estado", "todos"))
+    if resumen["n_dias_pago"]:
+        st.caption(f"Tiempo promedio de pago: días entre la llegada y el pago realizado, "
+                   f"sobre {resumen['n_dias_pago']} expediente(s) pagados con ambas fechas.")
 
     if con_montos.empty:
         st.info(f"Hay {len(vista)} expediente(s) en esta selección, pero ninguno tiene montos "
@@ -559,15 +578,14 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame):
     _tabla_antiguedad_pendientes(con_montos, filtro_activo)
 
     filtrado = _aplicar_filtro_kpi(con_montos, filtro_activo)
-    # La lista de expedientes se ordena por prioridad de pago: la 1 arriba del
-    # todo, luego 2, 3 y 4, y al final los que no tienen — de arriba hacia
-    # abajo, de menor a mayor, como se definió la escala. Sort ESTABLE sobre
-    # una llave numérica auxiliar: mientras nadie use la columna Prioridad del
-    # Sheet, todos empatan y el orden queda exactamente como estaba.
-    if not filtrado.empty and "PrioridadPago" in filtrado.columns:
-        filtrado = (filtrado.assign(_prio=pd.to_numeric(filtrado["PrioridadPago"], errors="coerce"))
-                            .sort_values("_prio", na_position="last", kind="stable")
-                            .drop(columns="_prio"))
+    # Mismo orden que 'Pendientes por antigüedad' (ver _clave_antiguedad):
+    # prioridad primero (1 arriba, sin prioridad al final) y, dentro de cada
+    # nivel, más días sin pagar primero.
+    if not filtrado.empty:
+        orden = sorted(range(len(filtrado)), key=lambda i: _clave_antiguedad(
+            filtrado.iloc[i].get("PrioridadPago"), filtrado.iloc[i].get("DiasSinPagar"),
+            filtrado.iloc[i].get("LlegadaEfectiva")))
+        filtrado = filtrado.iloc[orden]
     st.markdown(PAGOS_CSS, unsafe_allow_html=True)
     if filtrado.empty:
         st.caption("Ningún expediente coincide con este filtro.")
@@ -912,7 +930,7 @@ def panel_pagos(datos: dict, es_admin: bool):
 
     enriquecido = _enriquecer_pagos_cacheado(df_pagos, activos, historico)
 
-    mostrar_dashboard_pagos(enriquecido)
+    mostrar_dashboard_pagos(enriquecido, es_admin)
 
     if not es_admin:
         return

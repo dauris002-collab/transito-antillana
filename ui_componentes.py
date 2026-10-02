@@ -1,1699 +1,2122 @@
 """
-ui_componentes.py — Componentes visuales reutilizables de Antillana Comercial.
+sheets_io.py — Capa de acceso a Google Sheets para Antillana Comercial.
 
-Bloques HTML/CSS (encabezado, KPIs, diagrama de flujo, lista de embarques,
-ficha del embarque, gráficos) y el panel del dashboard. Usa Streamlit e
-importa de logica.py y sheets_io.py.
+Conexión, lectura, escritura, caché de datos, reintentos ante errores de la
+API, bitácora y accesores de configuración (Secrets). Sin lógica de negocio:
+solo constantes de columnas/pestañas y las funciones que hablan directamente
+con el Google Sheet. No debe ser importado por logica.py, ui_componentes.py,
+vistas_admin.py ni causar dependencias circulares.
 """
 
 from __future__ import annotations
 
-import base64
-import io
-from datetime import timedelta
-from pathlib import Path
+import re
+import threading
+import time
+import unicodedata
+from functools import lru_cache
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
+import gspread
+import gspread.exceptions
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
+from google.oauth2.service_account import Credentials
+from gspread.utils import rowcol_to_a1
 
-from sheets_io import (
-    CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
-    COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_LLEGO, COL_MODELO,
-    COL_OC, COL_PAIS, COL_VIA, ETAPA_ALMACEN, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES,
-    MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO, VIA_MARITIMA, EMPRESAS_PAGO,
-    _norm, _slug_css, avanzar_estado_puerto, columnas_extra, confirmar_llegada,
-    eliminar_embarque, es_llego_si, es_numero, fijar_fecha_declaracion, formato_dinero,
-    formato_eta, hoy_rd, invalidar_caches, marcar_como_recibido, marcar_no_llego,
-    registrar_log, sla_etapas,
-)
-from logica import (
-    CATEGORIAS_CON_OC_EE, EMPRESA_SIN_ASIGNAR, EST_PROXIMO,
-    EST_PUERTO, EST_RETRASADO, EST_SIN_FECHA, EST_TRANSITO, ETIQUETA_CORTA_ETAPA,
-    ICONO_ALMACEN, ICONO_ETAPA, PALETA_PAISES, SEMANAS_HORIZONTE, STATUS_COLOR,
-    STATUS_ORDER, UMBRAL_PROXIMO,
-    _cumple_filtro_puerto, _en_proceso, _etiquetas_desambiguadas, _etiqueta_mes_eta, _lleno,
-    clave_fila, contar_recibidas_mes, enriquecer, es_aereo,
-    esc, etiqueta_etapa, fechas_flujo_de_fila, formato_corto, lugar_de,
-    ordenar_vista, resumen_atraso_puerto, texto_dias, texto_estado,
-)
+
+ZONA_RD = ZoneInfo("America/Santo_Domingo")
+
+
+COL_BL = "BL"
+
+
+COL_DESC = "Descripcion"
+
+
+COL_CANT = "Cantidad"
+
+
+COL_PAIS = "Pais_Origen"
+
+
+# El ETA es la fecha que el equipo mantiene actualizada y la que todos conocen.
+# Es ESTIMADA mientras nadie confirme la llegada; una vez confirmada (ver
+# COL_LLEGO) pasa a valerse como la fecha real de llegada a puerto.
+COL_ETA = "Llegada a Puerto (ETA)"
+
+
+# Confirmación de llegada: "SI" (llegó), "NO" (se verificó que NO llegó) o vacío
+# (nadie ha revisado). Sustituye a la vieja columna Estatus_Llegada.
+#
+# La fecha de llegada NO se teclea aparte: cuando esto dice SI, la fecha de
+# llegada es el ETA. Así nadie escribe la misma fecha dos veces. El precio es
+# que si el ETA se mueve DESPUÉS de confirmar, la fecha de llegada se mueve con
+# él; por eso al archivar se congela en Fecha_Llegada_Puerto (ver
+# marcar_como_recibido), que es lo que después se lee como histórico.
+COL_LLEGO = "¿Llegó? SI/NO"
+
+
+LLEGO_SI = "SI"
+
+
+LLEGO_NO = "NO"
+
+
+COL_DIAS_PUERTO = "Dias en puerto"     # existe en el Sheet; la app lo calcula en vivo y no lo escribe
+
+
+COL_ACTUALIZACION = "Fecha_Actualizacion"  # el Sheet lo tiene con tilde; _norm lo resuelve
+
+
+COL_ACTUALIZADO_POR = "Actualizado_Por"    # la app la crea sola la primera vez que escribe
+
+
+# Modo de transporte de ESTE embarque en particular. Antes "Aéreos" era una
+# categoría/pestaña propia y la app deducía avión-vs-barco mirando a qué
+# categoría pertenecía la fila. Ya no: ahora cualquier categoría (Montacargas,
+# Generadores, etc.) puede tener embarques por avión o por barco, así que el
+# modo de transporte es un dato de la FILA, no de la pestaña. Vacío se trata
+# como Marítimo (ver es_aereo() en logica.py) -- así las filas viejas, de
+# antes de que existiera esta columna, no quedan mal clasificadas.
+COL_VIA = "Via_Transporte"
+
+
+VIA_AEREA = "Aéreo"
+
+
+VIA_MARITIMA = "Marítimo"
+
+
+# --- Columnas opcionales por categoría --------------------------------------
+# Ninguna de estas aplica a todas las pestañas, y por eso NO están en
+# REQUIRED_COLUMNS: si la pestaña no la trae, la app ni la pide ni la crea.
+COL_MODELO = "Modelo_Serie"          # Montacargas, Construcción y Minería, Agrícola, Elevadores, Generadores, Consolidados
+
+
+COL_FECHA_SALIDA = "Fecha_Salida"    # la trae quien la conoce (booking del forwarder/naviera)
+
+
+COL_OC = "OC"                        # Carga Suelta y General
+
+
+COL_EE = "EE"                        # Carga Suelta y General
+
+
+COL_CLIENTE_STOCK = "CLIENTE / STOCK"   # Montacargas, Construcción y Minería, Agrícola, Elevadores, Generadores
+
+
+# Empresa dueña del embarque en tránsito. Solo se LLENA en las pestañas donde la
+# empresa no sale de la categoría (General, Aéreos, Carga Suelta, Consolidados);
+# en el resto la app la deduce de la categoría (ver logica.EMPRESA_POR_CATEGORIA).
+# Mismo encabezado que COL_EMPRESA de Pagos, pero es otra pestaña y otro dato.
+COL_EMPRESA_EMBARQUE = "Empresa"
+
+
+OPCIONALES_CATEGORIA = [COL_MODELO, COL_FECHA_SALIDA, COL_OC, COL_EE, COL_CLIENTE_STOCK,
+                        COL_EMPRESA_EMBARQUE]
+
+
+# Congelado de la llegada. Esta columna NO vive en las pestañas de categoría
+# (ahí la llegada es COL_LLEGO + el ETA): solo se escribe al archivar, para que
+# el histórico conserve la fecha que valía en ese momento aunque el ETA se
+# mueva después.
+COL_FECHA_LLEGADA_PUERTO = "Fecha_Llegada_Puerto"
+
+
+COL_FECHA_DECLARACION = "Fecha_Declaracion"          # recepción y declaración ante Aduanas
+
+
+# Entrada a almacén. Tampoco es una etapa del tablero activo: es el sello del
+# momento de archivar, y por eso vive únicamente en "Recibido (Mes)".
+COL_FECHA_ALMACEN = "Fecha_Almacen"
+
+
+# Columnas opcionales libres: si existen en el Sheet, la app las usa; si no, ni
+# se mencionan. Así se puede agregar Puerto_Destino o Valor_USD desde Google
+# Sheets sin tocar una línea de código.
+NOMBRES_VALOR = {"valor_usd", "valor", "monto", "valor_cif", "monto_usd", "valor us$", "valor us"}
+
+
+MAX_FILAS_LECTURA = 20000
+
+
+# Lo único que TODA pestaña de categoría debe traer.
+REQUIRED_COLUMNS = [COL_BL, COL_DESC, COL_CANT, COL_PAIS, COL_ETA]
+
+
+# Fechas del flujo que sí se escriben en la pestaña de categoría. La llegada no
+# está aquí porque no tiene columna de fecha propia: es COL_LLEGO + el ETA.
+COLUMNAS_FLUJO = [COL_FECHA_DECLARACION]
+
+
+ALL_COLUMNS = REQUIRED_COLUMNS + [COL_DIAS_PUERTO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
+                                  COL_LLEGO, COL_VIA, *COLUMNAS_FLUJO, *OPCIONALES_CATEGORIA]
+
+
+# Columnas que la app calcula o gestiona internamente y que no se muestran como
+# "campos extra" del embarque. Si se agrega un cálculo nuevo en enriquecer(),
+# su nombre TIENE que entrar aquí o aparecerá como columna suelta en la ficha.
+COLUMNAS_INTERNAS = {
+    "Categoria", "FilaSheet", "EstadoTexto", "DiasRel", "ETAFecha", "Prioridad", "OrdenSec",
+    "ValorNum", "Buscar", "EtapaActual", "EtapaIdx", "Alerta", "AlertaDias",
+    "DiasTransito", "DiasEnPuerto", "DiasEnEtapa",
+    "F_Salida", "F_Puerto", "F_Declaracion",
+    "BLRepetido", "FlujoRaro", "EmpresaTransito",
+    COL_DIAS_PUERTO,
+}
+
+
+CATEGORIAS = ["Montacargas", "Construcción y Minería", "Agrícola", "Elevadores",
+              "Generadores", "General", "Aéreos", "Carga Suelta", "Consolidados"]
+
+
+# 2 contadores operativos:
+#   1) Salida -> Llegada confirmada (tránsito; se congela al confirmar)
+#   2) Llegada confirmada -> Declaración (y de ahí a hoy, hasta archivar)
+# El reloj del dinero (días en puerto) arranca en la LLEGADA CONFIRMADA, nunca
+# en el ETA sin confirmar: mientras nadie diga SI, la carga puede seguir en agua.
+ETAPAS_PUERTO = [
+    "Llegada a puerto",
+    "Recepción y declaración",
+]
+
+
+INDICE_ETAPA = {e: i for i, e in enumerate(ETAPAS_PUERTO)}
+
+
+# Solo las etapas que tienen columna de fecha propia. "Llegada a puerto" no está
+# aquí a propósito: se resuelve con COL_LLEGO + el ETA (ver fecha_llegada_fila).
+COLUMNA_FECHA_ETAPA = {
+    "Recepción y declaración": COL_FECHA_DECLARACION,
+}
+
+
+ETAPA_LLEGADA = ETAPAS_PUERTO[0]
+
+
+# Etiqueta de la acción de archivar. No está en ETAPAS_PUERTO a propósito: no es
+# una etapa del tablero activo, es la salida del tablero.
+ETAPA_ALMACEN = "Recibido en almacén"
+
+
+# Días tolerados en cada etapa antes de considerar que hay un cuello de botella.
+# Son estimaciones de arranque, NO un estándar medido: ajústalos con los datos
+# reales una vez que el histórico tenga unos meses (Herramientas muestra las
+# medianas). Se pueden sobrescribir desde Secrets sin tocar código.
+SLA_ETAPA_DEFECTO = {
+    "Llegada a puerto": 3,
+    "Recepción y declaración": 2,
+}
+
+
+SLA_RETRASO_DEFECTO = 7   # días de retraso sin actualizar el ETA antes de avisar
+
+
+# Qué fecha manda para decidir a qué mes pertenece un embarque recibido:
+#   "llegada" -> fecha de llegada confirmada (respaldo: ETA)
+#   "almacen" -> fecha de entrada a almacén
+# Cambia esta sola línea si el criterio del negocio es el otro.
+BASE_FECHA_RECIBIDO = "almacen"
+
+
+RECIBIDO_SHEET = "Recibido (Mes)"
+
+
+LOG_SHEET = "Log"
+
+
+COLUMNAS_RECIBIDO = [
+    COL_BL, COL_DESC, COL_CANT, COL_PAIS, COL_ETA,
+    "Fecha_Recibido", "Categoria_Origen", "Registrado_Por", COL_ACTUALIZACION,
+    COL_ACTUALIZADO_POR, COL_FECHA_LLEGADA_PUERTO, COL_VIA, *COLUMNAS_FLUJO, COL_FECHA_ALMACEN,
+    *OPCIONALES_CATEGORIA,
+]
+
+
+COLUMNAS_LOG = ["Fecha_Hora", "Usuario", "Accion", "BL", "Categoria", "Detalle"]
+
+
+# --- Estatus de Pago ---------------------------------------------------------
+# Pestaña aparte, una fila por BL/expediente (no por concepto): un expediente
+# no siempre trae los mismos cargos, así que cada fila solo llena las columnas
+# de concepto que de verdad aplican; el resto queda vacío, nunca en cero.
+PAGOS_SHEET = "Pagos"
+
+
+# Lista cerrada de conceptos. Moneda FIJA por columna: así el monto se guarda
+# como número puro (sin "dolares"/"pesos" pegado al texto) y no hay que parsear
+# texto libre para saber en qué moneda está cada celda.
+CONCEPTOS_PAGO = ["ADUANAS", "DPH", "DPW", "TRANSPORTE", "HIT", "FDA", "VECONINTER", "ALMACENAJE",
+                  "PORTCOLLECT", "FLETE", "GESTION ADUANAL", "CARGOS LOCALES", "SAN SOUCI"]
+
+
+MONEDA_CONCEPTO = {
+    "ADUANAS": "DOP", "DPH": "USD", "DPW": "DOP", "TRANSPORTE": "DOP",
+    "HIT": "DOP", "FDA": "DOP", "VECONINTER": "USD", "ALMACENAJE": "DOP",
+    "PORTCOLLECT": "USD", "FLETE": "USD", "GESTION ADUANAL": "DOP", "CARGOS LOCALES": "USD",
+    "SAN SOUCI": "DOP",
+}
+
+
+# Pendiente/Pagado: campo MANUAL que marca Logística a criterio propio. No se
+# deriva de si hay fecha de Pago Realizado, porque son preguntas distintas
+# ("¿ya se pagó?" no siempre coincide con "¿ya quedó todo conciliado?").
+COL_ESTADO_PAGO = "Estado_Pago"
+
+
+ESTADO_PAGO_PENDIENTE = "Pendiente"
+
+
+ESTADO_PAGO_PAGADO = "Pagado"
+
+
+# Prioridad de pago (1 = pagar primero ... 4 = puede esperar). Campo MANUAL de
+# Logística, como Estado_Pago: se escribe a mano en el Sheet o desde el
+# formulario de la app. Vacío = sin prioridad — y "sin prioridad" no es lo
+# mismo que prioridad 4: son los expedientes a los que nadie les ha asignado
+# turno todavía, y en la plataforma quedan DEBAJO de los que sí tienen.
+COL_PRIORIDAD = "Prioridad"
+
+
+PRIORIDADES_PAGO = [1, 2, 3, 4]
+
+
+# Fecha límite saludable que fija Logística a criterio propio. Ya NO congela
+# montos: el total se calcula en vivo desde los conceptos (ver TotalActual en
+# logica.py), así que no hace falta guardar una foto de esos números aquí —
+# solo la fecha, para poder medir después si el pago llegó a tiempo.
+COL_FECHA_SIN_MORA = "Fecha_SinMora"
+
+
+# "Pago Realizado": la fecha real en que se pagó, y el EXTRA que se pagó de
+# más sobre los conceptos originales (por mora, ajustes, etc.) — lo escribe
+# Logística a mano, en pesos y/o dólares; 0 si no hubo diferencia. No es un
+# total congelado: es la diferencia, y la plataforma se la suma al total de
+# los conceptos para mostrar el costo final.
+COL_FECHA_PAGO_REAL = "Fecha_PagoRealizado"
+
+
+COL_PAGOREAL_USD = "PagoRealizado_USD"
+
+
+COL_PAGOREAL_DOP = "PagoRealizado_DOP"
+
+
+# Descripción y Cantidad reusan las mismas columnas canónicas de tránsito
+# (mismo significado, mismo nombre). Llegada es propia de Pagos: guarda la
+# fecha ya resuelta (confirmada si existe, ETA si no) para no repetir la
+# lógica de COL_LLEGO + ETA en una hoja que no la necesita.
+COL_PAGO_LLEGADA = "Llegada"
+
+
+# Razón social del expediente. La sincronización con tránsito la deja en blanco
+# a propósito (ver DECISIONS.md, punto 10): quién debe cada expediente lo decide
+# Logística a mano. Desde la v5.0 tránsito también conoce la empresa de cada
+# embarque (COL_EMPRESA_EMBARQUE), pero eso NO se copia aquí.
+COL_EMPRESA = "Empresa"
+
+
+EMPRESA_ANTILLANA = "Antillana Comercial"
+
+
+EMPRESA_TECNICARIBE = "Tecnicaribe"
+
+
+EMPRESA_MOTOR_IBERICO = "Motor Ibérico"
+
+
+EMPRESAS_PAGO = [EMPRESA_ANTILLANA, EMPRESA_TECNICARIBE, EMPRESA_MOTOR_IBERICO]
+
+
+COLUMNAS_PAGOS = [
+    COL_EMPRESA, COL_BL, COL_DESC, COL_CANT, COL_PAGO_LLEGADA, *CONCEPTOS_PAGO, COL_ESTADO_PAGO,
+    COL_PRIORIDAD, COL_FECHA_SIN_MORA, COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
+    COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
+]
+
+
+CACHE_TTL = 45              # segundos de caché de lectura
+
+
+REINTENTOS_API = 5
+
+
+MESES_ES = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre",
+}
+
+
+MESES_ES_CORTO = {
+    1: "ene", 2: "feb", 3: "mar", 4: "abr", 5: "may", 6: "jun",
+    7: "jul", 8: "ago", 9: "sep", 10: "oct", 11: "nov", 12: "dic",
+}
 
 
 # ---------------------------------------------------------------------------
-# CONFIGURACIÓN GENERAL
+# UTILIDADES
 # ---------------------------------------------------------------------------
-VERSION_APP = "5.0"
+def hoy_rd() -> date:
+    """Fecha de HOY en hora de Santo Domingo (UTC-4). Streamlit Cloud corre en UTC:
+    con date.today() directo, en las últimas horas del día (y sobre todo el último
+    día del mes) el servidor ya 'cree' que es el día siguiente aunque en RD no lo sea."""
+    return datetime.now(ZONA_RD).date()
 
 
-VISTA_EN_PROCESO_PUERTO = "Puerto/Aeropuerto · Estatus"
+def ahora_rd() -> datetime:
+    return datetime.now(ZONA_RD)
 
 
-TOPE_PROCESO = 8            # embarques con diagrama visible antes de paginar
+@lru_cache(maxsize=4096)
+def _norm_cache(texto: str) -> str:
+    s = " ".join(texto.split()).strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    return s.casefold()
 
 
-COLOR_TOTAL = "#17A2B8"
+def _norm(texto) -> str:
+    """Normaliza un nombre de columna/pestaña: sin acentos, sin dobles espacios,
+    sin distinguir mayúsculas. Es lo que hace que '¿Llegó? SI/NO' y
+    '¿Llego? Si/No' se traten como la misma columna. Con caché porque se llama
+    miles de veces por refresco (búsqueda, mapeo de columnas, etapas)."""
+    return _norm_cache(str(texto))
 
 
-COLOR_RECIBIDAS_MES = "#2E7D32"
+def _norm_encabezado(texto) -> str:
+    """Como _norm(), pero ADEMÁS ignora espacios, guiones bajos y barras, para
+    que 'CLIENTE / STOCK', 'Cliente/Stock' y 'Cliente_Stock' se traten como el
+    mismo encabezado de columna.
+
+    Bug real que esto corrige: COL_CLIENTE_STOCK está escrita en el código como
+    'CLIENTE / STOCK' (con espacios alrededor de la barra), pero si en el Sheet
+    real el encabezado se escribió sin esos espacios (como el resto de las
+    columnas: Modelo_Serie, Pais_Origen), _norm() por sí solo NO los trata como
+    la misma columna -- solo colapsa espacios dobles y quita acentos/mayúsculas,
+    no el espacio pegado a un símbolo. El resultado era que la columna se leía
+    (y se escribía) siempre vacía, sin importar lo que hubiera en el Sheet.
+
+    Úsese SOLO para comparar/emparejar NOMBRES DE COLUMNA contra las constantes
+    canónicas (COL_*). NUNCA para texto libre (el buscador de la lista) ni para
+    valores de datos (BL, país, '¿Llegó?'), donde los espacios sí distinguen
+    palabras y usar esto rompería esas comparaciones."""
+    return re.sub(r"[\s_/]+", "", _norm(texto))
 
 
-COLOR_ALERTA = "#B45309"
+def _slug_css(texto) -> str:
+    """Convierte un nombre visible ('Construcción y Minería', 'Carga Suelta') en
+    un identificador ASCII apto para usarse como clave de widget o clase CSS:
+    'construccion_y_mineria', 'carga_suelta'."""
+    base = _norm(texto)
+    limpio = "".join(c if c.isalnum() else "_" for c in base)
+    while "__" in limpio:
+        limpio = limpio.replace("__", "_")
+    return limpio.strip("_") or "x"
 
 
-CUSTOM_CSS = """
-<style>
-:root {
-    --ant-azul: #0C447C;
-    --ant-borde: #E5E7EB;
-    --ant-texto: #111827;
-    --ant-suave: #6B7280;
-    --ant-hecho: #2E7D32;
-    --ant-actual: #F0B90B;
-}
-/* El menú de secciones es el primer elemento de la página: sin este aire, en
-   algunas resoluciones queda medio escondido bajo la barra fija de Streamlit.
-   El padding inferior respeta el área segura del iPhone (barra de gestos). */
-.block-container {
-    padding-top: 3.4rem;
-    padding-bottom: calc(2.5rem + env(safe-area-inset-bottom, 0px));
-}
-html { -webkit-text-size-adjust: 100%; }
-
-.nav-rotulo { font-size:0.70rem; text-transform:uppercase; letter-spacing:0.08em;
-              color:#9CA3AF; font-weight:700; margin:0 0 4px 2px; }
-
-/* ---------- Encabezado ---------- */
-.ant-head { text-align:center; margin: 0 0 1.1rem 0; }
-.ant-eyebrow {
-    display:inline-flex; align-items:center; gap:6px;
-    background:#E6F1FB; color:var(--ant-azul);
-    font-size:0.74rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase;
-    padding:5px 16px; border-radius:999px;
-}
-.ant-title {
-    font-size:2.2rem; font-weight:800; margin:0.6rem 0 0.3rem 0; color:var(--ant-texto);
-    letter-spacing:-0.02em;
-}
-.ant-rule { width:52px; height:4px; background:#2E86DE; border-radius:2px; margin:0.2rem auto 0.6rem auto; }
-.ant-sub { font-size:0.95rem; color:var(--ant-suave); }
-.ant-stamp { display:inline-flex; align-items:center; gap:7px; font-size:0.76rem;
-             color:var(--ant-suave); margin-top:0.5rem; flex-wrap:wrap; justify-content:center; }
-.ant-dot { width:8px; height:8px; border-radius:50%; background:#22C55E; display:inline-block; }
-.ant-logo { max-height:58px; margin-bottom:0.5rem; }
-
-/* Resumen ejecutivo: una línea que responde "¿cómo vamos hoy?" sin leer nada más */
-.resumen { background:#F8FAFC; border:1px solid var(--ant-borde); border-left:4px solid var(--ant-azul);
-           border-radius:10px; padding:10px 14px; font-size:0.92rem; color:#1F2937; margin-bottom:12px; }
-.resumen b { color:#0C447C; }
-
-/* Panel de confirmación de llegadas */
-.conf-titulo { font-size:0.78rem; text-transform:uppercase; letter-spacing:0.06em;
-               font-weight:800; color:#92400E; background:#FEF7E6;
-               border-left:4px solid #F0B90B; padding:8px 14px; border-radius:8px;
-               margin:6px 0 10px 0; }
-.conf-fila { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:6px 2px; }
-.conf-bl { font-weight:700; color:#111827; font-size:0.92rem; }
-.conf-desc { color:#6B7280; font-size:0.85rem; }
-
-/* ---------- KPIs ---------- */
-.kpi-card { border-radius:14px; padding:14px 18px; min-height:92px; height:100%;
-            display:flex; flex-direction:column; justify-content:center; align-items:center;
-            text-align:center; box-shadow:0 2px 8px rgba(17,24,39,0.12); }
-.kpi-label { font-size:0.70rem; font-weight:700; text-transform:uppercase; letter-spacing:0.06em;
-             color:rgba(255,255,255,0.92); margin-bottom:6px; }
-.kpi-value { font-size:2.0rem; font-weight:800; line-height:1; color:#fff; }
-.kpi-sub { font-size:0.70rem; color:rgba(255,255,255,0.88); margin-top:6px; }
-
-/* ---------- Barras por país (HTML puro: no se mueven en celular) ---------- */
-.paises { margin:4px 0 10px; }
-.pfila { display:grid; grid-template-columns:minmax(72px,26%) 1fr 34px;
-         align-items:center; gap:8px; padding:3px 0; }
-.pnom { font-size:.8rem; color:#374151; overflow:hidden; text-overflow:ellipsis;
-        white-space:nowrap; }
-.pbarra { background:rgba(0,0,0,.06); border-radius:6px; height:14px; overflow:hidden; }
-.pbarra span { display:block; height:100%; border-radius:6px; }
-.pval { font-size:.8rem; font-weight:700; color:#374151; text-align:right; }
-@media (max-width: 640px) {
-  .pfila { grid-template-columns:minmax(64px,34%) 1fr 28px; gap:6px; }
-  .pnom { font-size:.74rem; }
-}
-
-/* ---------- Resumen ejecutivo de puerto/aeropuerto (filtro clicable) ----------
-   El contador vive en el propio botón del filtro (Todos · N, Sin declarar · N)
-   y clicarlo filtra el detalle de abajo: el número no es solo para mirar,
-   también sirve para llegar al embarque. */
-.ejec-detalle { border:1px solid var(--ant-borde); border-radius:10px; overflow:hidden; margin-top:8px; }
-.ejec-detalle .atttl { padding:8px 14px; background:#F9FAFB; border-bottom:1px solid var(--ant-borde);
-                        font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em;
-                        color:#6B7280; font-weight:700; margin-bottom:0; }
-.ejec-detalle .atfila { padding:7px 14px; }
-@media (max-width: 640px) {
-  .ejec-detalle .atmonto { margin-left:0; }
-}
-
-.atttl { font-size:.72rem; text-transform:uppercase; letter-spacing:.04em;
-         color:#6B7280; margin-bottom:6px; }
-.atfila { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px;
-          padding:5px 0; border-bottom:1px dotted rgba(0,0,0,.08); font-size:.82rem; }
-.atfila:last-child { border-bottom:0; }
-.atbl { font-weight:700; color:#111827; }
-.atoc { font-size:.74rem; color:#4B5563; background:rgba(0,0,0,.05);
-        border-radius:5px; padding:1px 6px; }
-.atoc.atsin { color:#92400E; background:rgba(146,64,14,.10); }
-.atdias { color:#4B5563; }
-.atmonto { margin-left:auto; font-weight:700; color:#991B1B; white-space:nowrap;
-           text-align:right; }
-.atresto { color:#6B7280; font-style:italic; }
-
-/* ---------- Chips de resumen por etapa ---------- */
-.chips { display:flex; flex-wrap:wrap; gap:8px; margin:4px 0 10px 0; }
-.chip { display:inline-flex; align-items:center; gap:7px; background:#fff;
-        border:1px solid var(--ant-borde); border-radius:999px; padding:6px 13px;
-        font-size:0.82rem; color:#374151; }
-.chip b { font-size:0.98rem; color:#111827; }
-.chip.on { border-color:#F0B90B; background:#FFFBEB; }
-
-.alerta-fila { display:flex; gap:10px; align-items:baseline; padding:3px 0;
-               font-size:0.87rem; color:#1F2937; flex-wrap:wrap; }
-
-/* ---------- Diagrama de flujo (HTML puro, sin Plotly) ---------- */
-.flujo { display:flex; align-items:flex-start; margin:8px 0 4px 0; }
-.paso { flex:1 1 0; min-width:0; position:relative; display:flex; flex-direction:column;
-        align-items:center; text-align:center; padding:0 2px; }
-.paso::before { content:""; position:absolute; top:15px; left:-50%; width:100%; height:3px;
-                background:var(--ant-borde); z-index:0; }
-.paso:first-child::before { display:none; }
-.paso.hecho::before, .paso.actual::before { background:var(--ant-hecho); }
-.paso .pt { width:32px; height:32px; border-radius:50%; display:flex; align-items:center;
-            justify-content:center; background:#E5E7EB; font-size:15px; z-index:1;
-            border:2px solid #fff; box-shadow:0 0 0 1px #E5E7EB; }
-.paso.hecho .pt { background:var(--ant-hecho); box-shadow:0 0 0 1px var(--ant-hecho); }
-.paso.actual .pt { background:var(--ant-actual); box-shadow:0 0 0 3px #FEF3C7; }
-.paso .et { font-size:0.68rem; color:#6B7280; margin-top:6px; line-height:1.2; }
-.paso.actual .et { color:#111827; font-weight:700; }
-.paso .fch { font-size:0.66rem; color:#9CA3AF; }
-.flujo-cabeza { display:flex; justify-content:space-between; align-items:baseline;
-                gap:10px; flex-wrap:wrap; }
-.flujo-bl { font-weight:700; color:#111827; }
-.flujo-desc { color:#6B7280; font-size:0.86rem; }
-.contador { display:inline-block; font-size:0.76rem; color:#4B5563; background:#F3F4F6;
-            border-radius:6px; padding:2px 8px; margin:2px 6px 2px 0; }
-.contador.ojo { background:#FEF3C7; color:#92400E; font-weight:700; }
-.contador.mal { background:#FEE2E2; color:#991B1B; font-weight:800;
-                box-shadow:inset 0 0 0 1px #FCA5A5; }
-.contador.cerrado.ojo { background:#FFFBEB; box-shadow:inset 0 0 0 1px #FCD34D; font-weight:600; }
-.contador.cerrado.mal { background:#FFF; box-shadow:inset 0 0 0 1px #FCA5A5; font-weight:700; }
-.contador.bien { background:#DCFCE7; color:#166534; font-weight:600; }
-
-/* ---------- Lista de embarques: UN solo markup ----------
-   Desktop: grid de 7 columnas (se ve como tabla).
-   Celular (<=640px): cada fila se convierte en tarjeta y cada celda
-   muestra su etiqueta vía data-l. Sin duplicar el DOM.            */
-.lista { border:1px solid var(--ant-borde); border-radius:12px; overflow:hidden;
-         box-shadow:0 1px 4px rgba(17,24,39,0.06); background:#fff; }
-.fila-head, .fila {
-    display:grid;
-    grid-template-columns: 1.15fr 1.45fr 1.25fr 0.75fr 0.9fr 0.85fr 1.15fr;
-    gap:10px; align-items:center;
-}
-.fila-head { padding:10px 18px; font-size:0.67rem; text-transform:uppercase; letter-spacing:0.05em;
-             color:#9CA3AF; background:#F9FAFB; border-bottom:1px solid var(--ant-borde); }
-.fila { padding:12px 18px; font-size:0.87rem; background:#fff;
-        border-bottom:1px solid #F3F4F6; border-left:4px solid #6B7280; }
-.fila:last-child { border-bottom:none; }
-.c-bl { font-weight:700; color:var(--ant-texto); word-break:break-all; }
-.c-suave { color:var(--ant-suave); }
-.c-ref { font-weight:500; font-size:0.78rem; color:var(--ant-suave);
-         margin-top:2px; letter-spacing:0.2px; }
-.badge { display:inline-block; padding:3px 11px; border-radius:999px;
-         font-size:0.73rem; font-weight:700; color:#fff; white-space:nowrap; }
-.badge.linea { background:#fff !important; color:#4B5563; border:1px solid var(--ant-borde); }
-
-/* Ficha completa de un embarque */
-.ficha { border:1px solid var(--ant-borde); border-radius:12px; overflow:hidden; background:#fff; }
-.ficha-fila { display:grid; grid-template-columns: 210px 1fr; gap:12px;
-              padding:9px 16px; border-bottom:1px solid #F3F4F6; font-size:0.9rem; }
-.ficha-fila:last-child { border-bottom:none; }
-.ficha-k { color:#9CA3AF; font-size:0.72rem; text-transform:uppercase; letter-spacing:0.04em;
-           font-weight:700; padding-top:2px; }
-.ficha-v { color:#1F2937; font-weight:600; word-break:break-word; }
-.vacio { padding:26px 18px; text-align:center; color:var(--ant-suave); font-size:0.9rem; background:#fff; }
-
-/* ---------- Selector de sección / categoría ---------- */
-div[data-testid="stButtonGroup"] button {
-    border-radius:8px !important; border:1px solid var(--ant-borde) !important;
-    color:#4B5563 !important; font-weight:600 !important;
-}
-div[data-testid="stButtonGroup"] button:hover { background:#F3F7FC !important; color:#0C447C !important; }
-div[data-testid="stButtonGroup"] button[aria-checked="true"],
-div[data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"],
-div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"],
-div[data-testid="stButtonGroup"] button[aria-selected="true"] {
-    background:#DCEBFA !important; color:#0C447C !important;
-    border:1px solid #2E86DE !important; box-shadow:none !important;
-}
-div[data-testid="stButtonGroup"] button[aria-checked="true"] p,
-div[data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"] p,
-div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"] p { color:#0C447C !important; }
-
-/* Botones primarios (Entrar, Guardar, Confirmar): azul del tablero */
-button[kind="primary"], button[data-testid="stBaseButton-primary"],
-button[data-testid="stBaseButton-primaryFormSubmit"] {
-    background:#2E86DE !important; border-color:#2E86DE !important; color:#ffffff !important;
-}
-button[kind="primary"]:hover, button[data-testid="stBaseButton-primary"]:hover,
-button[data-testid="stBaseButton-primaryFormSubmit"]:hover {
-    background:#256FB8 !important; border-color:#256FB8 !important; color:#fff !important;
-}
-
-/* Impresión: una hoja limpia para llevar a reunión. */
-@media print {
-    [data-testid="stSidebar"], [data-testid="stToolbar"], [data-testid="stHeader"],
-    .stButton, .stDownloadButton, [data-testid="stExpander"], .solo-pantalla,
-    [data-testid="stTextInput"], [data-testid="stSelectbox"], [data-testid="stAlert"],
-    [data-testid="stButtonGroup"], [data-testid="stNumberInput"], [data-testid="stDateInput"],
-    [data-testid="stMultiSelect"], [data-testid="stRadio"], [data-testid="stCheckbox"],
-    [data-testid="stFileUploader"] {
-        display:none !important;
-    }
-    .block-container { padding:0 !important; max-width:100% !important; }
-    .lista { border:1px solid #999; box-shadow:none; }
-    .fila { break-inside:avoid; }
-    .flujo { break-inside:avoid; }
-    .badge, .kpi-card, .paso .pt, .pago-chip, .pago-estado, .chip, .contador, .resumen,
-    .stMarkdown div[style*="linear-gradient"] { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-}
-
-/* ==========================================================================
-   CELULAR (iOS y Android). Tres cosas que rompían la experiencia:
-   1) Safari hace zoom automático al enfocar un input de menos de 16px.
-   2) Los botones de Streamlit quedan por debajo de los 44px que Apple pide
-      como área táctil mínima; con dedo grande se falla el clic.
-   3) Cinco columnas de KPI en una pantalla de 380px son ilegibles.
-   ========================================================================== */
-@media (max-width: 820px) {
-    input, textarea, select,
-    .stTextInput input, .stNumberInput input, .stDateInput input,
-    div[data-baseweb="input"] input, div[data-baseweb="select"] input {
-        font-size:16px !important;
-    }
-}
-@media (max-width: 720px) {
-    .block-container { padding-left:0.8rem !important; padding-right:0.8rem !important; }
-    .stButton button, .stDownloadButton button,
-    div[data-testid="stButtonGroup"] button { min-height:44px !important; }
-    div[data-testid="stButtonGroup"] { flex-wrap:wrap !important; gap:6px !important; }
-
-    .stTextInput input, .stNumberInput input, .stDateInput input,
-    div[data-baseweb="select"] > div { min-height:44px !important; }
-
-    div[class*="st-key-kpirow_"] div[data-testid="stHorizontalBlock"],
-    div[class*="st-key-pagokpirow"] div[data-testid="stHorizontalBlock"],
-    div[class*="st-key-bikpirow"] div[data-testid="stHorizontalBlock"] {
-        display:flex !important; flex-direction:row !important; flex-wrap:wrap !important; gap:8px !important;
-    }
-    div[class*="st-key-kpirow_"] div[data-testid="stColumn"],
-    div[class*="st-key-kpirow_"] div[data-testid="column"],
-    div[class*="st-key-pagokpirow"] div[data-testid="stColumn"],
-    div[class*="st-key-pagokpirow"] div[data-testid="column"],
-    div[class*="st-key-bikpirow"] div[data-testid="stColumn"],
-    div[class*="st-key-bikpirow"] div[data-testid="column"] {
-        flex:1 1 calc(50% - 8px) !important; min-width:calc(50% - 8px) !important;
-        width:calc(50% - 8px) !important;
-    }
-}
-@media (max-width: 640px) {
-    .fila-head { display:none; }
-    .lista { border:none; box-shadow:none; background:transparent; }
-    .fila { display:block; border:1px solid var(--ant-borde); border-left-width:5px;
-            border-radius:12px; margin-bottom:10px; padding:13px 16px;
-            box-shadow:0 1px 4px rgba(17,24,39,0.06); }
-    .fila > div { padding:2px 0; }
-    .fila > div[data-l]:not(.c-bl):not(.c-badge)::before {
-        content: attr(data-l) ": "; font-size:0.68rem; text-transform:uppercase;
-        letter-spacing:0.04em; color:#9CA3AF; font-weight:700;
-    }
-    .c-bl { font-size:1.0rem; margin-bottom:2px; }
-    .ant-title { font-size:1.55rem; }
-    .kpi-value { font-size:1.55rem; }
-    .ficha-fila { grid-template-columns:1fr; gap:2px; }
-
-    .flujo { flex-direction:column; }
-    .paso { flex-direction:row; align-items:center; text-align:left; gap:10px; padding:4px 0; }
-    .paso::before { top:-10px; left:15px; width:3px; height:22px; }
-    .paso .et { margin-top:0; font-size:0.84rem; }
-    .paso .fch { font-size:0.74rem; }
-}
-@media (min-width:641px) and (max-width:820px) {
-    .fila-head, .fila { gap:6px; padding-left:12px; padding-right:12px; }
-    .badge { font-size:0.68rem; padding:3px 8px; }
-}
-@media (min-width:721px) and (max-width:820px) {
-    .stButton button, .stDownloadButton button,
-    div[data-testid="stButtonGroup"] button { min-height:44px !important; }
-    .stTextInput input, .stNumberInput input, .stDateInput input,
-    div[data-baseweb="select"] > div { min-height:44px !important; }
-}
-@media (max-width:720px) {
-    div[class*="st-key-pagokpi_"] button p:last-of-type { font-size:1.05rem !important; }
-    .block-container { padding-left:calc(0.8rem + env(safe-area-inset-left,0px)) !important;
-                       padding-right:calc(0.8rem + env(safe-area-inset-right,0px)) !important; }
-}
-@media (max-width:820px) {
-    .block-container { padding-top:4rem; }
-}
-.badge { text-shadow:0 1px 2px rgba(0,0,0,0.35); }
-button, a, div[data-testid="stButtonGroup"] button { -webkit-tap-highlight-color:rgba(12,68,124,0.08); }
-</style>
-"""
+def es_llego_si(valor) -> bool:
+    """True solo si la casilla dice SI. Tolera 'si', 'Sí', 'SÍ', espacios."""
+    return _norm(valor) in {"si", "s", "yes", "y"}
 
 
-def html_atraso_puerto(df, contexto: str = "") -> None:
-    """Filtro clicable de lo que está parado en puerto/aeropuerto: el contador
-    vive en el propio botón (Todos · N, Sin declarar · N) y clicarlo filtra el
-    detalle de abajo, así el número también sirve para llegar al embarque.
-
-    Ya no muestra dinero. El costo de la demora no se estima con una tarifa por
-    día —varía por naviera, terminal, volumen y espacio— sino que se observa
-    comparando estimado contra pagado, y eso vive en el módulo de Estatus de
-    Pago. Mostrar aquí un peso calculado con una tarifa inventada era peor que
-    no mostrar nada.
-
-    Tampoco queda la pestaña "Atrasados": comparaba los días en puerto contra
-    un umbral fijo, igual para barco y avión, que no correspondía a ningún
-    plazo real. El único corte que este dato sostiene es declarado / sin
-    declarar.
-
-    `contexto` distingue el filtro cuando el mismo bloque aparece en más de una
-    vista: sin esto, el estado de un filtro se pisaría con el de otro."""
-    r = resumen_atraso_puerto(df)
-    if not r["n_puerto"]:
-        return
-
-    clave_estado = f"filtro_puerto_{_slug_css(contexto)}"
-    clave_click = f"filtro_puerto_click_{_slug_css(contexto)}"
-    actual = st.session_state.get(clave_estado, "todos")
-
-    opciones = [
-        ("todos", f'Todos · {r["n_puerto"]}', "#0C447C"),
-        ("sin_declarar", f'Sin declarar · {r["n_sin_declarar"]}', "#B45309"),
-    ]
-
-    slug_ctx = _slug_css(contexto)
-    estilos = "".join(
-        f'.st-key-fpuerto_{slug_ctx}_{op} button {{'
-        f'border:1.5px solid {color} !important; border-radius:999px !important;'
-        f'background:{color if actual == op else "#fff"} !important;'
-        f'font-weight:700 !important;}} '
-        f'.st-key-fpuerto_{slug_ctx}_{op} button p {{'
-        f'color:{"#fff" if actual == op else color} !important;}} '
-        for op, _, color in opciones
-    )
-    st.markdown(f"<style>{estilos}</style>", unsafe_allow_html=True)
-
-    cols = st.columns(len(opciones))
-    for col, (op, etiqueta, _color) in zip(cols, opciones):
-        with col:
-            with st.container(key=f"fpuerto_{slug_ctx}_{op}"):
-                if st.button(etiqueta, key=f"btn_{clave_estado}_{op}", width="stretch"):
-                    st.session_state[clave_estado] = op
-                    st.session_state[clave_click] = True
-                    rerun_fragmento()
-
-    st.caption(f"Promedio: {r['dias_promedio']:.0f} días en puerto/aeropuerto")
-
-    # El detalle se queda oculto hasta que se clickee alguno de los botones de
-    # arriba, aunque sea "Todos": antes se desplegaba de una vez y era la tabla
-    # más larga de la pantalla sin que nadie la hubiera pedido todavía.
-    if not st.session_state.get(clave_click, False):
-        return
-
-    detalle = r["detalle"]
-    if actual == "sin_declarar":
-        detalle = [d for d in detalle if d["sin_declarar"]]
-
-    if not detalle:
-        st.caption("No hay embarques que coincidan con este filtro.")
-        return
-
-    filas = []
-    for d in detalle[:10]:
-        ref = esc(d["bl"]) or "&mdash;"
-        oc = (f' <span class="atoc">OC {esc(d["oc"])}</span>' if d["oc"]
-              else ' <span class="atoc atsin">sin OC</span>')
-        # d["lugar"] sale de la Via_Transporte real de ESA fila (lugar_de en
-        # logica.py): un embarque aéreo dice "aeropuerto" aquí aunque su
-        # Categoria del Sheet no sea "Aéreos", y viceversa.
-        estado = ('<span class="atmonto">Sin declarar</span>' if d["sin_declarar"]
-                  else '<span class="atmonto" style="color:#4B5563;">Declarado</span>')
-        filas.append(
-            f'<div class="atfila">'
-            f'<span class="atbl">{ref}</span>{oc}'
-            f'<span class="atdias">{d["dias"]} días en {d["lugar"]}</span>'
-            f'{estado}</div>'
-        )
-    resto = len(detalle) - 10
-    if resto > 0:
-        filas.append(f'<div class="atfila atresto">y {resto} más</div>')
-
-    st.markdown(
-        '<div class="ejec-detalle"><div class="atttl" style="text-align:center;">'
-        'Detenidos en puerto/aeropuerto</div>' + "".join(filas) + "</div>",
-        unsafe_allow_html=True,
-    )
+def es_llego_no(valor) -> bool:
+    """True solo si se verificó explícitamente que NO llegó. Vacío no es NO:
+    vacío significa que nadie ha revisado, y son cosas distintas."""
+    return _norm(valor) in {"no", "n"}
 
 
-def rerun_fragmento():
-    """st.rerun(scope="fragment") solo es válido cuando el rerun lo disparó un
-    widget que vive dentro del fragmento; si no, Streamlit lanza una excepción.
-    Esta envoltura cae al rerun normal en ese caso. (RerunException hereda de
-    BaseException, así que el except Exception no se traga el rerun bueno.)"""
+@st.cache_resource
+def sla_etapas() -> dict:
+    """Umbrales de días por etapa. Se pueden ajustar desde Streamlit Secrets sin
+    tocar código:  [sla]  llegada_a_puerto = 4  /  recepcion_y_declaracion = 3 ..."""
+    valores = dict(SLA_ETAPA_DEFECTO)
+    valores["__retraso__"] = SLA_RETRASO_DEFECTO
     try:
-        st.rerun(scope="fragment")
+        cfg = st.secrets.get("sla", None) or {}
+        for etapa in SLA_ETAPA_DEFECTO:
+            clave = _slug_css(etapa)
+            if clave in cfg:
+                valores[etapa] = int(cfg[clave])
+        if "retraso" in cfg:
+            valores["__retraso__"] = int(cfg["retraso"])
     except Exception:
-        st.rerun()
+        pass
+    return valores
+
+
+# --- Fechas -----------------------------------------------------------------
+EPOCH_SHEETS = date(1899, 12, 30)
+
+
+_MESES_EN = ["january", "february", "march", "april", "may", "june",
+             "july", "august", "september", "october", "november", "december"]
+
+
+_MESES_TEXTO = {}
+for _n, _nombre_es in MESES_ES.items():
+    _MESES_TEXTO[_norm(_nombre_es)] = _n
+    _MESES_TEXTO[MESES_ES_CORTO[_n]] = _n
+for _i, _nombre_en in enumerate(_MESES_EN, start=1):
+    _MESES_TEXTO[_nombre_en] = _i
+    _MESES_TEXTO[_nombre_en[:3]] = _i
+_MESES_TEXTO.update({"setiembre": 9, "set": 9, "sept": 9, "sep": 9, "ene": 1, "abr": 4, "dic": 12})
+
+
+_SEPARADORES = re.compile(r"[\s/\\\-\.,;_|]+")
+
+
+_ORDINALES = re.compile(r"^(\d+)(ro|er|ero|do|to|mo|vo|no|st|nd|rd|th)$")
+
+
+_RELLENO = {"de", "del", "dia", "el", "la", "los", "las", "ano", "a", "al", "of", "the"}
+
+
+def _tokenizar_fecha(texto: str) -> list:
+    """Parte cualquier forma de escribir una fecha en tres piezas. Tolera
+    separadores mezclados, palabras de relleno y ordinales:
+    '02-05-2026', '6 de julio 2026', 'julio 28 del 2026', '1ro de mayo/2026'."""
+    base = _norm(texto).split(" 00:00:00")[0]
+    tokens = []
+    for pieza in _SEPARADORES.split(base):
+        pieza = pieza.strip("º°ª'\"()[]")
+        pieza = _ORDINALES.sub(r"\1", pieza)
+        if pieza and pieza not in _RELLENO:
+            tokens.append(pieza)
+    return tokens
+
+
+def _normalizar_anio(n: int) -> int:
+    """Año de dos dígitos -> siglo razonable. '26' es 2026, no 26 d.C."""
+    if n >= 100:
+        return n
+    return 2000 + n if n < 80 else 1900 + n
+
+
+def _interpretar_tokens(tokens: list, dia_primero: bool = True):
+    """Devuelve (dia, mes, anio, ambigua) o None. 'ambigua' es True solo cuando
+    día y mes son ambos <= 12 y están escritos en número, que es el único caso
+    donde el orden realmente no se puede deducir."""
+    if len(tokens) != 3:
+        return None
+
+    for i, t in enumerate(tokens):
+        mes = _MESES_TEXTO.get(t) or _MESES_TEXTO.get(t[:3]) if not t.isdigit() else None
+        if mes:
+            resto = [tokens[j] for j in range(3) if j != i]
+            if not all(r.isdigit() for r in resto):
+                return None
+            a, b = int(resto[0]), int(resto[1])
+            if len(resto[0]) == 4 or a > 31:
+                anio, dia = a, b
+            else:
+                dia, anio = a, b
+            return dia, mes, _normalizar_anio(anio), False
+
+    if not all(t.isdigit() for t in tokens):
+        return None
+    a, b, c = (int(t) for t in tokens)
+
+    if len(tokens[0]) == 4:                      # 2026-08-25
+        return c, b, a, False
+
+    anio = _normalizar_anio(c)                   # año al final
+    if a > 12 and b <= 12:
+        return a, b, anio, False
+    if b > 12 and a <= 12:
+        return b, a, anio, False
+    if a <= 12 and b <= 12:
+        dia, mes = (a, b) if dia_primero else (b, a)
+        return dia, mes, anio, True
+    return None
+
+
+def _fecha_de_tokens(tokens: list, dia_primero: bool = True):
+    resultado = _interpretar_tokens(tokens, dia_primero)
+    if resultado is None:
+        return None
+    dia, mes, anio, _ = resultado
+    try:
+        return date(anio, mes, dia)
+    except ValueError:
+        return None
+
+
+@lru_cache(maxsize=8192)
+def _parsear_texto(texto: str):
+    """Parte de texto del parser, cacheada: enriquecer() y el render recorren
+    las mismas cadenas decenas de veces por refresco."""
+    try:
+        return datetime.strptime(texto[:10], "%Y-%m-%d").date()
+    except ValueError:
+        pass
+
+    solo_digitos = texto.replace(",", "").replace(" ", "")
+    if solo_digitos.replace(".", "", 1).isdigit():
+        entero = solo_digitos.split(".")[0]
+        if len(entero) == 8:  # 20260825
+            try:
+                return datetime.strptime(entero, "%Y%m%d").date()
+            except ValueError:
+                pass
+        try:
+            numero = int(float(solo_digitos))
+        except (ValueError, OverflowError):
+            return None
+        # Rango de seriales plausibles de Sheets/Excel (aprox. 1954 a 2119).
+        if 20000 <= numero <= 80000:
+            return EPOCH_SHEETS + timedelta(days=numero)
+        return None
+
+    return _fecha_de_tokens(_tokenizar_fecha(texto), dia_primero=True)
+
+
+def parsear_fecha(valor):
+    """Convierte a date lo que sea que venga del Sheet, del Excel o tecleado a mano:
+    date/datetime, ISO (2026-08-25), compacto (20260825), dd/mm/aaaa, dd-mm-aa,
+    aaaa/mm/dd, mes en texto en español o inglés ('6 de julio 2026', '28-Jul-26')
+    y seriales numéricos de Sheets/Excel (46181). Ante un número puro ambiguo
+    (02-05-2026) asume día/mes, la convención local."""
+    if valor is None:
+        return None
+    if isinstance(valor, datetime):
+        return valor.date()
+    if isinstance(valor, date):
+        return valor
+    if isinstance(valor, (int, float)) and not isinstance(valor, bool):
+        try:
+            return EPOCH_SHEETS + timedelta(days=int(valor))
+        except (ValueError, OverflowError):
+            return None
+    texto = str(valor).strip()
+    if not texto:
+        return None
+    return _parsear_texto(texto)
+
+
+def formato_eta(valor) -> str:
+    """Cómo se muestra una fecha en pantalla: '25 ago 2026'. Si no se pudo
+    parsear, devuelve el texto crudo para que se vea que ese dato está sucio."""
+    f = parsear_fecha(valor)
+    if f is None:
+        crudo = str(valor).strip()
+        return crudo if crudo else "—"
+    return f"{f.day:02d} {MESES_ES_CORTO[f.month]} {f.year}"
+
+
+def fecha_llegada_fila(fila) -> date | None:
+    """Fecha de llegada a puerto de una fila (dict o Series de pandas).
+
+    Es el ETA, pero SOLO si alguien confirmó la llegada con SI. Sin confirmar
+    devuelve None, y eso es deliberado: es lo que impide que un embarque que
+    todavía está navegando empiece a acumular días en puerto —y, más adelante,
+    sobrecosto por demora— solo porque su ETA ya venció."""
+    try:
+        obtener = fila.get
+    except AttributeError:
+        return None
+    llego = obtener(COL_LLEGO, "")
+    if not es_llego_si(llego):
+        return None
+    return parsear_fecha(obtener(COL_ETA, ""))
 
 
 # ---------------------------------------------------------------------------
-# COMPONENTES DE UI
+# CAPA GOOGLE SHEETS
 # ---------------------------------------------------------------------------
-@st.cache_data(show_spinner=False)
-def _logo_base64() -> str:
-    """Si existe assets/logo.png (o .jpg) en el repo, se muestra en el encabezado.
-    Si no, la app sigue con el ícono vectorial: no se inventa un logo."""
-    for nombre in ("assets/logo.png", "assets/logo.jpg", "assets/logo.jpeg", "logo.png"):
-        ruta = Path(nombre)
-        if ruta.exists():
-            tipo = "jpeg" if ruta.suffix.lower() in (".jpg", ".jpeg") else "png"
-            return f"data:image/{tipo};base64," + base64.b64encode(ruta.read_bytes()).decode()
+@st.cache_resource
+def get_spreadsheet():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"], scopes=scopes
+    )
+    client = gspread.authorize(creds)
+    return client.open_by_key(st.secrets["SHEET_ID"])
+
+
+def _codigo_api(e) -> int:
+    """Código HTTP de un APIError de gspread, sin asumir la forma del objeto."""
+    try:
+        return int(e.response.status_code)
+    except Exception:
+        pass
+    try:
+        return int(e.args[0].get("code", 0))
+    except Exception:
+        return 0
+
+
+def _con_reintento(fn, intentos: int = REINTENTOS_API):
+    """Reintenta ante 429 (cuota) y 5xx (fallo temporal de Google) con espera
+    creciente. Con cuatro personas trabajando a la vez la cuota se toca, y antes
+    eso era un error rojo en pantalla en medio de una carga."""
+    ultimo = None
+    for intento in range(intentos):
+        try:
+            return fn()
+        except gspread.exceptions.APIError as e:
+            codigo = _codigo_api(e)
+            if codigo in (429, 500, 502, 503) and intento < intentos - 1:
+                time.sleep(2 * (2 ** intento))
+                ultimo = e
+                continue
+            raise
+    if ultimo:
+        raise ultimo
+
+
+@st.cache_resource
+def _indice_hojas() -> dict:
+    """Mapa nombre-normalizado -> Worksheet, con UNA sola llamada de metadata.
+    Antes, cada get_worksheet() disparaba una llamada a la API."""
+    return {_norm(h.title): h for h in _con_reintento(lambda: get_spreadsheet().worksheets())}
+
+
+def get_worksheet(nombre: str):
+    return _indice_hojas().get(_norm(nombre))
+
+
+def _refrescar_estructura():
+    _indice_hojas.clear()
+    _headers.clear()
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _headers(titulo_hoja: str) -> list:
+    ws = get_worksheet(titulo_hoja)
+    if ws is None:
+        return []
+    return _con_reintento(lambda: ws.row_values(1))
+
+
+def _columna_indice(headers: list, nombre: str):
+    """Posición 1-indexada de una columna, tolerando acentos, mayúsculas y
+    diferencias de espacios/guion bajo/barra en el nombre."""
+    return next((i + 1 for i, h in enumerate(headers) if _norm_encabezado(h) == _norm_encabezado(nombre)), None)
+
+
+def marca_ahora() -> str:
+    """Sello que se estampa en Fecha_Actualizacion cada vez que alguien carga o
+    modifica información. Lleva hora, no solo fecha, porque es lo que el tablero
+    muestra como 'información actualizada'."""
+    return ahora_rd().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def parsear_marca(valor):
+    """Lee un sello de Fecha_Actualizacion como datetime. Acepta los registros
+    viejos que solo tienen fecha (se asumen a medianoche)."""
+    texto = "" if valor is None else str(valor).strip()
+    if not texto:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(texto, fmt)
+        except ValueError:
+            continue
+    f = parsear_fecha(texto)
+    return datetime(f.year, f.month, f.day) if f else None
+
+
+def _fila_desde_dict(headers: list, datos: dict) -> list:
+    """Arma la fila respetando el orden REAL de columnas de la pestaña y
+    tolerando diferencias de acento/mayúsculas/espacios en los encabezados."""
+    normalizado = {_norm_encabezado(k): v for k, v in datos.items()}
+    return [normalizado.get(_norm_encabezado(h), "") for h in headers]
+
+
+def _asegurar_columnas(ws, nombres: list) -> list:
+    """Agrega de una sola vez las columnas que falten (una llamada, no una por
+    columna). Devuelve la lista final de encabezados.
+
+    OJO al mantener el Sheet a mano: si borras una columna que la app escribe,
+    esta función la vuelve a crear (vacía, al final) la próxima vez que alguien
+    guarde. Para eliminar una columna de verdad hay que quitarla también de las
+    constantes de arriba y desplegar, y solo después borrarla del Sheet.
+
+    Por eso las columnas opcionales por categoría (Modelo_Serie, OC, EE,
+    CLIENTE / STOCK, Fecha_Salida) nunca se pasan a esta función 'por si
+    acaso': solo cuando traen un valor real. Así Carga Suelta no termina con una
+    columna Modelo_Serie vacía que nadie pidió."""
+    headers = _headers(ws.title)
+    existentes = {_norm_encabezado(h) for h in headers}
+    faltan = []
+    for n in nombres:
+        if _norm_encabezado(n) not in existentes and _norm_encabezado(n) not in {_norm_encabezado(f) for f in faltan}:
+            faltan.append(n)
+    if not faltan:
+        return headers
+    inicio = len(headers) + 1
+    fin = inicio + len(faltan) - 1
+    # values.update NO agranda la cuadrícula: si la pestaña tiene menos
+    # columnas que `fin`, la API responde 400 ("exceeds grid limits") y no se
+    # escribe nada. Las pestañas creadas por la app nacen con la cuadrícula
+    # JUSTA (cols=len(esquema) al crearlas), así que cualquier columna que se
+    # agregue al esquema después —como Prioridad en v4.1— cae fuera de la
+    # cuadrícula y hay que agrandarla antes de escribir el encabezado.
+    if ws.col_count < fin:
+        _con_reintento(lambda: ws.add_cols(fin - ws.col_count))
+    rango = f"{rowcol_to_a1(1, inicio)}:{rowcol_to_a1(1, fin)}"
+    _con_reintento(lambda: ws.update(range_name=rango, values=[faltan], value_input_option="RAW"))
+    # Solo esta pestaña cambió: limpiar el caché completo de _headers (como se
+    # hacía antes) obligaba a releer por API los encabezados de TODAS las
+    # demás pestañas la próxima vez que alguien las pidiera dentro del TTL,
+    # aunque no se hubieran tocado.
+    _headers.clear(ws.title)
+    return headers + faltan
+
+
+def _localizar_fila(ws, bl: str, fila_sugerida=None):
+    """Ubica la fila de un BL dentro de una pestaña. Devuelve (fila, error).
+
+    Antes se usaba ws.find(BL), que devuelve la PRIMERA coincidencia. Con dos
+    embarques parciales del mismo BL, la app editaba, archivaba o borraba la
+    fila equivocada en silencio. Ahora la pantalla manda el número de fila que
+    está mostrando y aquí se verifica contra el Sheet: si esa fila sigue
+    teniendo ese BL, se usa; si el Sheet cambió y solo hay una coincidencia, se
+    usa esa; si hay varias y ninguna es la sugerida, NO se escribe nada."""
+    if ws is None:
+        return None, "No se encontró la pestaña en el Google Sheet."
+    headers = _headers(ws.title)
+    columna = _columna_indice(headers, COL_BL)
+    if columna is None:
+        return None, f"La pestaña '{ws.title}' no tiene columna {COL_BL}."
+    try:
+        valores = _con_reintento(lambda: ws.col_values(columna))
+    except gspread.exceptions.APIError as e:
+        return None, f"Google Sheets no respondió al buscar el BL ({e})."
+
+    objetivo = _norm(bl)
+    coincidencias = [i + 1 for i, v in enumerate(valores) if i >= 1 and _norm(v) == objetivo]
+    if not coincidencias:
+        return None, (f"El BL '{bl}' ya no está en '{ws.title}'. Puede que otra persona lo haya "
+                      "archivado, movido o editado. Actualiza los datos y vuelve a intentarlo.")
+    try:
+        sugerida = int(fila_sugerida) if fila_sugerida else 0
+    except (TypeError, ValueError):
+        sugerida = 0
+    if sugerida in coincidencias:
+        return sugerida, ""
+    if len(coincidencias) == 1:
+        return coincidencias[0], ""
+    return None, (f"Hay {len(coincidencias)} filas con el BL '{bl}' en '{ws.title}' (filas "
+                  f"{', '.join(str(c) for c in coincidencias)}) y la pantalla está desactualizada, "
+                  "así que la app no puede saber cuál tocar. Pulsa 'Actualizar datos' y repite la acción.")
+
+
+def _leer_fila(ws, fila: int, headers: list) -> dict:
+    """Contenido completo de una fila como {encabezado: valor}."""
+    valores = _con_reintento(lambda: ws.row_values(fila)) or []
+    valores += [""] * (len(headers) - len(valores))
+    return {h: valores[i] for i, h in enumerate(headers)}
+
+
+def _conflicto_sello(fila_norm: dict, sello_esperado, que: str = "embarque") -> str:
+    """Bloqueo optimista (mismo patrón de actualizar_embarque): si la pantalla
+    trae el sello de Fecha_Actualizacion que vio y el de la fila recién leída
+    difiere, otra persona la tocó mientras tanto. Devuelve el mensaje de
+    conflicto o "" si no hay sello que verificar o coincide."""
+    if sello_esperado is None:
+        return ""
+    sello_actual = str(fila_norm.get(_norm_encabezado(COL_ACTUALIZACION), "")).strip()
+    if sello_actual == str(sello_esperado).strip():
+        return ""
+    autor = str(fila_norm.get(_norm_encabezado(COL_ACTUALIZADO_POR), "")).strip() or "otra persona"
+    return (f"{autor} modificó este {que} el {sello_actual}, después de que abriste esta "
+            "pantalla. Actualiza los datos y revisa antes de guardar.")
+
+
+def _verificar_fila_bl(ws, fila: int, bl_esperado: str) -> bool:
+    """Relee la celda BL de `fila` (una llamada) justo antes de borrarla:
+    confirma que la fila sigue siendo la del BL que la pantalla mostró."""
+    headers = _headers(ws.title)
+    columna = _columna_indice(headers, COL_BL)
+    if columna is None:
+        return False
+    valor = _con_reintento(lambda: ws.cell(fila, columna).value)
+    return _norm(valor or "") == _norm(bl_esperado)
+
+
+def _bls_existentes(ws) -> set:
+    """Lectura viva de la columna BL de la pestaña (normalizados)."""
+    headers = _headers(ws.title)
+    columna = _columna_indice(headers, COL_BL)
+    if columna is None:
+        return set()
+    valores = _con_reintento(lambda: ws.col_values(columna)) or []
+    return {_norm(v) for v in valores[1:] if str(v).strip()}
+
+
+def _df_desde_valores(valores: list, columnas_canonicas: list) -> pd.DataFrame:
+    """Convierte la matriz cruda de una pestaña en DataFrame. Las columnas
+    conocidas se renombran al nombre canónico (resolviendo acentos y mayúsculas);
+    las demás se conservan tal cual, para que agregar una columna nueva en Google
+    Sheets baste para que la app la reconozca sin cambiar código."""
+    if not valores or not valores[0]:
+        return pd.DataFrame(columns=columnas_canonicas)
+    headers_reales = [str(h) for h in valores[0]]
+    ancho = len(headers_reales)
+    filas = [(list(f) + [""] * ancho)[:ancho] for f in valores[1:]]
+
+    vistos, limpios = {}, []
+    for i, h in enumerate(headers_reales):
+        nombre = h.strip() or f"Columna {i + 1}"
+        if _norm(nombre) in vistos:
+            vistos[_norm(nombre)] += 1
+            nombre = f"{nombre} ({vistos[_norm(nombre)]})"
+        else:
+            vistos[_norm(nombre)] = 1
+        limpios.append(nombre)
+
+    df = pd.DataFrame(filas, columns=limpios)
+    mapa = {}
+    for canon in columnas_canonicas:
+        for real in df.columns:
+            if _norm_encabezado(real) == _norm_encabezado(canon) and real not in mapa:
+                mapa[real] = canon
+                break
+    df = df.rename(columns=mapa)
+    df = df.loc[:, ~df.columns.duplicated()]
+    for c in columnas_canonicas:
+        if c not in df.columns:
+            df[c] = ""
+    return df
+
+
+NO_ESPECIFICADO = "Sin especificar"
+
+
+_ALIAS_PAISES_CRUDO = {
+    "Estados Unidos": ["usa", "us", "u.s.a", "u.s.a.", "u.s.", "eeuu", "ee.uu", "ee.uu.", "eu",
+                       "united states", "united states of america", "estados unidos de america",
+                       "usa.", "america"],
+    "China": ["china", "prc", "p.r. china", "republica popular china", "cn", "china."],
+    "Corea del Sur": ["corea", "korea", "south korea", "corea del sur", "republica de corea", "kr"],
+    "India": ["india", "in"],
+    "Japón": ["japon", "japan", "jp"],
+    "Alemania": ["alemania", "germany", "de"],
+    "Brasil": ["brasil", "brazil", "br"],
+    "España": ["espana", "spain", "es"],
+    "Italia": ["italia", "italy", "it"],
+    "Turquía": ["turquia", "turkey", "turkiye", "tr"],
+    "México": ["mexico", "mx"],
+    "Colombia": ["colombia", "co"],
+    "Países Bajos": ["paises bajos", "holanda", "netherlands", "holland", "nl"],
+    "Reino Unido": ["reino unido", "united kingdom", "uk", "inglaterra", "england", "gb"],
+    "Canadá": ["canada", "ca"],
+    "Taiwán": ["taiwan", "taiwan roc", "tw"],
+    "Vietnam": ["vietnam", "viet nam", "vn"],
+    "Tailandia": ["tailandia", "thailand", "th"],
+    "Panamá": ["panama", "pa"],
+    "Francia": ["francia", "france", "fr"],
+}
+
+
+ALIAS_PAISES = {}
+
+
+for _canon, _formas in _ALIAS_PAISES_CRUDO.items():
+    ALIAS_PAISES[_norm(_canon)] = _canon
+    for _f in _formas:
+        ALIAS_PAISES[_norm(_f)] = _canon
+
+
+_VACIOS_PAIS = {"", "n/a", "na", "n.a.", "-", "--", "s/d", "nd", "no aplica", "pendiente", "?"}
+
+
+_RX_NO_PAIS = re.compile(r"^[\d\s/:.\-]+$")
+
+
+def _no_parece_pais(v) -> bool:
+    """Filas con las columnas corridas meten fechas y números en País_Origen.
+    Sin esto, "2026-08-04 19:58:00" se dibuja como si fuera un país y estira el
+    eje del gráfico hasta deformarlo en pantallas de celular."""
+    t = str(v or "").strip()
+    return bool(t) and bool(_RX_NO_PAIS.match(t))
+
+
+def unificar_paises(serie: pd.Series) -> pd.Series:
+    """'China', 'CHINA' y 'china ' son el mismo país y no deben salir como tres
+    barras distintas en el gráfico ni como tres opciones del filtro. Para lo que
+    no está en la tabla de equivalencias se usa la grafía más usada del propio
+    Sheet, sin inventar equivalencias de negocio."""
+    valores = [str(v or "").strip() for v in serie]
+    grupos = {}
+    for v in valores:
+        clave = _norm(v)
+        if clave in _VACIOS_PAIS or clave in ALIAS_PAISES:
+            continue
+        grupos.setdefault(clave, {})
+        grupos[clave][v] = grupos[clave].get(v, 0) + 1
+    canonico = {c: max(op.items(), key=lambda kv: (kv[1], -len(kv[0])))[0] for c, op in grupos.items()}
+
+    def resolver(v):
+        clave = _norm(v)
+        if clave in _VACIOS_PAIS or _no_parece_pais(v):
+            return NO_ESPECIFICADO
+        return ALIAS_PAISES.get(clave) or canonico.get(clave, NO_ESPECIFICADO)
+
+    return pd.Series([resolver(v) for v in valores], index=serie.index)
+
+
+def columnas_extra(df: pd.DataFrame) -> list:
+    """Columnas que el usuario agregó en el Sheet y que la app no gestiona."""
+    conocidas = set(ALL_COLUMNS) | COLUMNAS_INTERNAS | {"Fecha_Recibido", "Categoria_Origen",
+                                                        "Registrado_Por", "FechaParsed", "Anio", "Mes",
+                                                        COL_FECHA_ALMACEN, COL_FECHA_LLEGADA_PUERTO}
+    return [c for c in df.columns if c not in conocidas]
+
+
+def columna_de_valor(df: pd.DataFrame):
+    """Detecta si el Sheet trae una columna de valor monetario, sin obligar a que
+    se llame de una forma concreta."""
+    for c in df.columns:
+        if _norm(c) in NOMBRES_VALOR:
+            return c
+    return None
+
+
+def es_numero(v) -> bool:
+    """NaN es truthy en Python, así que 'if valor' NO sirve para descartar celdas
+    vacías de una columna numérica de pandas."""
+    return v is not None and pd.notna(v)
+
+
+def a_numero(valor):
+    """'US$ 145,300.50' -> 145300.5. Devuelve None si no hay número."""
+    texto = str(valor or "").strip()
+    if not texto:
+        return None
+    limpio = re.sub(r"[^0-9,.\-]", "", texto)
+    if not limpio:
+        return None
+    if "," in limpio and "." in limpio:
+        if limpio.rfind(",") > limpio.rfind("."):
+            limpio = limpio.replace(".", "").replace(",", ".")
+        else:
+            limpio = limpio.replace(",", "")
+    elif "," in limpio:
+        entero, _, decimales = limpio.rpartition(",")
+        limpio = f"{entero.replace(',', '')}.{decimales}" if len(decimales) in (1, 2) else limpio.replace(",", "")
+    try:
+        return float(limpio)
+    except ValueError:
+        return None
+
+
+def formato_dinero(monto: float) -> str:
+    if monto >= 1_000_000:
+        return f"US$ {monto / 1_000_000:,.2f} M"
+    if monto >= 10_000:
+        return f"US$ {monto / 1_000:,.0f} K"
+    return f"US$ {monto:,.0f}"
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _cargar_todo_remoto() -> dict:
+    """UNA sola llamada a la API trae las 5 pestañas de categoría + el histórico.
+
+    A propósito NO atrapa errores de lectura: st.cache_data solo guarda retornos
+    exitosos, así que si Google falla la excepción sube y nada queda cacheado —
+    el siguiente rerun reintenta al instante. Quien convierte el fallo en un
+    dict con "error" (sin cachearlo) es la envoltura cargar_todo().
+    """
+    try:
+        ss = get_spreadsheet()
+        indice = _indice_hojas()
+    except Exception as e:
+        raise RuntimeError(f"No se pudo conectar con el Google Sheet: {e}") from e
+
+    objetivos = []  # (etiqueta, titulo_real)
+    for cat in CATEGORIAS:
+        ws = indice.get(_norm(cat))
+        if ws is not None:
+            objetivos.append((cat, ws.title))
+    ws_rec = indice.get(_norm(RECIBIDO_SHEET))
+    if ws_rec is not None:
+        objetivos.append((RECIBIDO_SHEET, ws_rec.title))
+    # Pagos es opcional a propósito: si nadie ha registrado un cargo todavía,
+    # la pestaña ni existe. Se crea sola con el primer guardar_pago().
+    ws_pagos = indice.get(_norm(PAGOS_SHEET))
+    if ws_pagos is not None:
+        objetivos.append((PAGOS_SHEET, ws_pagos.title))
+
+    if not objetivos:
+        raise RuntimeError("El Google Sheet no tiene ninguna de las pestañas esperadas.")
+
+    rangos = [f"'{titulo}'!A1:AZ{MAX_FILAS_LECTURA}" for _, titulo in objetivos]
+    try:
+        respuesta = _con_reintento(lambda: ss.values_batch_get(rangos))
+    except gspread.exceptions.APIError as e:
+        raise RuntimeError(f"Google Sheets no respondió (posible límite de cuota): {e}") from e
+
+    bloques = respuesta.get("valueRanges", [])
+    frames, historico, avisos = [], pd.DataFrame(columns=COLUMNAS_RECIBIDO), []
+    pagos = pd.DataFrame(columns=COLUMNAS_PAGOS)
+
+    for (etiqueta, _titulo), bloque in zip(objetivos, bloques):
+        valores = bloque.get("values", [])
+        if len(valores) >= MAX_FILAS_LECTURA:
+            avisos.append(
+                f"La pestaña '{etiqueta}' llegó al tope de {MAX_FILAS_LECTURA:,} filas que la app lee. "
+                "Puede haber embarques más abajo que no se están mostrando; hay que archivar lo viejo "
+                "o subir el límite en el código."
+            )
+        if etiqueta == RECIBIDO_SHEET:
+            historico = _df_desde_valores(valores, COLUMNAS_RECIBIDO)
+            historico["FilaSheet"] = range(2, len(historico) + 2)
+            continue
+        if etiqueta == PAGOS_SHEET:
+            pagos = _df_desde_valores(valores, COLUMNAS_PAGOS)
+            pagos["FilaSheet"] = range(2, len(pagos) + 2)
+            continue
+        df_cat = _df_desde_valores(valores, ALL_COLUMNS)
+        df_cat["Categoria"] = etiqueta
+        # Fila real = índice + 2 (encabezado + base 1). Se guarda ANTES de filtrar
+        # porque es lo que las escrituras usan para tocar la fila correcta.
+        df_cat["FilaSheet"] = range(2, len(df_cat) + 2)
+        frames.append(df_cat)
+
+    if frames:
+        activos = pd.concat(frames, ignore_index=True)
+        for c in (COL_BL, COL_DESC):
+            activos[c] = activos[c].astype(str).str.strip()
+        activos = activos[(activos[COL_BL] != "") | (activos[COL_DESC] != "")]
+        activos = activos.reset_index(drop=True)
+        activos[COL_PAIS] = unificar_paises(activos[COL_PAIS])
+    else:
+        activos = pd.DataFrame(columns=ALL_COLUMNS + ["Categoria", "FilaSheet"])
+
+    if not historico.empty:
+        historico = historico[historico[COL_BL].astype(str).str.strip() != ""].reset_index(drop=True)
+
+    if not pagos.empty:
+        pagos = pagos[pagos[COL_BL].astype(str).str.strip() != ""].reset_index(drop=True)
+
+    # "Última carga" = la marca más reciente escrita por alguien al agregar,
+    # editar, cargar en masa o archivar. Es distinto de "última lectura".
+    sellos = []  # por cuadro: [(marca_parseada, autor)]; se parsea una sola vez
+    for cuadro in (activos, historico):
+        if cuadro.empty or COL_ACTUALIZACION not in cuadro.columns:
+            sellos.append([])
+            continue
+        columna_autor = COL_ACTUALIZADO_POR if COL_ACTUALIZADO_POR in cuadro.columns else None
+        if columna_autor is None and "Registrado_Por" in cuadro.columns:
+            columna_autor = "Registrado_Por"
+        autores = cuadro[columna_autor] if columna_autor else [""] * len(cuadro)
+        sellos.append(list(zip((parsear_marca(v) for v in cuadro[COL_ACTUALIZACION]), autores)))
+    marcas = [m for par in sellos for m, _ in par if m]
+    ultima_carga = max(marcas) if marcas else None
+
+    ultima_persona = ""
+    if ultima_carga is not None:
+        for par in sellos:
+            for marca, autor in par:
+                if marca == ultima_carga and str(autor).strip():
+                    ultima_persona = str(autor).strip()
+                    break
+            if ultima_persona:
+                break
+
+    return {"activos": activos, "historico": historico, "pagos": pagos, "hora": ahora_rd(),
+            "ultima_carga": ultima_carga, "ultima_persona": ultima_persona,
+            "avisos": avisos, "error": None}
+
+
+def _tablero_vacio() -> dict:
+    """El dict de datos sin una sola fila: lo que el dashboard muestra como
+    'Todavía no hay embarques cargados'. Las claves y columnas son fijas porque
+    el resto de la app las espera siempre, haya o no haya datos."""
+    return {
+        "activos": pd.DataFrame(columns=ALL_COLUMNS + ["Categoria", "FilaSheet"]),
+        "historico": pd.DataFrame(columns=COLUMNAS_RECIBIDO),
+        "pagos": pd.DataFrame(columns=COLUMNAS_PAGOS + ["FilaSheet"]),
+        "hora": ahora_rd(), "ultima_carga": None, "ultima_persona": "", "avisos": [], "error": None,
+    }
+
+
+def cargar_todo() -> dict:
+    """Lectura cacheada del libro completo, con un matiz: el FRACASO no se cachea.
+
+    Antes el return con error quedaba guardado por el @st.cache_data(ttl=45) y
+    durante hasta 45 segundos TODOS los reruns (tocar un filtro, cambiar de
+    sección, darle a actualizar) recibían el tablero vacío aunque Google ya
+    respondiera bien — de ahí el 'tengo que refrescar o cambiar el filtro varias
+    veces hasta que muestre todo'. Ahora el error se muestra una sola vez y el
+    siguiente rerun reintenta contra Google al instante.
+    """
+    try:
+        return _cargar_todo_remoto()
+    except Exception as e:  # noqa: BLE001 - la UI muestra este mensaje; nunca un traceback
+        return {**_tablero_vacio(), "error": str(e)}
+
+
+def invalidar_caches():
+    _cargar_todo_remoto.clear()
+    _headers.clear()
+
+
+# --- Escrituras -------------------------------------------------------------
+def _con_manejo_apierror(func):
+    """Convierte un APIError de gspread (cuota, permisos) en (False, mensaje)
+    legible en vez de tumbar la página con un traceback."""
+    def envoltura(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except gspread.exceptions.APIError as e:
+            codigo = _codigo_api(e)
+            if codigo == 429:
+                return False, ("Google Sheets está limitando las peticiones (demasiadas a la vez). "
+                               "Espera unos segundos y repite la acción.")
+            if codigo == 403:
+                return False, ("Google Sheets rechazó la operación por permisos. Verifica que el Sheet "
+                               "siga compartido como Editor con la cuenta de servicio de la app.")
+            return False, f"Google Sheets rechazó la operación ({e}). Espera unos segundos e intenta de nuevo."
+        except Exception as e:  # noqa: BLE001 - último cortafuegos antes de la UI
+            return False, f"Error inesperado: {e}"
+    envoltura.__name__ = func.__name__
+    return envoltura
+
+
+def usuario_actual() -> str:
+    return st.session_state.get("usuario", "desconocido")
+
+
+def registrar_log(accion: str, bl: str = "", categoria: str = "", detalle: str = ""):
+    """Bitácora de quién hizo qué. Nunca debe romper la operación principal:
+    si el log falla, la acción ya se ejecutó y eso es lo que importa."""
+    try:
+        ws = get_worksheet(LOG_SHEET)
+        if ws is None:
+            ss = get_spreadsheet()
+            ws = ss.add_worksheet(title=LOG_SHEET, rows=5000, cols=len(COLUMNAS_LOG))
+            ws.update(range_name="A1", values=[COLUMNAS_LOG], value_input_option="RAW")
+            _refrescar_estructura()
+            ws = get_worksheet(LOG_SHEET)
+        ws.append_row(
+            [ahora_rd().strftime("%Y-%m-%d %H:%M:%S"), usuario_actual(), accion,
+             str(bl), categoria, detalle],
+            value_input_option="RAW",
+        )
+        _leer_log.clear()
+    except Exception:
+        pass
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _leer_log(maximo: int = 300) -> pd.DataFrame:
+    ws = get_worksheet(LOG_SHEET)
+    if ws is None:
+        return pd.DataFrame(columns=COLUMNAS_LOG)
+    valores = _con_reintento(lambda: ws.get_all_values()) or []
+    df = _df_desde_valores(valores, COLUMNAS_LOG)
+    return df.tail(maximo).iloc[::-1].reset_index(drop=True)
+
+
+@_con_manejo_apierror
+def append_row(datos: dict, categoria: str):
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return False, f"No existe la pestaña '{categoria}' en el Google Sheet."
+    datos = dict(datos)
+    datos[COL_ACTUALIZACION] = marca_ahora()
+    datos[COL_ACTUALIZADO_POR] = usuario_actual()
+    bl = str(datos.get(COL_BL, "")).strip()
+    if bl and _norm(bl) in _bls_existentes(ws):
+        return False, (f"Ya hay una fila con el BL '{bl}' en '{ws.title}'. Si es un embarque "
+                       "parcial del mismo BL, edita la fila existente; si no, actualiza los "
+                       "datos y revisa antes de guardar.")
+    # Solo se asegura la columna de los campos que traen valor real: así una
+    # categoría que no usa OC o Modelo_Serie no termina con esa columna vacía.
+    columnas_a_asegurar = [c for c, v in datos.items() if str(v).strip()]
+    headers = _asegurar_columnas(ws, columnas_a_asegurar)
+    _con_reintento(lambda: ws.append_row(_fila_desde_dict(headers, datos), value_input_option="RAW"))
+    return True, ""
+
+
+@_con_manejo_apierror
+def append_rows_bulk(df: pd.DataFrame, categoria: str):
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return False, f"No existe la pestaña '{categoria}' en el Google Sheet."
+    existentes = _bls_existentes(ws)
+    repetidos = sorted({str(r.get(COL_BL, "")).strip() for _, r in df.iterrows()
+                        if str(r.get(COL_BL, "")).strip() and _norm(r.get(COL_BL)) in existentes})
+    if repetidos:
+        return False, (f"Estos BL ya están en '{ws.title}': {', '.join(repetidos)}. "
+                       "Quítalos del archivo o actualiza los datos antes de cargar.")
+    opcionales = [c for c in OPCIONALES_CATEGORIA
+                  if c in df.columns and df[c].astype(str).str.strip().ne("").any()]
+    # Via_Transporte NO es "opcional por categoría" como Modelo/OC/EE -- toda
+    # categoría puede tener embarques aéreos o marítimos -- así que se escribe
+    # siempre que la carga masiva la traiga resuelta (ver form_carga_masiva).
+    # Antes quedaba fuera de OPCIONALES_CATEGORIA y esta función la descartaba
+    # en silencio: cada carga masiva perdía el modo de transporte sin importar
+    # lo que trajera el Excel, y el resto de la app caía al valor por defecto
+    # (Marítimo) aunque el embarque fuera aéreo.
+    if COL_VIA in df.columns and COL_VIA not in opcionales:
+        opcionales.append(COL_VIA)
+    headers = _asegurar_columnas(ws, [COL_ACTUALIZACION, COL_ACTUALIZADO_POR, *opcionales])
+    sello, autor = marca_ahora(), usuario_actual()
+    columnas_fila = REQUIRED_COLUMNS + opcionales
+    filas = []
+    for _, r in df.iterrows():
+        datos = {c: r.get(c, "") for c in columnas_fila}
+        datos[COL_ACTUALIZACION] = sello
+        datos[COL_ACTUALIZADO_POR] = autor
+        filas.append(_fila_desde_dict(headers, datos))
+    _con_reintento(lambda: ws.append_rows(filas, value_input_option="RAW"))
+    return True, ""
+
+
+@_con_manejo_apierror
+def actualizar_embarque(bl_original: str, categoria: str, datos: dict,
+                        fila_sugerida=None, sello_esperado: str = "", forzar: bool = False):
+    """Edición de un embarque ya cargado. Lee la fila actual para no pisar
+    columnas que la app no gestiona, y reescribe la fila completa de una vez.
+
+    Bloqueo optimista: si el sello de Fecha_Actualizacion de la fila cambió
+    respecto al que tenía la pantalla, otra persona la editó mientras tanto y se
+    aborta en vez de pisarle el cambio en silencio."""
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return False, f"No existe la pestaña '{categoria}'."
+    fila, error = _localizar_fila(ws, bl_original, fila_sugerida)
+    if error:
+        return False, error
+
+    columnas_a_asegurar = [COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
+                           *[c for c, v in datos.items() if str(v).strip()]]
+    headers = _asegurar_columnas(ws, columnas_a_asegurar)
+    combinado = _leer_fila(ws, fila, headers)
+    combinado_norm = {_norm_encabezado(k): v for k, v in combinado.items()}
+
+    sello_actual = str(combinado_norm.get(_norm_encabezado(COL_ACTUALIZACION), "")).strip()
+    if not forzar and (sello_esperado or sello_actual) and sello_actual != str(sello_esperado).strip():
+        autor = str(combinado_norm.get(_norm_encabezado(COL_ACTUALIZADO_POR), "")).strip() or "otra persona"
+        return False, (f"{autor} modificó este embarque el {sello_actual}, después de que abriste esta "
+                       "pantalla. Actualiza los datos y revisa antes de guardar, o marca la casilla de "
+                       "sobrescritura si estás seguro.")
+
+    combinado.update(datos)
+    combinado[COL_ACTUALIZACION] = marca_ahora()
+    combinado[COL_ACTUALIZADO_POR] = usuario_actual()
+
+    # Si la fila queda confirmada, el ETA resultante ES la fecha de llegada, así
+    # que tiene que aguantar las mismas reglas que al confirmarla. Se valida
+    # también cuando solo se edita el ETA de una fila ya confirmada: cambiar esa
+    # fecha es cambiar la llegada, aunque la casilla no se toque.
+    #
+    # Antes esto se resolvía vaciando la confirmación cuando el ETA se iba a
+    # futuro. Era peor: el embarque retrocedía de etapa sin que nadie lo supiera.
+    combinado_final = {_norm_encabezado(k): v for k, v in combinado.items()}
+    if es_llego_si(combinado_final.get(_norm_encabezado(COL_LLEGO), "")):
+        problema = validar_eta_confirmado(combinado_final.get(_norm_encabezado(COL_ETA), ""),
+                                          combinado_final.get(_norm_encabezado(COL_FECHA_DECLARACION), ""))
+        if problema:
+            return False, problema
+
+    rango = f"{rowcol_to_a1(fila, 1)}:{rowcol_to_a1(fila, len(headers))}"
+    _con_reintento(lambda: ws.update(range_name=rango,
+                                     values=[_fila_desde_dict(headers, combinado)],
+                                     value_input_option="RAW"))
+    return True, ""
+
+
+@_con_manejo_apierror
+def marcar_llegada(bl: str, categoria: str, valor: str, fila_sugerida=None, sello_esperado=None):
+    """Escribe la respuesta a '¿ya llegó?'.
+
+    valor = "SI"  -> llegó; la fecha de llegada pasa a ser el ETA de la fila
+    valor = "NO"  -> se verificó que NO llegó (deja constancia de la revisión)
+    valor = ""    -> borra la marca, vuelve a 'sin revisar'
+
+    Vacío y "NO" NO son lo mismo: vacío es 'nadie ha mirado', NO es 'miré y
+    sigue sin llegar'. Sin esa distinción no se puede saber si un embarque está
+    atrasado o simplemente desatendido.
+
+    Poner "NO" o vaciar la marca borra también la fecha de declaración: no se
+    puede haber declarado algo que no ha llegado.
+
+    Confirmar con SI valida antes el ETA de la fila (ver validar_eta_confirmado):
+    ese valor pasa a ser la fecha real de llegada, así que no puede ser futuro
+    ni ilegible."""
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return False, f"No existe la pestaña '{categoria}'."
+    fila, error = _localizar_fila(ws, bl, fila_sugerida)
+    if error:
+        return False, error
+
+    headers = _asegurar_columnas(ws, [COL_LLEGO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
+
+    if es_llego_si(valor):
+        actual = _leer_fila(ws, fila, headers)
+        actual_norm = {_norm_encabezado(k): v for k, v in actual.items()}
+        conflicto = _conflicto_sello(actual_norm, sello_esperado)
+        if conflicto:
+            return False, conflicto
+        problema = validar_eta_confirmado(actual_norm.get(_norm_encabezado(COL_ETA), ""),
+                                          actual_norm.get(_norm_encabezado(COL_FECHA_DECLARACION), ""))
+        if problema:
+            return False, problema
+
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_LLEGO)]), "values": [[valor]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+    ]
+    if not es_llego_si(valor):
+        columna_dec = indices.get(_norm_encabezado(COL_FECHA_DECLARACION))
+        if columna_dec:
+            peticiones.append({"range": rowcol_to_a1(fila, columna_dec), "values": [[""]]})
+    _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    return True, ""
+
+
+def confirmar_llegada(bl: str, categoria: str, fila_sugerida=None, sello_esperado=None):
+    """Un clic: 'esta carga ya llegó a puerto'. A partir de aquí el ETA de la
+    fila vale como fecha real de llegada y el reloj de días en puerto arranca."""
+    return marcar_llegada(bl, categoria, LLEGO_SI, fila_sugerida=fila_sugerida,
+                          sello_esperado=sello_esperado)
+
+
+def marcar_no_llego(bl: str, categoria: str, fila_sugerida=None, sello_esperado=None):
+    """'Revisé y todavía no ha llegado'. Deja constancia de la revisión sin
+    arrancar ningún contador."""
+    return marcar_llegada(bl, categoria, LLEGO_NO, fila_sugerida=fila_sugerida,
+                          sello_esperado=sello_esperado)
+
+
+def validar_eta_confirmado(eta_crudo, declaracion=None):
+    """Reglas que debe cumplir el ETA de una fila con la llegada confirmada en SI.
+    Devuelve un mensaje de error o "" si todo está bien.
+
+    Existe porque, con este modelo, el ETA no es solo una estimación: en cuanto
+    alguien confirma la llegada, ESE valor pasa a ser la fecha real de llegada a
+    puerto y con él arrancan los días en puerto. Por eso hay que validarlo
+    cuando se confirma Y cada vez que se edita una fila que ya está confirmada;
+    si no, un ETA movido a futuro dejaría un embarque 'llegado' con fecha que
+    todavía no ocurrió, y los contadores saldrían en negativo.
+
+    La alternativa —borrar la confirmación en silencio cuando el ETA se mueve—
+    es peor: nadie se entera de que el embarque retrocedió de etapa."""
+    fecha = parsear_fecha(eta_crudo)
+    if fecha is None:
+        crudo = str(eta_crudo or "").strip()
+        return ("La llegada está confirmada, pero el ETA "
+                f"({crudo or 'vacío'}) no es una fecha que se pueda leer. Corrige el ETA, "
+                "porque es el que vale como fecha real de llegada.")
+    if fecha > hoy_rd():
+        return (f"No se puede dar por llegada una carga con ETA {formato_eta(fecha)}, que es una "
+                "fecha futura. Si todavía no ha llegado, marca '¿Llegó?' en NO; si ya llegó, "
+                "corrige el ETA a la fecha real.")
+    dec = parsear_fecha(declaracion)
+    if dec and fecha > dec:
+        return (f"El ETA {formato_eta(fecha)} quedaría después de la declaración "
+                f"({formato_eta(dec)}). Corrige una de las dos fechas.")
     return ""
 
 
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def _enriquecer_cacheado(df: pd.DataFrame) -> pd.DataFrame:
-    """Envoltura cacheada de enriquecer() (logica.py es sin Streamlit a propósito,
-    así que el cacheo vive aquí, no ahí). Misma ventana de 45s que ya tolera
-    cargar_todo(): con varios viewers mirando el mismo tablero a la vez, solo
-    la primera sesión calcula esto — las demás reciben el mismo resultado ya
-    calculado en vez de repetirlo cada una por su cuenta.
+def _validar_orden_flujo(llegada, declaracion, almacen=None):
+    """Las fechas del flujo tienen que ir en orden. Devuelve un mensaje de error
+    o "" si todo está bien. Una declaración anterior a la llegada no es un dato
+    válido: son contadores que después alguien lee como desempeño."""
+    secuencia = [("Llegada a puerto", llegada),
+                 ("Recepción y declaración", declaracion)]
+    if almacen:
+        secuencia.append((ETAPA_ALMACEN, almacen))
+    previa_nombre, previa_fecha = None, None
+    for etapa, f in secuencia:
+        if not f:
+            continue
+        if previa_fecha and f < previa_fecha:
+            return (f"La fecha de '{etapa}' ({formato_eta(f)}) es anterior a la de "
+                    f"'{previa_nombre}' ({formato_eta(previa_fecha)}). Corrige una de las dos.")
+        previa_nombre, previa_fecha = etapa, f
+    return ""
 
-    enriquecer() usa la fecha de HOY para calcular días transcurridos, así que
-    cachearlo introduce hasta 45s de margen en esos contadores — la misma
-    tolerancia que ya existe en el resto del tablero, no una nueva. No cambia
-    QUÉ se calcula, solo evita recalcularlo de más."""
-    return enriquecer(df)
 
+@_con_manejo_apierror
+def fijar_fecha_declaracion(bl: str, categoria: str, fecha=None, fila_sugerida=None,
+                            sobrescribir: bool = False, sello_esperado=None):
+    """Registra la recepción y declaración. Exige que la llegada esté confirmada:
+    no se declara una carga que, según el propio Sheet, todavía no llegó."""
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return False, f"No existe la pestaña '{categoria}'."
+    fila, error = _localizar_fila(ws, bl, fila_sugerida)
+    if error:
+        return False, error
 
-def encabezado(datos: dict):
-    anio = hoy_rd().year
-    ultima = datos.get("ultima_carga")
-    persona = str(datos.get("ultima_persona", "") or "").strip()
-    if ultima:
-        sello = (f"Información actualizada: {ultima.day:02d} {MESES_ES_CORTO[ultima.month]} "
-                 f"{ultima.year}, {ultima.strftime('%I:%M %p').lstrip('0').lower()} (hora RD)")
-        if persona:
-            sello += f" · por {persona}"
-    else:
-        sello = "Sin registro de la última carga de información"
-    logo = _logo_base64()
-    img = f'<img class="ant-logo" src="{logo}" alt="Antillana Comercial">' if logo else ""
-    st.markdown(
-        f'<div class="ant-head">{img}'
-        f'<span class="ant-eyebrow">'
-        f'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0C447C" stroke-width="2" '
-        f'stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/>'
-        f'<path d="M9 21v-6h6v6"/></svg> Logística e Importaciones {anio}</span>'
-        f'<div class="ant-title">Estatus de Cargas</div>'
-        f'<div class="ant-rule"></div>'
-        f'<div class="ant-sub">Antillana Comercial</div>'
-        f'<div class="ant-stamp"><span class="ant-dot"></span> {esc(sello)}</div>'
-        f"</div>",
-        unsafe_allow_html=True,
+    headers = _asegurar_columnas(
+        ws, [COL_LLEGO, COL_FECHA_DECLARACION, COL_ACTUALIZACION, COL_ACTUALIZADO_POR]
     )
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
+    combinado = _leer_fila(ws, fila, headers)
+    combinado_norm = {_norm_encabezado(k): v for k, v in combinado.items()}
 
+    conflicto = _conflicto_sello(combinado_norm, sello_esperado)
+    if conflicto:
+        return False, conflicto
 
-def tarjeta_kpi(label: str, valor, color: str, sub: str = "") -> str:
-    extra = f'<div class="kpi-sub">{esc(sub)}</div>' if sub else ""
-    return (
-        f'<div class="kpi-card" style="background:{color};">'
-        f'<div class="kpi-label">{esc(label)}</div>'
-        f'<div class="kpi-value">{valor}</div>{extra}</div>'
-    )
+    if not es_llego_si(combinado_norm.get(_norm_encabezado(COL_LLEGO), "")):
+        return False, ("Este embarque todavía no tiene la llegada confirmada. Marca primero "
+                       "'¿Llegó?' en SI y después registra la declaración.")
 
+    llegada = parsear_fecha(combinado_norm.get(_norm_encabezado(COL_ETA), ""))
+    actual = parsear_fecha(combinado_norm.get(_norm_encabezado(COL_FECHA_DECLARACION), ""))
+    nueva = fecha or hoy_rd()
+    final = nueva if (sobrescribir or not actual) else actual
+    if final == actual:
+        return True, "Sin cambios: la declaración ya estaba registrada."
 
-def html_flujo(fechas: dict, etapa_actual: str, es_aerea: bool = False) -> str:
-    """Diagrama de las etapas en HTML/CSS puro.
+    problema = _validar_orden_flujo(llegada, final)
+    if problema:
+        return False, problema
 
-    Sustituye al diagrama Plotly: con 20 embarques en puerto se creaban 20
-    figuras interactivas por pantalla, que en celular son varios segundos de
-    render y mucha batería. Además, en pantalla angosta el CSS lo convierte en
-    lista vertical, que sí se lee; el Plotly horizontal se solapaba.
-
-    Muestra las 2 etapas activas más el destino final (almacén) en gris: sirve
-    para que se vea a dónde va el embarque, aunque archivar no sea una etapa del
-    tablero sino la salida de él."""
-    idx = INDICE_ETAPA.get(etapa_actual, -1)
-    partes = ['<div class="flujo">']
-    for i, etapa in enumerate(ETAPAS_PUERTO):
-        clase = "hecho" if i < idx else ("actual" if i == idx else "")
-        etiqueta = "Llegada al aeropuerto" if (es_aerea and i == 0) else etapa
-        icono = "✈️" if (es_aerea and i == 0) else ICONO_ETAPA[etapa]
-        fecha = fechas.get(etapa)
-        partes.append(
-            f'<div class="paso {clase}"><div class="pt">{icono}</div>'
-            f'<div class="txt"><div class="et">{esc(etiqueta)}</div>'
-            f'<div class="fch">{esc(formato_corto(fecha)) if fecha else "&nbsp;"}</div></div></div>'
-        )
-    partes.append(
-        f'<div class="paso"><div class="pt">{ICONO_ALMACEN}</div>'
-        f'<div class="txt"><div class="et">{esc(ETAPA_ALMACEN)}</div>'
-        f'<div class="fch">&nbsp;</div></div></div>'
-    )
-    partes.append("</div>")
-    return "".join(partes)
-
-
-def html_chips(conteos: dict, resaltar: str = "") -> str:
-    """Resumen por etapa como chips que se acomodan solos. Reemplaza a varios
-    st.metric en fila, que en un celular de 380px quedaban ilegibles."""
-    piezas = ['<div class="chips">']
-    for etapa in ETAPAS_PUERTO:
-        clase = "chip on" if etapa == resaltar else "chip"
-        piezas.append(
-            f'<span class="{clase}">{ICONO_ETAPA[etapa]} '
-            f'{esc(ETIQUETA_CORTA_ETAPA.get(etapa, etapa))} <b>{int(conteos.get(etapa, 0))}</b></span>'
-        )
-    piezas.append("</div>")
-    return "".join(piezas)
-
-
-def marca(clase: str) -> str:
-    if "mal" in clase:
-        return "⚠ "
-    if "ojo" in clase:
-        return "● "
-    # El ✓ acompaña al verde por la misma razón que el ⚠ acompaña al rojo: esto
-    # se ve en celular y se imprime, y el color solo no alcanza.
-    return "✓ " if "bien" in clase else ""
-
-
-def _clase_contador(dias, limite, cerrado: bool = False) -> str:
-    """Gris dentro del plazo, ámbar apenas lo pasa, rojo cuando ya se fue de las
-    manos. Dos niveles y no uno para que el rojo signifique algo: si todo lo
-    vencido sale rojo, en dos semanas nadie lo mira.
-
-    Una etapa cerrada DENTRO del plazo sale en verde: ahí ya hay un veredicto
-    ("esto salió bien") y el gris no lo dice. Mientras la etapa sigue abierta se
-    queda en gris, porque todavía no hay nada que juzgar."""
-    if not es_numero(dias) or not limite:
-        return "contador"
-    if dias <= limite:
-        return "contador bien" if cerrado else "contador"
-    nivel = "mal" if dias > limite * 2 else "ojo"
-    return f"contador {nivel} cerrado" if cerrado else f"contador {nivel}"
-
-
-def _chip(clase: str, etiqueta: str, dias) -> str:
-    """Todos los contadores con el mismo formato 'Etiqueta: N días'."""
-    return f'<span class="{clase}">{marca(clase)}{etiqueta}: {texto_dias(dias)}</span>'
-
-
-def html_contadores(fila) -> str:
-    """Los contadores operativos de un embarque, en línea."""
-    piezas = []
-    sla = sla_etapas()
-    transito = fila.get("DiasTransito")
-    if es_numero(transito):
-        etiqueta = "Duración del tránsito" if fila.get("F_Puerto") else "En tránsito"
-        piezas.append(_chip("contador", etiqueta, transito))
-    dias_puerto = fila.get("DiasEnPuerto")
-    if es_numero(dias_puerto):
-        # El tiempo total en puerto abarca las dos etapas, así que se compara
-        # contra la suma de sus plazos, no contra el de una sola.
-        lugar = lugar_de(fila.get(COL_VIA, ""))
-        clase = _clase_contador(dias_puerto, sum(v for k, v in sla.items()
-                                                 if k in SLA_ETAPA_DEFECTO))
-        piezas.append(_chip(clase, f"En {lugar}", dias_puerto))
-    declarado = fila.get("F_Declaracion")
-    dias_etapa = fila.get("DiasEnEtapa")
-    if declarado and es_numero(dias_etapa):
-        piezas.append(_chip(_clase_contador(dias_etapa, sla.get("Recepción y declaración")),
-                            "Declarado sin retirar", dias_etapa))
-    return "".join(piezas)
-
-
-def _ref_oc_ee(fila) -> str:
-    """OC y EE son los números con los que el equipo realmente rastrea la carga
-    suelta y la aérea; no verlos en la lista obligaba a abrir cada embarque."""
-    piezas = []
-    for columna in (COL_OC, COL_EE):
-        valor = str(fila.get(columna, "") or "").strip()
-        # "nan" aparece cuando se concatenan categorías cuyas pestañas no tienen
-        # la columna; mostrarlo sería peor que no mostrar nada.
-        if valor and valor.upper() not in ("N/A", "NA", "NAN", "NONE", "-", "—"):
-            piezas.append(f"{columna} {esc(valor)}")
-    return f'<div class="c-ref">{" · ".join(piezas)}</div>' if piezas else ""
-
-
-def _celda_referencia(r) -> str:
-    """La 3ra columna de la lista. Antes elegía UN dato para mostrar (Modelo/
-    Serie si había, si no Cliente/Stock, si no un guion bajo un encabezado
-    genérico 'Referencia' cuando la vista mezclaba categorías) — y eso
-    escondía el dato que no ganaba la elección, aunque estuviera lleno en el
-    Sheet. Ahora se muestran los DOS, siempre, cada uno con su propia
-    etiqueta: si alguno está vacío en esa fila, se ve un guion solo en ese,
-    nunca se oculta la fila entera ni el otro dato."""
-    modelo = str(r.get(COL_MODELO, "") or "").strip()
-    cliente = str(r.get(COL_CLIENTE_STOCK, "") or "").strip()
-    return (
-        '<div class="c-suave">'
-        f'<div class="c-ref"><b>Modelo/Serie:</b> {esc(modelo) if modelo else "—"}</div>'
-        f'<div class="c-ref"><b>Cliente:</b> {esc(cliente) if cliente else "—"}</div>'
-        "</div>"
-    )
-
-
-def render_lista(df: pd.DataFrame):
-    """Un solo bloque HTML: tabla en desktop, tarjetas en celular (lo decide el CSS)."""
-    if df.empty:
-        st.markdown('<div class="lista"><div class="vacio">No hay embarques que coincidan con el filtro.</div></div>',
-                    unsafe_allow_html=True)
-        return
-
-    partes = [
-        '<div class="lista"><div class="fila-head">'
-        "<div>BL</div><div>Descripción</div><div>Modelo/Serie · Cliente</div><div>Cant.</div>"
-        "<div>País</div><div>ETA</div><div>Estado</div></div>"
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_FECHA_DECLARACION)]),
+         "values": [[final.isoformat()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
     ]
-    for _, r in df.iterrows():
-        color = STATUS_COLOR.get(r["EstadoTexto"], "#6B7280")
-        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], r.get(COL_VIA, ""))
-        etapa = str(r.get("EtapaActual", "")).strip()
-        badge_etapa = ""
-        if etapa:
-            icono = "✈️" if (etapa == ETAPAS_PUERTO[0] and es_aereo(r.get(COL_VIA, ""))) \
-                else ICONO_ETAPA[etapa]
-            badge_etapa = (f'<span class="badge linea">{icono} '
-                           f'{esc(etiqueta_etapa(etapa, r.get(COL_VIA, "")))}</span>')
-        alerta = str(r.get("Alerta", "") or "").strip()
-        badge_alerta = f'<span class="badge" style="background:{COLOR_ALERTA};">⚠ {esc(alerta)}</span>' if alerta else ""
-        if r.get("BLRepetido"):
-            badge_alerta += ('<span class="badge" style="background:#7C3AED;" '
-                             'title="Este BL aparece en más de una fila">⧉ BL repetido</span>')
-        partes.append(
-            f'<div class="fila" style="border-left-color:{color};">'
-            f'<div class="c-bl" data-l="BL">{esc(r[COL_BL]) if str(r[COL_BL]).strip() else "(sin BL)"}'
-            f'{_ref_oc_ee(r)}</div>'
-            f'<div class="c-suave" data-l="Descripción">{esc(r[COL_DESC])}</div>'
-            f'{_celda_referencia(r)}'
-            f'<div data-l="Cantidad">{esc(r[COL_CANT])}</div>'
-            f'<div data-l="País">{esc(r[COL_PAIS])}</div>'
-            f'<div data-l="ETA">{esc(formato_eta(r[COL_ETA]))}</div>'
-            f'<div class="c-badge" data-l="Estado">'
-            f'<span class="badge" style="background:{color};">{esc(etiqueta)}</span> '
-            f'{badge_etapa} {badge_alerta}</div>'
-            f"</div>"
-        )
-    partes.append("</div>")
-    st.markdown("".join(partes), unsafe_allow_html=True)
-
-
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def _figura_linea_tiempo(df: pd.DataFrame) -> go.Figure:
-    """Arma la figura (sin dibujarla) — cacheada porque no depende de los
-    filtros de más abajo (buscador, país, etapa, orden): usa el df completo de
-    la categoría, así que antes se reconstruía en cada tecla del buscador sin
-    necesidad. Misma ventana de 45s que el resto del tablero."""
-    hoy = hoy_rd()
-    inicio_semana = hoy - timedelta(days=hoy.weekday())
-    etiquetas, valores, colores = [], [], []
-
-    retrasados = int((df["EstadoTexto"] == EST_RETRASADO).sum())
-    if retrasados:
-        etiquetas.append("Retrasados")
-        valores.append(retrasados)
-        colores.append(STATUS_COLOR[EST_RETRASADO])
-
-    vencidos = int((df["EstadoTexto"] == EST_PUERTO).sum())
-    if vencidos:
-        etiquetas.append("En puerto")
-        valores.append(vencidos)
-        colores.append(STATUS_COLOR[EST_PUERTO])
-
-    con_fecha = df[df["ETAFecha"].notna() & ~df["EstadoTexto"].isin([EST_PUERTO, EST_RETRASADO])]
-    for i in range(SEMANAS_HORIZONTE):
-        desde = inicio_semana + timedelta(weeks=i)
-        hasta = desde + timedelta(days=6)
-        n = int(sum(1 for f in con_fecha["ETAFecha"] if desde <= f <= hasta))
-        if i == 0:
-            etiqueta = "Esta semana"
-        elif i == 1:
-            etiqueta = "Próxima semana"
-        else:
-            etiqueta = f"{desde.day} {MESES_ES_CORTO[desde.month]}"
-        etiquetas.append(etiqueta)
-        valores.append(n)
-        colores.append(STATUS_COLOR[EST_PROXIMO] if i == 0 else STATUS_COLOR[EST_TRANSITO])
-
-    lejanos = int(sum(1 for f in con_fecha["ETAFecha"]
-                      if f > inicio_semana + timedelta(weeks=SEMANAS_HORIZONTE) - timedelta(days=1)))
-    if lejanos:
-        etiquetas.append(f"+{SEMANAS_HORIZONTE} sem")
-        valores.append(lejanos)
-        colores.append("#9CA3AF")
-
-    fig = go.Figure(
-        data=[go.Bar(x=etiquetas, y=valores, marker=dict(color=colores),
-                     text=[v if v else "" for v in valores], textposition="outside",
-                     hovertemplate="%{x}: %{y} embarque(s)<extra></extra>")]
-    )
-    fig.update_layout(
-        margin=dict(t=18, b=10, l=10, r=10), height=260,
-        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#374151", size=11), showlegend=False,
-        xaxis=dict(showgrid=False, title=""),
-        yaxis=dict(showgrid=True, gridcolor="#F3F4F6", showticklabels=False, title=""),
-        bargap=0.35, dragmode=False,
-    )
-    return fig
-
-
-def grafico_linea_tiempo(df: pd.DataFrame, key: str):
-    """Qué viene encima, semana por semana. Responde la pregunta que un gerente
-    hace de verdad ('¿qué me llega en las próximas semanas?')."""
-    fig = _figura_linea_tiempo(df)
-    st.plotly_chart(fig, width="stretch",
-                    config={"displayModeBar": False, "staticPlot": True, "responsive": True},
-                    key=f"tl_{key}")
-
-
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def _html_paises(df: pd.DataFrame) -> str:
-    """Arma el HTML de las barras por país — cacheado por la misma razón que
-    la gráfica de llegadas: no depende de los filtros de más abajo. Cadena
-    vacía cuando no hay nada que mostrar, para no complicarle la vida al
-    llamador con un None."""
-    if COL_PAIS not in df.columns or df.empty:
-        return ""
-    serie = df[COL_PAIS].replace("", NO_ESPECIFICADO).value_counts()
-    if serie.empty:
-        return ""
-    tope = int(serie.max()) or 1
-    piezas = ['<div class="paises"><div class="atttl">Por país de origen</div>']
-    for i, (pais, n) in enumerate(serie.items()):
-        ancho = max(4.0, (int(n) / tope) * 100.0)
-        color = PALETA_PAISES[i % len(PALETA_PAISES)]
-        piezas.append(
-            f'<div class="pfila"><div class="pnom">{esc(str(pais))}</div>'
-            f'<div class="pbarra"><span style="width:{ancho:.1f}%;background:{color}"></span></div>'
-            f'<div class="pval">{int(n)}</div></div>'
-        )
-    piezas.append("</div>")
-    return "".join(piezas)
-
-
-def grafico_paises(df: pd.DataFrame, key: str):
-    """Barras por país en HTML/CSS, no en Plotly.
-
-    Plotly recalcula el ancho del eje según el largo de las etiquetas y lo vuelve
-    a hacer en cada redibujado: en celular eso es lo que hacía que las barras se
-    movieran solas al girar el teléfono o al abrir el teclado. Estas barras miden
-    en porcentaje del ancho disponible, así que no dependen del texto ni de
-    JavaScript, y se imprimen bien."""
-    html = _html_paises(df)
-    if html:
-        st.markdown(html, unsafe_allow_html=True)
-
-
-def _ficha_embarque(fila):
-    """Todos los campos del embarque, incluidas las columnas que alguien haya
-    agregado en el Sheet y que la app no gestiona."""
-    categoria = fila["Categoria"]
-    via = str(fila.get(COL_VIA, "") or "").strip()
-    es_aerea = es_aereo(via)
-    campos = [
-        ("BL", fila[COL_BL]),
-        ("Descripción", fila[COL_DESC]),
-    ]
-    if str(fila.get(COL_MODELO, "")).strip():
-        campos.append(("Modelo / Serie", fila[COL_MODELO]))
-    campos += [
-        ("Cantidad", fila[COL_CANT]),
-        ("País de origen", fila[COL_PAIS]),
-        ("Categoría", categoria),
-        ("Empresa", fila.get("EmpresaTransito", "") or EMPRESA_SIN_ASIGNAR),
-        ("Vía", via or VIA_MARITIMA),
-        ("ETA", formato_eta(fila[COL_ETA])),
-        ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"], via)),
-    ]
-    if categoria in CATEGORIAS_CON_OC_EE:
-        if str(fila.get(COL_OC, "")).strip():
-            campos.append(("OC", fila[COL_OC]))
-        if str(fila.get(COL_EE, "")).strip():
-            campos.append(("EE", fila[COL_EE]))
-    if str(fila.get(COL_CLIENTE_STOCK, "")).strip():
-        campos.append(("Cliente / Stock", fila[COL_CLIENTE_STOCK]))
-    if fila.get("F_Salida"):
-        campos.append(("Fecha de salida", formato_eta(fila["F_Salida"])))
-    if es_numero(fila.get("DiasTransito")):
-        etiqueta = "Duración del tránsito" if fila.get("F_Puerto") else "En tránsito"
-        campos.append((etiqueta, texto_dias(fila["DiasTransito"])))
-
-    llego = str(fila.get(COL_LLEGO, "") or "").strip()
-    campos.append(("¿Llegó?", llego or "Sin revisar"))
-
-    etapa = str(fila.get("EtapaActual", "")).strip()
-    if etapa:
-        etiqueta_actual = "Llegada al aeropuerto" if (es_aerea and etapa == ETAPAS_PUERTO[0]) else etapa
-        campos.append(("Etapa actual", etiqueta_actual))
-        fechas = fechas_flujo_de_fila(fila)
-        rotulos = {
-            "Llegada a puerto": "Llegada al aeropuerto" if es_aerea else "Llegada a puerto",
-            "Recepción y declaración": "Recepción y declaración",
-        }
-        for nombre_etapa, fecha in fechas.items():
-            if fecha:
-                campos.append((rotulos[nombre_etapa], formato_eta(fecha)))
-        if es_numero(fila.get("DiasEnPuerto")):
-            campos.append((f"En {lugar_de(via)}", texto_dias(fila["DiasEnPuerto"])))
-    if str(fila.get("Alerta", "") or "").strip():
-        campos.append(("⚠ Atención", fila["Alerta"]))
-
-    for extra in columnas_extra(fila.to_frame().T):
-        campos.append((extra.replace("_", " "), fila[extra]))
-    if str(fila.get(COL_ACTUALIZACION, "")).strip():
-        autor = str(fila.get(COL_ACTUALIZADO_POR, "")).strip()
-        campos.append(("Última actualización",
-                       f"{fila[COL_ACTUALIZACION]}" + (f" · {autor}" if autor else "")))
-    campos.append(("Fila en el Sheet", fila.get("FilaSheet", "—")))
-
-    filas_html = "".join(
-        f'<div class="ficha-fila"><div class="ficha-k">{esc(k)}</div>'
-        f'<div class="ficha-v">{esc(v)}</div></div>'
-        for k, v in campos
-    )
-    st.markdown(f'<div class="ficha">{filas_html}</div>', unsafe_allow_html=True)
-    if etapa:
-        st.markdown(html_flujo(fechas_flujo_de_fila(fila), etapa, es_aerea=es_aerea),
-                    unsafe_allow_html=True)
-
-
-# ---------------------------------------------------------------------------
-# DASHBOARD
-# ---------------------------------------------------------------------------
-def selector_horizontal(label: str, opciones: list, key: str, default=None, formato=None,
-                        ancho: str = "stretch"):
-    """Segmented control cuando la versión de Streamlit lo trae; radio horizontal
-    si no. Sustituye a st.tabs para las categorías: con tabs, Streamlit ejecuta el
-    cuerpo de TODAS las pestañas en cada rerun aunque el usuario vea una sola."""
-    formato = formato or (lambda x: str(x))
-    extra = {} if key in st.session_state else {"default": default or opciones[0]}
-    if hasattr(st, "segmented_control"):
-        elegido = st.segmented_control(
-            label, opciones, key=key, format_func=formato,
-            label_visibility="collapsed", width=ancho, **extra,
-        )
-    else:
-        elegido = st.radio(label, opciones, key=key, horizontal=True,
-                           format_func=formato, label_visibility="collapsed")
-    return elegido or (default or opciones[0])
-
-
-def _resumen_ejecutivo(df: pd.DataFrame, recibidas_mes: int) -> str:
-    """Una línea que contesta '¿cómo vamos hoy?' sin obligar a leer el tablero
-    entero. Es lo primero que ve el presidente al abrir desde el celular."""
-    hoy = hoy_rd()
-    fin_semana = hoy + timedelta(days=(6 - hoy.weekday()))
-    esta_semana = int(sum(1 for f in df["ETAFecha"] if f and hoy <= f <= fin_semana))
-    por_confirmar = int(((df["EstadoTexto"] == EST_PUERTO) &
-                         (df["EtapaActual"].astype(str).str.strip() == "")).sum())
-    retrasados = int((df["EstadoTexto"] == EST_RETRASADO).sum())
-    en_puerto = len(_en_proceso(df))
-    trabados = int((df["Alerta"].astype(str).str.strip() != "").sum())
-
-    piezas = [f"<b>{len(df)}</b> embarques activos"]
-    if esta_semana:
-        piezas.append(f"<b>{esta_semana}</b> con llegada esta semana")
-    if en_puerto:
-        piezas.append(f"<b>{en_puerto}</b> en proceso en puerto")
-    if por_confirmar:
-        piezas.append(f"<b>{por_confirmar}</b> por confirmar llegada")
-    if retrasados:
-        piezas.append(f"<b>{retrasados}</b> retrasados")
-    if trabados:
-        piezas.append(f"<b>{trabados}</b> pasados de tiempo en su etapa")
-    if recibidas_mes:
-        piezas.append(f"<b>{recibidas_mes}</b> recibidos en {MESES_ES[hoy.month].lower()}")
-    return f'<div class="resumen">{" · ".join(piezas)}.</div>'
-
-
-def _archivar(fila, clave: str, etiqueta: str = "Marcar como recibido", df=None):
-    """Botón de archivo + rescate cuando falta la declaración.
-
-    El candado que impide archivar sin haber pasado por el flujo se mantiene (si
-    no, el histórico se llena de embarques sin trazabilidad). Y la fecha de
-    entrada a almacén se PIDE SIEMPRE antes de archivar: antes el botón
-    archivaba de un solo clic grabando la fecha de hoy en silencio, y eso
-    falseaba el ciclo puerto→almacén de la analítica igual que la declaración
-    inventada que ya se corrigió — la carga casi nunca entra al almacén el mismo
-    día en que alguien se sienta a archivarla. Si además falta la declaración,
-    el mismo formulario la pide con su fecha REAL, en vez de rellenarla sola
-    con la de hoy."""
-    bl = str(fila[COL_BL]).strip()
-    categoria = fila["Categoria"]
-    n_fila = fila.get("FilaSheet")
-    pendiente_key = f"faltan_{clave}"
-
-    if st.button(etiqueta, key=f"rec_{clave}", type="primary", width="stretch"):
-        # Ya no se archiva de una vez: primero se abre el formulario con la
-        # fecha de almacén. Lo que falte del flujo se detecta con lo que ya
-        # muestra la pantalla (sin llamada extra a la API); al guardar, el
-        # servidor lo vuelve a validar — el candado no se movió de sitio.
-        faltantes = []
-        if not es_llego_si(fila.get(COL_LLEGO, "")):
-            faltantes.append(ETAPAS_PUERTO[0])
-        elif not _lleno(fila.get("F_Declaracion")):
-            faltantes.append(ETAPAS_PUERTO[1])
-        st.session_state[pendiente_key] = faltantes
-        rerun_fragmento()
-
-    faltan = st.session_state.get(pendiente_key)
-    if faltan is None:
-        return
-
-    # Rescate huérfano: si la fila que lo abrió ya no está en la vista actual
-    # (la archivaron o borraron por otra vía), la clave se limpia y se sigue.
-    if df is not None and n_fila not in set(df["FilaSheet"]):
-        st.session_state.pop(pendiente_key, None)
-        return
-
-    if ETAPAS_PUERTO[0] in faltan:
-        st.warning("Este embarque no tiene la llegada confirmada. Marca '¿Llegó?' en SI antes de "
-                   "archivarlo: sin esa confirmación no hay fecha de llegada y el histórico "
-                   "quedaría sin trazabilidad.")
-        if st.button("Entendido", key=f"ok_falta_llegada_{clave}"):
-            st.session_state.pop(pendiente_key, None)
-            rerun_fragmento()
-        return
-
-    falta_declaracion = ETAPAS_PUERTO[1] in faltan
-    with st.form(f"form_faltan_{clave}"):
-        if falta_declaracion:
-            st.warning("Falta registrar la recepción y declaración. Pon la fecha real en que ocurrió y "
-                       "el embarque se archiva completo, con su trazabilidad.")
-            fecha_dec = st.date_input(f"{ICONO_ETAPA['Recepción y declaración']} Recepción y declaración",
-                                      value=hoy_rd(), format="DD/MM/YYYY", key=f"falta_dec_{clave}")
-        else:
-            st.caption("Pon la fecha REAL en que la mercancía entró al almacén (si fue hoy, déjala "
-                       "como está). Es la fecha con la que se miden los ciclos en la analítica.")
-            fecha_dec = None
-        fecha_almacen = st.date_input(f"{ICONO_ALMACEN} {ETAPA_ALMACEN}", value=hoy_rd(),
-                                      format="DD/MM/YYYY", key=f"almacen_{clave}")
-        c1, c2 = st.columns(2)
-        confirmar = c1.form_submit_button("Guardar y archivar", type="primary", width="stretch")
-        cancelar = c2.form_submit_button("Cancelar", width="stretch")
-
-    if cancelar:
-        st.session_state.pop(pendiente_key, None)
-        rerun_fragmento()
-    if confirmar:
-        ok, mensaje = marcar_como_recibido(bl, categoria, fila_sugerida=n_fila,
-                                           fecha_declaracion=fecha_dec, fecha_almacen=fecha_almacen)
-        if ok:
-            st.session_state.pop(pendiente_key, None)
-            registrar_log("Recibido" + (" (declaración completada)" if fecha_dec else ""),
-                          bl, categoria,
-                          f"almacén={fecha_almacen.isoformat()}"
-                          + (f" · declaración={fecha_dec.isoformat()}" if fecha_dec else ""))
-            invalidar_caches()
-            st.rerun()
-        elif str(mensaje).startswith("FALTAN_ETAPAS::"):
-            # La pantalla estaba desactualizada (alguien tocó la fila mientras
-            # tanto): ahora sí se sabe qué falta y el formulario se reabre
-            # pidiéndolo. La fecha de almacén ya elegida se conserva sola,
-            # porque vive en el widget con su clave.
-            st.session_state[pendiente_key] = mensaje.split("::", 1)[1].split("|")
-            rerun_fragmento()
-        else:
-            st.error(mensaje)
-
-
-def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
-    """Un diagrama por embarque, siempre visible. El admin avanza con un solo
-    botón (la etapa siguiente, que es el 95% de los casos) y corrige fechas o
-    retrocede desde el desplegable, que es lo raro.
-
-    'contexto' identifica desde dónde se llama: el mismo embarque puede aparecer
-    en más de una vista y sin esto las claves de sus widgets chocan."""
-    es_admin = rol == "admin"
-    filtro_activo = st.session_state.get(f"filtro_puerto_{_slug_css(contexto)}", "todos")
-    df = df.copy()
-    # Con el filtro en "todos" (el estado por defecto) _cumple_filtro_puerto()
-    # siempre da True, así que se evita el .apply() fila por fila en el caso más
-    # común, que es también el que se repite en cada tecla del buscador.
-    if filtro_activo == "todos":
-        df["_NoCumpleFiltro"] = False
-    else:
-        df["_NoCumpleFiltro"] = ~df.apply(lambda f: _cumple_filtro_puerto(f, filtro_activo), axis=1)
-    orden = df.sort_values(["_NoCumpleFiltro", "AlertaDias", "EtapaIdx", COL_ETA],
-                           ascending=[True, False, True, True], na_position="last")
-
-    if filtro_activo != "todos":
-        n_cumple = int((~orden["_NoCumpleFiltro"]).sum())
-        if n_cumple:
-            st.caption(f"Mostrando primero los {n_cumple} embarque(s) que cumplen el filtro activo de arriba.")
-
-    clave_ver = f"ver_todos_{_slug_css(contexto)}"
-    ver_todos = st.session_state.get(clave_ver, False)
-    visibles = orden if ver_todos else orden.head(TOPE_PROCESO)
-
-    fecha_evento = hoy_rd()
-    if es_admin:
-        fecha_evento = st.date_input(
-            "Fecha del evento que vas a confirmar abajo", value=hoy_rd(), format="DD/MM/YYYY",
-            key=f"fecha_evento_{_slug_css(contexto)}",
-            help="Se usa para la etapa que confirmes con los botones de abajo. Cámbiala si estás "
-                 "registrando algo que pasó otro día; así los contadores no mienten.",
-        )
-
-    for _, fila in visibles.iterrows():
-        bl = str(fila[COL_BL]).strip()
-        categoria = fila["Categoria"]
-        etapa = str(fila.get("EtapaActual", "")).strip()
-        es_aerea = es_aereo(fila.get(COL_VIA, ""))
-        clave = clave_fila(contexto, categoria, bl or "sin_bl", fila.get("FilaSheet", ""))
-        alerta = str(fila.get("Alerta", "") or "").strip()
-        # Con dos filas del mismo BL es fácil trabajar sobre la equivocada y creer
-        # que la app "no guardó". El número de fila del Sheet lo desambigua.
-        marca_dup = (f'<span class="badge" style="background:#7C3AED;">⧉ BL repetido · '
-                     f'fila {esc(fila.get("FilaSheet", "?"))}</span>'
-                     if fila.get("BLRepetido") else "")
-        raro = str(fila.get("FlujoRaro", "") or "").strip()
-
-        st.markdown(
-            f'<div class="flujo-cabeza"><span class="flujo-bl">{esc(bl) if bl else "(sin BL)"} '
-            f'{marca_dup}</span>'
-            f'<span class="flujo-desc">{esc(fila[COL_DESC])} · {esc(categoria)}</span></div>'
-            + html_flujo(fechas_flujo_de_fila(fila), etapa, es_aerea=es_aerea)
-            + html_contadores(fila)
-            + (f'<div class="alerta-fila" style="color:#B45309;font-weight:600;">⚠ {esc(alerta)}</div>'
-               if alerta else "")
-            + (f'<div class="alerta-fila" style="color:#991B1B;font-weight:600;">⚠ Fechas fuera de '
-               f'orden: {esc(raro)} Los contadores de este embarque no son confiables.</div>'
-               if raro else ""),
-            unsafe_allow_html=True,
-        )
-
-        if es_admin and bl:
-            declarado = _lleno(fila.get("F_Declaracion"))
-            if not declarado:
-                if st.button(f"{ICONO_ETAPA['Recepción y declaración']} Confirmar: Recepción y declaración",
-                             key=f"av_{clave}", type="primary", width="stretch"):
-                    ok, mensaje = fijar_fecha_declaracion(bl, categoria, fecha=fecha_evento,
-                                                          fila_sugerida=fila.get("FilaSheet"),
-                                                          sello_esperado=fila.get(COL_ACTUALIZACION))
-                    if ok:
-                        registrar_log("Declaración registrada", bl, categoria, fecha_evento.isoformat())
-                        invalidar_caches()
-                        st.rerun()
-                    else:
-                        st.error(mensaje)
-                        st.caption("Agrega la fecha de declaración, ya sea corrigiendo la celda "
-                                  f"'Fecha_Declaracion' en la pestaña '{categoria}' del Sheet, o "
-                                  "actualizando los datos y repitiendo la acción aquí en la aplicación.")
-            else:
-                _archivar(fila, clave, etiqueta=f"{ICONO_ALMACEN} {ETAPA_ALMACEN} (archiva)", df=visibles)
-
-            with st.expander("Corregir fecha o retroceder etapa"):
-                etapa_destino = st.radio(
-                    "Etapa", ETAPAS_PUERTO,
-                    index=(1 if declarado else 0), horizontal=True, key=f"radio_etapa_{clave}",
-                )
-                if etapa_destino == ETAPAS_PUERTO[1]:
-                    fecha_corregida = st.date_input("Fecha real de la declaración", value=hoy_rd(),
-                                                    format="DD/MM/YYYY", key=f"fc_{clave}")
-                else:
-                    fecha_corregida = None
-                    st.caption("Vuelve a 'Llegada a puerto' conservando la llegada ya confirmada "
-                              "(el ETA actual) y borra la fecha de declaración.")
-                if st.button("Ir a esta etapa", key=f"corr_{clave}", width="stretch"):
-                    ok, mensaje = avanzar_estado_puerto(bl, categoria, etapa_destino,
-                                                        fila_sugerida=fila.get("FilaSheet"),
-                                                        fecha=fecha_corregida, sobrescribir=True,
-                                                        sello_esperado=fila.get(COL_ACTUALIZACION))
-                    if ok:
-                        registrar_log(f"Etapa ajustada a '{etapa_destino}'", bl, categoria,
-                                     fecha_corregida.isoformat() if fecha_corregida else "")
-                        invalidar_caches()
-                        st.rerun()
-                    else:
-                        st.error(mensaje)
-                        st.caption("Agrega la fecha de declaración, ya sea corrigiendo la celda "
-                                  f"'Fecha_Declaracion' en la pestaña '{categoria}' del Sheet, o "
-                                  "actualizando los datos y repitiendo la acción aquí en la aplicación.")
-                st.divider()
-                st.caption("'Deshacer llegada' va más atrás todavía: además de borrar la "
-                          "declaración, marca '¿Llegó?' en NO — para cuando la llegada misma se "
-                          "confirmó por error.")
-                if st.button("Deshacer llegada", key=f"undo_{clave}", width="stretch"):
-                    ok, mensaje = marcar_no_llego(bl, categoria, fila_sugerida=fila.get("FilaSheet"),
-                                                  sello_esperado=fila.get(COL_ACTUALIZACION))
-                    if ok:
-                        registrar_log("Llegada deshecha", bl, categoria)
-                        invalidar_caches()
-                        st.rerun()
-                    else:
-                        st.error(mensaje)
-        st.divider()
-
-    if len(orden) > TOPE_PROCESO:
-        etiqueta = (f"Mostrar los {len(orden) - TOPE_PROCESO} restantes" if not ver_todos
-                    else f"Mostrar solo los {TOPE_PROCESO} más urgentes")
-        if st.button(etiqueta, key=f"btn_{clave_ver}", width="stretch"):
-            st.session_state[clave_ver] = not ver_todos
-            rerun_fragmento()
-
-
-def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
-    """El ETA vencido no dice si la mercancía llegó, solo que la fecha pasó.
-    Este panel hace la pregunta directa —¿llegó, sí o no?— y con la respuesta el
-    embarque entra al flujo (SI) o queda registrado como retrasado (NO).
-
-    Confirmar con SI toma el ETA de la fila como fecha de llegada: no hay que
-    teclear la fecha dos veces. Si la carga llegó un día distinto al ETA, hay
-    que corregir el ETA primero desde 'Editar' — por eso no hay un selector de
-    fecha aquí que pudiera contradecir al Sheet."""
-    tiene_etapa = df["EtapaActual"].astype(str).str.strip().ne("")
-    pendientes = df[(df["EstadoTexto"] == EST_PUERTO) & ~tiene_etapa]
-    retrasados = df[(df["EstadoTexto"] == EST_RETRASADO) & ~tiene_etapa]
-    if pendientes.empty and retrasados.empty:
-        return
-
-    TOPE = 12
-    if not pendientes.empty:
-        st.markdown(
-            f'<div class="conf-titulo">¿Llegó a Puerto/Aeropuerto? · {len(pendientes)} '
-            f'embarque(s) con la fecha vencida</div>',
-            unsafe_allow_html=True,
-        )
-        st.caption("Al confirmar, el ETA de la fila queda como fecha de llegada. Si llegó otro día, "
-                   "corrige el ETA en 'Editar' antes de confirmar.")
-
-    def _fila_confirmacion(r, ya_retrasado: bool):
-        bl = str(r[COL_BL]).strip()
-        categoria = r["Categoria"]
-        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], r.get("Categoria", ""))
-        color = STATUS_COLOR.get(r["EstadoTexto"], "#6B7280")
-        c1, c2, c3 = st.columns([3.2, 1.3, 1.5])
-        c1.markdown(
-            f'<div class="conf-fila"><span class="conf-bl">{esc(bl or "(sin BL)")}</span>'
-            f'<span class="conf-desc">{esc(r[COL_DESC])} · {esc(categoria)}</span>'
-            f'<span class="badge" style="background:{color};">{esc(etiqueta)}</span></div>',
-            unsafe_allow_html=True,
-        )
-        if not bl:
-            c2.caption("Sin BL: no se puede gestionar")
-            return
-        clave = clave_fila(tab_key, categoria, bl, r.get("FilaSheet", ""))
-        es_aerea = es_aereo(r.get(COL_VIA, ""))
-        texto_si = "Sí, llegó al aeropuerto" if es_aerea else "Sí, llegó a puerto"
-        if c2.button(texto_si, key=f"si_llego_{clave}", type="primary", width="stretch"):
-            ok, mensaje = confirmar_llegada(bl, categoria, fila_sugerida=r.get("FilaSheet"),
-                                            sello_esperado=r.get(COL_ACTUALIZACION))
-            if ok:
-                registrar_log("Llegada confirmada", bl, categoria, f"ETA {r[COL_ETA]}")
-                invalidar_caches()
-                st.rerun()
-            else:
-                st.error(mensaje)
-                st.caption("Marca '¿Llegó? SI/NO', ya sea corrigiendo esa celda en la pestaña "
-                          f"'{categoria}' del Sheet, o actualizando los datos y repitiendo la "
-                          "acción aquí en la aplicación.")
-        if ya_retrasado:
-            c3.button("Sigue retrasado", key=f"sigue_{clave}", width="stretch", disabled=True)
-            c3.caption("Actualiza el ETA en Editar")
-        elif c3.button("No, está retrasado", key=f"no_llego_{clave}", width="stretch"):
-            ok, mensaje = marcar_no_llego(bl, categoria, fila_sugerida=r.get("FilaSheet"),
-                                          sello_esperado=r.get(COL_ACTUALIZACION))
-            if ok:
-                registrar_log("Marcado como retrasado", bl, categoria, f"ETA {r[COL_ETA]}")
-                invalidar_caches()
-                st.rerun()
-            else:
-                st.error(mensaje)
-                st.caption("Marca '¿Llegó? SI/NO', ya sea corrigiendo esa celda en la pestaña "
-                          f"'{categoria}' del Sheet, o actualizando los datos y repitiendo la "
-                          "acción aquí en la aplicación.")
-
-    for _, r in pendientes.head(TOPE).iterrows():
-        _fila_confirmacion(r, False)
-    if len(pendientes) > TOPE:
-        st.caption(f"…y {len(pendientes) - TOPE} más. Filtra por estado 'En Puerto' para verlos todos.")
-
-    if not retrasados.empty:
-        st.markdown(
-            f'<div class="conf-titulo" style="margin-top:14px;">Ya verificados como retrasados · {len(retrasados)}</div>',
-            unsafe_allow_html=True,
-        )
-        for _, r in retrasados.head(TOPE).iterrows():
-            _fila_confirmacion(r, True)
-        if len(retrasados) > TOPE:
-            st.caption(f"…y {len(retrasados) - TOPE} más.")
-    st.write("")
-
-
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
-    """La vista tal como se está viendo, lista para Excel: sin columnas internas,
-    con el estado ya redactado, las fechas legibles y los contadores del flujo."""
-    if df.empty:
-        return pd.DataFrame(columns=[COL_BL, "Descripción", "Estado"])
-    salida = pd.DataFrame({
-        "BL": df[COL_BL],
-        "OC": df[COL_OC] if COL_OC in df.columns else "",
-        "EE": df[COL_EE] if COL_EE in df.columns else "",
-        "Cliente / Stock": df[COL_CLIENTE_STOCK] if COL_CLIENTE_STOCK in df.columns else "",
-        "Descripción": df[COL_DESC],
-        "Modelo/Serie": df[COL_MODELO] if COL_MODELO in df.columns else "",
-        "Cantidad": df[COL_CANT],
-        "País de origen": df[COL_PAIS],
-        "Vía": (df[COL_VIA].replace("", VIA_MARITIMA) if COL_VIA in df.columns
-               else VIA_MARITIMA),
-        "ETA": [formato_eta(v) for v in df[COL_ETA]],
-        "¿Llegó?": df[COL_LLEGO] if COL_LLEGO in df.columns else "",
-        "Estado": [texto_estado(e, d, v) for e, d, v in
-                   zip(df["EstadoTexto"], df["DiasRel"],
-                       df[COL_VIA] if COL_VIA in df.columns else [""] * len(df))],
-        "Etapa": df["EtapaActual"],
-        "Categoría": df["Categoria"],
-        "Salida": [formato_eta(f) if f else "" for f in df["F_Salida"]],
-        "Llegada a puerto": [formato_eta(f) if f else "" for f in df["F_Puerto"]],
-        "Declaración": [formato_eta(f) if f else "" for f in df["F_Declaracion"]],
-        "Días en tránsito": df["DiasTransito"],
-        "Días en puerto": df["DiasEnPuerto"],
-        "Alerta operativa": df["Alerta"],
-    })
-    for extra in columnas_extra(df):
-        salida[extra] = df[extra]
-    if COL_ACTUALIZACION in df.columns:
-        salida["Última actualización"] = df[COL_ACTUALIZACION]
-    if COL_ACTUALIZADO_POR in df.columns:
-        salida["Actualizado por"] = df[COL_ACTUALIZADO_POR]
-    return salida.reset_index(drop=True)
-
-
-@st.cache_data(show_spinner=False, ttl=600)
-def _df_a_excel(df: pd.DataFrame, hoja: str) -> bytes:
-    """Cacheado a propósito: st.download_button exige los bytes por adelantado,
-    así que sin caché se reconstruía el Excel completo en CADA rerun de la
-    pantalla (cada tecla del buscador, cada clic de filtro)."""
-    buffer = io.BytesIO()
-    nombre = "".join(c for c in hoja if c.isalnum() or c == " ")[:28] or "Datos"
-    # Una cadena que empieza por =, +, - o @ la interpreta Excel como fórmula al
-    # abrir el archivo; se prefija con ' para que quede como texto literal.
-    df = df.map(lambda v: f"'{v}" if isinstance(v, str) and v[:1] in ("=", "+", "-", "@") else v)
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name=nombre)
-    return buffer.getvalue()
-
-
-@st.fragment
-def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: int):
-    if df.empty:
-        st.info("No hay embarques en tránsito en esta categoría.")
-        return
-
-    conteo = df["EstadoTexto"].value_counts().to_dict()
-    proximos_n = conteo.get(EST_PROXIMO, 0)
-    # "Por confirmar llegada" cuenta solo lo que de verdad falta por responder,
-    # no todo lo que tiene el ETA vencido: un embarque con ETA vencido que ya
-    # entró al flujo no está pendiente de nada.
-    etapa_col = df["EtapaActual"].astype(str).str.strip()
-    en_puerto_n = int(((df["EstadoTexto"] == EST_PUERTO) & (etapa_col == "")).sum())
-    sin_fecha_n = conteo.get(EST_SIN_FECHA, 0)
-
-    valores = [v for v in df.get("ValorNum", []) if es_numero(v)]
-    valor_total = sum(valores) if valores else None
-    valor_puerto = sum(v for v, e, et in zip(df.get("ValorNum", []), df["EstadoTexto"], etapa_col)
-                       if es_numero(v) and e == EST_PUERTO and et == "") if valores else None
-
-    st.markdown(_resumen_ejecutivo(df, recibidas_mes), unsafe_allow_html=True)
-
-    # -------------------- KPIs --------------------
-    kpis = [
-        ("Total en tránsito", len(df), COLOR_TOTAL, "Todos", "total"),
-        (f"Próximos {UMBRAL_PROXIMO} días", proximos_n, STATUS_COLOR[EST_PROXIMO], EST_PROXIMO, "proximos"),
-        ("Por confirmar llegada", en_puerto_n, STATUS_COLOR[EST_PUERTO], EST_PUERTO, "enpuerto"),
-        (f"Recibidas en {MESES_ES[hoy_rd().month]}", recibidas_mes, COLOR_RECIBIDAS_MES, "__historico__", "recibidas"),
-    ]
-    # OJO con la clave del contenedor: Streamlit la usa TAL CUAL como clase CSS
-    # (st-key-<clave>). Con espacios o acentos el selector no engancha, por eso
-    # se construye con un slug ASCII.
-    clave = _slug_css(tab_key)
-    estilos = "".join(
-        f".st-key-kpi_{clave}_{slug} button {{"
-        f"background:{color} !important; color:#fff !important; border:none !important;"
-        f"border-radius:14px !important; width:100% !important; min-height:92px !important;"
-        f"text-align:center !important; padding:14px 10px !important;"
-        f"box-shadow:0 2px 8px rgba(17,24,39,0.12) !important; transition:filter .15s ease;}} "
-        f".st-key-kpi_{clave}_{slug} button > div {{"
-        f"display:flex !important; flex-direction:column !important; align-items:center !important;"
-        f"justify-content:center !important; width:100% !important;}} "
-        f".st-key-kpi_{clave}_{slug} button p {{margin:0 !important; color:#fff !important;"
-        f"text-align:center !important; width:100% !important;}} "
-        f".st-key-kpi_{clave}_{slug} button p:first-of-type {{"
-        f"font-size:0.68rem !important; font-weight:700 !important; letter-spacing:0.05em !important;"
-        f"opacity:0.92 !important; line-height:1.2 !important;}} "
-        f".st-key-kpi_{clave}_{slug} button p:last-of-type {{"
-        f"font-size:1.9rem !important; font-weight:800 !important; line-height:1.05 !important;"
-        f"margin-top:6px !important;}} "
-        f".st-key-kpi_{clave}_{slug} button:hover {{filter:brightness(0.93); color:#fff !important;}} "
-        f".st-key-kpi_{clave}_{slug} button:focus {{color:#fff !important;"
-        f"box-shadow:0 0 0 3px rgba(17,24,39,0.15) !important;}}"
-        for _, _, color, _, slug in kpis
-    )
-    st.markdown(f"<style>{estilos}</style>", unsafe_allow_html=True)
-
-    # El contenedor con clave permite que el CSS los ponga en rejilla de 2 en celular.
-    with st.container(key=f"kpirow_{clave}"):
-        cols = st.columns(len(kpis))
-        for col, (label, valor, color, filtro, slug) in zip(cols, kpis):
-            with col:
-                with st.container(key=f"kpi_{clave}_{slug}"):
-                    if st.button(f"{label.upper()}\n\n{valor}", key=f"btn_{clave}_{slug}", width="stretch"):
-                        if filtro == "__historico__":
-                            st.session_state["seccion"] = "Histórico"
-                            st.rerun()
-                        st.session_state[f"estado_{tab_key}"] = filtro
-                        rerun_fragmento()
-
-    # -------------------- Valor en tránsito (solo si el Sheet lo trae) --------------------
-    if valor_total:
-        v1, v2 = st.columns(2)
-        v1.markdown(
-            tarjeta_kpi("Valor en tránsito", formato_dinero(valor_total), "#0C447C",
-                        f"{len(valores)} de {len(df)} embarque(s) con valor declarado"),
-            unsafe_allow_html=True,
-        )
-        v2.markdown(
-            tarjeta_kpi("Valor detenido en puerto", formato_dinero(valor_puerto or 0), "#B45309",
-                        "mercancía llegada y sin confirmar recepción"),
-            unsafe_allow_html=True,
-        )
-        st.write("")
-
-    st.write("")
-    if rol == "admin":
-        _panel_confirmacion(df, tab_key)
-        if sin_fecha_n:
-            st.warning(
-                f"{sin_fecha_n} embarque(s) tienen un ETA que la app no puede interpretar y quedan fuera de "
-                "los conteos por fecha. Revísalos en Herramientas → Normalizar fechas."
-            )
-
-    # -------------------- GRÁFICOS --------------------
-    with st.container():
-        st.markdown('<div class="solo-pantalla">', unsafe_allow_html=True)
-        g1, g2 = st.columns([1.5, 1])
-        with g1:
-            st.caption("Llegadas previstas")
-            grafico_linea_tiempo(df, tab_key)
-        with g2:
-            st.caption("Origen")
-            grafico_paises(df, tab_key)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # -------------------- EN PROCESO EN PUERTO --------------------
-    # Se lee el filtro de Estado ANTES de que el selectbox se instancie más
-    # abajo: el valor ya vive en session_state desde el render anterior (o
-    # desde que un botón de KPI lo puso ahí), así que no hace falta esperar a
-    # dibujar el selector para saber qué está activo.
-    #
-    # Esta sección es, por definición, sobre lo que está EN PUERTO — no debe
-    # aparecer primero por defecto, ni con "Todos": solo cuando el usuario
-    # pide puntualmente ver ese estado con el filtro de abajo.
-    estado_filtro_actual = st.session_state.get(f"estado_{tab_key}", "Todos")
-    # Solo se muestra cuando el filtro dice EXPLÍCITAMENTE "En Puerto" — ni
-    # siquiera con "Todos" (el estado por defecto). Así nunca aparece primero
-    # a menos que el usuario haya pedido puntualmente ver eso.
-    mostrar_en_proceso = estado_filtro_actual == EST_PUERTO
-    en_proceso = _en_proceso(df)
-    if mostrar_en_proceso and not en_proceso.empty:
-        st.markdown("**En proceso en puerto**")
-        st.markdown(html_chips(en_proceso["EtapaActual"].value_counts().to_dict()), unsafe_allow_html=True)
-        html_atraso_puerto(en_proceso, contexto=tab_key)
-        _panel_en_proceso(en_proceso, rol, contexto=tab_key)
-
-    st.divider()
-
-    # -------------------- FILTROS --------------------
-    # Todos los controles de filtro (incluido el Mes ETA, también en la vista
-    # "Todos") viven DENTRO de este fragmento: antes el de Todos estaba fuera y
-    # esta lista lo leía por session_state a través del límite del fragmento.
-    paises = ["Todos"] + sorted({p for p in df[COL_PAIS] if str(p).strip()})
-    # "Retrasado" ya no se ofrece como filtro (v5.0). El estado se sigue
-    # calculando y se ve en cada fila; solo salió de este desplegable.
-    estados = ["Todos"] + [e for e in STATUS_ORDER if e != EST_RETRASADO]
-    criterios = ["ETA más próximo", "Más días detenido", "ETA más lejano",
-                 "BL", "País", "Descripción"]
-    if valor_total:
-        criterios.append("Valor")
-
-    conteo_mes = df["MesETA"].value_counts().to_dict()
-    meses_presentes = sorted(k for k in conteo_mes if k != "sin_eta")
-    mes_opciones = ["Todos"] + meses_presentes + (["sin_eta"] if "sin_eta" in conteo_mes else [])
-
-    conteo_emp = df["EmpresaTransito"].value_counts().to_dict() if "EmpresaTransito" in df.columns else {}
-    empresas_orden = [e for e in EMPRESAS_PAGO if e in conteo_emp]
-    empresas_orden += sorted(e for e in conteo_emp if e not in EMPRESAS_PAGO and e != EMPRESA_SIN_ASIGNAR)
-    if EMPRESA_SIN_ASIGNAR in conteo_emp:
-        empresas_orden.append(EMPRESA_SIN_ASIGNAR)
-    empresa_opciones = ["Todas"] + empresas_orden
-
-    # Un valor que quedó guardado en la sesión pero ya no es una opción (el mes
-    # se vació tras un refresco, o es un orden/estado que ya no existe) se
-    # descarta: si no, el selectbox falla o muestra algo distinto a lo filtrado.
-    for k, validas in ((f"estado_{tab_key}", estados), (f"orden_{tab_key}", criterios),
-                       (f"mes_eta_{tab_key}", mes_opciones), (f"empresa_{tab_key}", empresa_opciones)):
-        if k in st.session_state and st.session_state[k] not in validas:
-            st.session_state.pop(k, None)
-
-    f1, f2, f3 = st.columns([2, 1, 1])
-    busqueda = f1.text_input("Buscar", key=f"busca_{tab_key}",
-                             placeholder="BL, descripción, modelo, OC, cliente…", label_visibility="collapsed")
-    pais_sel = f2.selectbox("País", paises, key=f"pais_{tab_key}", label_visibility="collapsed")
-    estado_sel = f3.selectbox("Estado", estados, key=f"estado_{tab_key}", label_visibility="collapsed")
-
-    f4, f5, f6, f7 = st.columns([1, 1, 1, 1])
-    mes_sel = f4.selectbox("Mes ETA", mes_opciones, key=f"mes_eta_{tab_key}",
-                           format_func=lambda k: (f"Todos · {len(df)}" if k == "Todos"
-                                                  else f"{_etiqueta_mes_eta(k)} · {conteo_mes.get(k, 0)}"))
-    empresa_sel = f5.selectbox("Empresa", empresa_opciones, key=f"empresa_{tab_key}",
-                               format_func=lambda e: (f"Todas · {len(df)}" if e == "Todas"
-                                                      else f"{e} · {conteo_emp.get(e, 0)}"))
-    orden_sel = f6.selectbox("Ordenar por", criterios, key=f"orden_{tab_key}")
-    with f7:
-        st.write("")
-        st.write("")
-        if st.button("Limpiar filtros", key=f"limpiar_{tab_key}", width="stretch"):
-            for k in (f"busca_{tab_key}", f"pais_{tab_key}", f"estado_{tab_key}",
-                      f"orden_{tab_key}", f"mes_eta_{tab_key}", f"empresa_{tab_key}"):
-                st.session_state.pop(k, None)
-            rerun_fragmento()
-
-    filtrado = df
-    activos_txt = []
-    if pais_sel != "Todos":
-        filtrado = filtrado[filtrado[COL_PAIS] == pais_sel]
-        activos_txt.append(f"país: {pais_sel}")
-    if estado_sel != "Todos":
-        filtrado = filtrado[filtrado["EstadoTexto"] == estado_sel]
-        activos_txt.append(f"estado: {estado_sel}")
-    if mes_sel != "Todos":
-        filtrado = filtrado[filtrado["MesETA"] == mes_sel]
-        activos_txt.append(f"mes ETA: {_etiqueta_mes_eta(mes_sel)}")
-    if empresa_sel != "Todas":
-        filtrado = filtrado[filtrado["EmpresaTransito"] == empresa_sel]
-        activos_txt.append(f"empresa: {empresa_sel}")
-    if busqueda and busqueda.strip():
-        filtrado = filtrado[filtrado["Buscar"].str.contains(_norm(busqueda), regex=False, na=False)]
-        activos_txt.append(f"búsqueda: {busqueda.strip()}")
-    filtrado = ordenar_vista(filtrado, orden_sel)
-
-    resumen_valor = ""
-    if valor_total:
-        parcial = sum(v for v in filtrado.get("ValorNum", []) if es_numero(v))
-        if parcial:
-            resumen_valor = f" · {formato_dinero(parcial)}"
-    # Lista los filtros que están recortando la lista: así un Estado o un País
-    # que quedó puesto de antes no pasa desapercibido cuando "faltan" embarques.
-    detalle_filtros = f" · filtros activos → {'; '.join(activos_txt)}" if activos_txt else ""
-    st.caption(f"Mostrando {len(filtrado)} de {len(df)} embarque(s){resumen_valor}{detalle_filtros}")
-
-    render_lista(filtrado)
-
-    # -------------------- EXPORTAR Y VER DETALLE --------------------
-    e1, e2 = st.columns([1, 2])
-    with e1:
-        st.download_button(
-            "Descargar esta vista",
-            data=_df_a_excel(tabla_exportable(filtrado), f"{tab_key}"[:28] or "Vista"),
-            file_name=f"embarques_{_slug_css(tab_key)}_{hoy_rd().isoformat()}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key=f"dl_vista_{tab_key}",
-            width="stretch",
-        )
-
-    if not filtrado.empty:
-        with st.expander("Ver ficha completa de un embarque", expanded=False):
-            opciones_det = _etiquetas_desambiguadas(filtrado, con_categoria=False, largo_desc=40)
-            elegido = st.selectbox("Embarque", opciones_det, key=f"detalle_{tab_key}",
-                                   label_visibility="collapsed")
-            _ficha_embarque(filtrado.iloc[opciones_det.index(elegido)])
-
-    # -------------------- ACCIONES DE ADMIN --------------------
-    if rol == "admin":
-        st.write("")
-        with st.expander("Acciones sobre un embarque", expanded=False):
-            _panel_acciones(filtrado, tab_key)
-
-
-def _panel_acciones(df: pd.DataFrame, tab_key: str):
-    """Un selector y tres botones, en vez de una lista infinita de botones fila
-    por fila (que con 50 embarques hacía la página inusable)."""
-    con_bl = df[df[COL_BL].astype(str).str.strip() != ""]
-    sin_bl = df[df[COL_BL].astype(str).str.strip() == ""]
-
-    if not sin_bl.empty:
-        nombres = ", ".join(str(d)[:40] for d in sin_bl[COL_DESC].head(5))
-        st.caption(f"{len(sin_bl)} fila(s) sin BL asignado no se pueden gestionar desde aquí ({nombres}).")
-
-    if con_bl.empty:
-        st.info("No hay embarques con BL en la vista actual.")
-        return
-
-    opciones = _etiquetas_desambiguadas(con_bl)
-    elegido = st.selectbox("Embarque", opciones, key=f"sel_accion_{tab_key}")
-    fila = con_bl.iloc[opciones.index(elegido)]
-    bl, categoria = str(fila[COL_BL]).strip(), fila["Categoria"]
-    n_fila = fila.get("FilaSheet")
-    etapa = str(fila.get("EtapaActual", "")).strip()
-    clave = clave_fila("acc", tab_key, bl, n_fila)
-
-    if etapa:
-        st.markdown(html_flujo(fechas_flujo_de_fila(fila), etapa,
-                               es_aerea=es_aereo(fila.get(COL_VIA, ""))) + html_contadores(fila),
-                    unsafe_allow_html=True)
-    elif fila["EstadoTexto"] in (EST_PUERTO, EST_RETRASADO):
-        texto = "'Sí, llegó al aeropuerto'" if es_aereo(fila.get(COL_VIA, "")) else "'Sí, llegó a puerto'"
-        st.caption(f"Llegada sin confirmar todavía — usa {texto} en la sección de confirmación, arriba.")
-    st.write("")
-
-    _archivar(fila, clave, df=df)
-    c2, c3 = st.columns(2)
-    if c2.button("Editar", key=f"edit_{clave}", width="stretch"):
-        st.session_state["editar_bl"] = bl
-        st.session_state["editar_fila"] = n_fila
-        st.session_state["seccion"] = "Editar"
-        st.rerun()
-    if c3.button("Eliminar", key=f"del_{clave}", width="stretch"):
-        st.session_state[f"confirmar_del_{tab_key}"] = (bl, categoria, n_fila)
-        rerun_fragmento()
-
-    pendiente = st.session_state.get(f"confirmar_del_{tab_key}")
-    if pendiente:
-        bl_pend, cat_pend, fila_pend = pendiente
-        st.warning(f"¿Eliminar definitivamente el BL {bl_pend} (fila {fila_pend} de {cat_pend})? "
-                   "No se puede deshacer. Si el embarque llegó, usa 'Marcar como recibido' para "
-                   "conservarlo en el histórico.")
-        d1, d2, _ = st.columns([1, 1, 3])
-        if d1.button("Sí, eliminar", key=f"si_del_{tab_key}", type="primary"):
-            ok, mensaje = eliminar_embarque(bl_pend, cat_pend, fila_sugerida=fila_pend)
-            st.session_state.pop(f"confirmar_del_{tab_key}", None)
-            if ok:
-                registrar_log("Eliminado", bl_pend, cat_pend, f"fila {fila_pend}")
-                invalidar_caches()
-                st.rerun()
-            else:
-                st.error(mensaje)
-        if d2.button("Cancelar", key=f"no_del_{tab_key}"):
-            st.session_state.pop(f"confirmar_del_{tab_key}", None)
-            rerun_fragmento()
-
-
-def mostrar_dashboard(datos: dict):
-    encabezado(datos)
-
-    # Los avisos técnicos son instrucciones de trabajo: solo los ve quien puede
-    # ejecutarlas. Al espectador no le sirven y le restan confianza en el dato.
-    es_admin = st.session_state.get("rol") == "admin"
-    if datos["error"]:
-        st.error(datos["error"] if es_admin
-                 else "No se pudieron leer todos los datos en este momento. Intenta recargar en unos segundos.")
-    if es_admin:
-        for aviso in datos.get("avisos", []):
-            st.warning(aviso)
-
-    df_todo = datos["activos"]
-    if df_todo.empty:
-        st.info("Todavía no hay embarques cargados.")
-        return
-
-    df_todo = _enriquecer_cacheado(df_todo)
-    recibidas_mes = contar_recibidas_mes(datos["historico"])
-    rol = st.session_state.get("rol", "viewer")
-
-    # Tránsito = salió y NO tiene confirmada su llegada a puerto/aeropuerto. En
-    # cuanto se confirma, deja de ser tránsito: sale de "Todos" y de cada
-    # categoría y pasa a la vista Puerto/Aeropuerto, donde se ve su estatus
-    # hasta que se reciba en almacén (ahí se archiva, como siempre).
-    en_proceso_df = _en_proceso(df_todo)
-    df_transito = df_todo[df_todo["EtapaActual"].astype(str).str.strip() == ""]
-    # Las pestañas salen de TODO lo activo (no solo del tránsito), para que una
-    # categoría cuya carga ya llegó entera no desaparezca bajo los pies de quien
-    # la tenía seleccionada; muestra su conteo de tránsito (0 si ya no hay).
-    opciones = ["Todos"] + [c for c in CATEGORIAS if (df_todo["Categoria"] == c).any()]
-    if not en_proceso_df.empty:
-        opciones.append(VISTA_EN_PROCESO_PUERTO)
-    conteos = df_transito["Categoria"].value_counts().to_dict()
-    etiquetas = {
-        c: (f"{c} · {len(df_transito)}" if c == "Todos"
-            else f"{c} · {len(en_proceso_df)}" if c == VISTA_EN_PROCESO_PUERTO
-            else f"{c} · {conteos.get(c, 0)}")
-        for c in opciones
+    _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    return True, ""
+
+
+def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str, fila_sugerida=None,
+                          fecha=None, sobrescribir: bool = False, sello_esperado=None):
+    """Mueve el embarque a la etapa indicada. Elegir una etapa ANTERIOR deshace
+    las posteriores, que es la forma de corregir un registro equivocado.
+
+    El candado de bloqueo optimista (sello_esperado) se valida UNA sola vez,
+    contra el estado de la fila al momento de llamar esta función — no en cada
+    escritura interna del camino a 'Llegada a puerto', que son dos pasos (NO y
+    luego SI) y el sello cambia entre uno y otro. Validarlo también en el
+    segundo paso haría que ese paso siempre fallara contra el cambio que
+    acaba de hacer el primero."""
+    if nueva_etapa not in ETAPAS_PUERTO:
+        return False, f"Etapa '{nueva_etapa}' no reconocida."
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return False, f"No existe la pestaña '{categoria}'."
+    fila_num, error = _localizar_fila(ws, bl, fila_sugerida)
+    if error:
+        return False, error
+    if sello_esperado is not None:
+        headers = _headers(ws.title)
+        actual_norm = {_norm_encabezado(k): v for k, v in _leer_fila(ws, fila_num, headers).items()}
+        conflicto = _conflicto_sello(actual_norm, sello_esperado)
+        if conflicto:
+            return False, conflicto
+    if nueva_etapa == ETAPA_LLEGADA:
+        # Retroceder a 'llegada' implica borrar la declaración: eso lo hace
+        # marcar_llegada al escribir SI de nuevo no es necesario, así que aquí
+        # solo se confirma la llegada y se limpia lo posterior.
+        ok, msg = marcar_llegada(bl, categoria, LLEGO_NO, fila_sugerida=fila_sugerida)
+        if not ok:
+            return ok, msg
+        return marcar_llegada(bl, categoria, LLEGO_SI, fila_sugerida=fila_sugerida)
+    return fijar_fecha_declaracion(bl, categoria, fecha=fecha, fila_sugerida=fila_sugerida,
+                                   sobrescribir=sobrescribir)
+
+
+@_con_manejo_apierror
+def eliminar_embarque(bl: str, categoria: str, fila_sugerida=None):
+    ws = get_worksheet(categoria)
+    if ws is None:
+        return False, f"No existe la pestaña '{categoria}'."
+    fila, error = _localizar_fila(ws, bl, fila_sugerida)
+    if error:
+        return False, error
+    if not _verificar_fila_bl(ws, fila, bl):
+        return False, "La fila cambió mientras se procesaba; pulsa Actualizar y reintenta."
+    _con_reintento(lambda: ws.delete_rows(fila))
+    return True, ""
+
+
+@_con_manejo_apierror
+def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
+                         fecha_declaracion=None, fecha_almacen=None):
+    """Archiva el embarque en 'Recibido (Mes)' y lo saca del tablero activo.
+
+    Candado: exige llegada confirmada y fecha de declaración. Si falta la
+    declaración, la pantalla la pide ahí mismo y llega en 'fecha_declaracion'
+    —se registra tal como ocurrió, no se inventa con la fecha de hoy.
+
+    Aquí se CONGELA la llegada: el ETA vigente en este momento se escribe en
+    Fecha_Llegada_Puerto del archivo. Es lo que protege el histórico de que
+    alguien mueva el ETA meses después y cambie los días en puerto ya medidos."""
+    ws_origen = get_worksheet(categoria)
+    if ws_origen is None:
+        return False, f"No existe la pestaña '{categoria}'."
+    fila, error = _localizar_fila(ws_origen, bl, fila_sugerida)
+    if error:
+        return False, error
+
+    headers_origen = _headers(ws_origen.title)
+    datos = _leer_fila(ws_origen, fila, headers_origen)
+    datos_norm = {_norm_encabezado(k): v for k, v in datos.items()}
+
+    if not es_llego_si(datos_norm.get(_norm_encabezado(COL_LLEGO), "")):
+        return False, "FALTAN_ETAPAS::" + ETAPA_LLEGADA
+
+    eta_crudo = str(datos_norm.get(_norm_encabezado(COL_ETA), "")).strip()
+    llegada = parsear_fecha(eta_crudo)
+    declaracion = parsear_fecha(datos_norm.get(_norm_encabezado(COL_FECHA_DECLARACION), "")) or \
+        parsear_fecha(fecha_declaracion)
+    if not declaracion:
+        return False, "FALTAN_ETAPAS::" + "Recepción y declaración"
+
+    almacen = parsear_fecha(fecha_almacen) or hoy_rd()
+    problema = _validar_orden_flujo(llegada, declaracion, almacen)
+    if problema:
+        return False, problema
+
+    base = llegada if BASE_FECHA_RECIBIDO == "llegada" else almacen
+    fecha_recibido = base or llegada
+    if fecha_recibido is None:
+        return False, (f"El BL '{bl}' no tiene un ETA interpretable ('{eta_crudo or 'vacío'}'), "
+                       "así que no se puede saber a qué mes pertenece.")
+
+    ws_destino = get_worksheet(RECIBIDO_SHEET)
+    if ws_destino is None:
+        nombres = ", ".join(f"'{h.title}'" for h in get_spreadsheet().worksheets())
+        return False, f"No existe la pestaña '{RECIBIDO_SHEET}'. Las pestañas visibles son: {nombres}."
+    headers_destino = _asegurar_columnas(ws_destino, COLUMNAS_RECIBIDO)
+
+    registro = {
+        COL_BL: datos_norm.get(_norm_encabezado(COL_BL), bl),
+        COL_DESC: datos_norm.get(_norm_encabezado(COL_DESC), ""),
+        COL_CANT: datos_norm.get(_norm_encabezado(COL_CANT), ""),
+        COL_PAIS: datos_norm.get(_norm_encabezado(COL_PAIS), ""),
+        COL_VIA: datos_norm.get(_norm_encabezado(COL_VIA), ""),
+        COL_ETA: llegada.isoformat() if llegada else eta_crudo,
+        "Fecha_Recibido": fecha_recibido.isoformat(),
+        "Categoria_Origen": categoria,
+        "Registrado_Por": usuario_actual(),
+        COL_ACTUALIZACION: marca_ahora(),
+        COL_ACTUALIZADO_POR: usuario_actual(),
+        COL_FECHA_DECLARACION: declaracion.isoformat(),
+        COL_FECHA_ALMACEN: almacen.isoformat(),
     }
-    seleccion = selector_horizontal(
-        "Categoría", opciones, key="categoria_activa", formato=lambda c: etiquetas.get(c, c),
-    )
+    if llegada:
+        registro[COL_FECHA_LLEGADA_PUERTO] = llegada.isoformat()
+    # Se conserva TODO el rastro: sin esto, archivar borraba la evidencia de por
+    # dónde pasó el embarque y con cuánta demora en cada paso.
+    for columna in OPCIONALES_CATEGORIA:
+        valor = str(datos_norm.get(_norm_encabezado(columna), "")).strip()
+        if valor:
+            registro[columna] = valor
 
-    # Una confirmación de eliminación abierta en otra categoría no debe
-    # sobrevivir al cambio: solo se pierde una confirmación abandonada.
-    for k in [k for k in st.session_state
-              if k.startswith("confirmar_del_") and k != f"confirmar_del_{seleccion}"]:
-        st.session_state.pop(k, None)
+    _con_reintento(lambda: ws_destino.append_row(_fila_desde_dict(headers_destino, registro),
+                                                 value_input_option="RAW"))
+    if not _verificar_fila_bl(ws_origen, fila, bl):
+        return False, (f"El embarque quedó archivado en '{RECIBIDO_SHEET}', pero la fila {fila} de "
+                       f"'{categoria}' cambió mientras se procesaba y NO se borró. Bórrala a mano en "
+                       "el Sheet para que no quede duplicado, o vuelve a intentarlo.")
+    try:
+        _con_reintento(lambda: ws_origen.delete_rows(fila))
+    except Exception as e:  # noqa: BLE001
+        return False, (f"El embarque quedó archivado en '{RECIBIDO_SHEET}', pero NO se pudo borrar de "
+                       f"'{categoria}' (fila {fila}): {e}. Bórrala a mano en el Sheet para que no quede "
+                       "duplicado, o vuelve a intentarlo.")
+    return True, ""
 
-    if seleccion == VISTA_EN_PROCESO_PUERTO:
-        # Filtro por categoría de tránsito: deja solo lo que ya llegó de esa
-        # categoría, con sus estatus.
-        conteo_cat = en_proceso_df["Categoria"].value_counts().to_dict()
-        cats_puerto = [c for c in CATEGORIAS if c in conteo_cat]
-        cats_puerto += sorted(c for c in conteo_cat if c not in CATEGORIAS)
-        opciones_cat = ["Todas"] + cats_puerto
-        if st.session_state.get("puerto_categoria", "Todas") not in opciones_cat:
-            st.session_state.pop("puerto_categoria", None)
-        cat_sel = st.selectbox(
-            "Categoría", opciones_cat, key="puerto_categoria",
-            format_func=lambda c: (f"Todas · {len(en_proceso_df)}" if c == "Todas"
-                                   else f"{c} · {conteo_cat.get(c, 0)}"),
-        )
-        vista_puerto = (en_proceso_df if cat_sel == "Todas"
-                        else en_proceso_df[en_proceso_df["Categoria"] == cat_sel])
-        st.markdown(html_chips(vista_puerto["EtapaActual"].value_counts().to_dict()),
-                    unsafe_allow_html=True)
-        html_atraso_puerto(vista_puerto, contexto=VISTA_EN_PROCESO_PUERTO)
-        st.divider()
-        _panel_en_proceso(vista_puerto, rol, contexto=VISTA_EN_PROCESO_PUERTO)
-        return
 
-    sub = df_transito if seleccion == "Todos" else df_transito[df_transito["Categoria"] == seleccion]
-    _render_categoria(sub, rol, seleccion, recibidas_mes)
+@_con_manejo_apierror
+def quitar_de_recibido(bl: str, categoria_manual: str = None, fila_sugerida=None):
+    """Reversa de 'Marcar como Recibido': devuelve el embarque a su categoría con
+    lo que traía (llegada confirmada, declaración, y las opcionales que tuviera).
+
+    La fecha de almacén no vuelve: justo eso es lo que se está deshaciendo, y
+    esa columna solo existe en la pestaña de archivo."""
+    ws_recibido = get_worksheet(RECIBIDO_SHEET)
+    if ws_recibido is None:
+        return False, f"No existe la pestaña '{RECIBIDO_SHEET}'."
+    fila, error = _localizar_fila(ws_recibido, bl, fila_sugerida)
+    if error:
+        return False, error
+
+    headers = _headers(ws_recibido.title)
+    datos_norm = {_norm_encabezado(k): v for k, v in _leer_fila(ws_recibido, fila, headers).items()}
+
+    categoria = (categoria_manual or datos_norm.get(_norm_encabezado("Categoria_Origen"), "")).strip()
+    if categoria not in CATEGORIAS:
+        return False, f"'{categoria or 'vacía'}' no es una categoría válida. Elige una del menú antes de confirmar."
+
+    # El ETA que vuelve es el congelado al archivar, no el que pudiera haberse
+    # movido: es la fecha con la que se midió este embarque.
+    eta_vuelta = (str(datos_norm.get(_norm_encabezado(COL_FECHA_LLEGADA_PUERTO), "")).strip()
+                  or str(datos_norm.get(_norm_encabezado(COL_ETA), "")).strip())
+
+    devuelto = {
+        COL_BL: datos_norm.get(_norm_encabezado(COL_BL), bl),
+        COL_DESC: datos_norm.get(_norm_encabezado(COL_DESC), ""),
+        COL_CANT: datos_norm.get(_norm_encabezado(COL_CANT), ""),
+        COL_PAIS: datos_norm.get(_norm_encabezado(COL_PAIS), ""),
+        COL_VIA: datos_norm.get(_norm_encabezado(COL_VIA), ""),
+        COL_ETA: eta_vuelta,
+        COL_LLEGO: LLEGO_SI,
+    }
+    for columna in (*OPCIONALES_CATEGORIA, COL_FECHA_DECLARACION):
+        valor = str(datos_norm.get(_norm_encabezado(columna), "")).strip()
+        if valor:
+            devuelto[columna] = valor
+
+    ok, mensaje = append_row(devuelto, categoria)
+    if not ok:
+        return False, mensaje or f"No se pudo escribir de vuelta en '{categoria}'."
+    if not _verificar_fila_bl(ws_recibido, fila, bl):
+        return False, (f"El embarque volvió a '{categoria}', pero la fila {fila} de "
+                       f"'{RECIBIDO_SHEET}' cambió mientras se procesaba y NO se borró. "
+                       "Bórralo a mano para que no quede duplicado.")
+    try:
+        _con_reintento(lambda: ws_recibido.delete_rows(fila))
+    except Exception as e:  # noqa: BLE001
+        return False, (f"El embarque volvió a '{categoria}', pero no se pudo borrar de "
+                       f"'{RECIBIDO_SHEET}' (fila {fila}): {e}. Bórralo a mano para que no quede duplicado.")
+    return True, ""
+
+
+@_con_manejo_apierror
+def normalizar_etas(cambios: list):
+    """cambios = [(categoria, fila_sheet, valor_esperado, iso)]. Reescribe los ETA
+    en ISO agrupando por pestaña: una llamada por pestaña, no una por celda.
+    Antes de escribir compara con el valor que la pantalla vio: si alguien movió
+    filas mientras tanto, esa celda se salta en vez de escribir sobre otra cosa."""
+    if not cambios:
+        return True, "Sin cambios."
+    por_categoria = {}
+    for categoria, fila, esperado, iso in cambios:
+        por_categoria.setdefault(categoria, []).append((fila, esperado, iso))
+
+    total, saltadas = 0, 0
+    for categoria, lista in por_categoria.items():
+        ws = get_worksheet(categoria)
+        if ws is None:
+            continue
+        headers = _headers(ws.title)
+        columna = _columna_indice(headers, COL_ETA)
+        if columna is None:
+            continue
+        actuales = _con_reintento(lambda: ws.col_values(columna)) or []
+        cuerpo = []
+        for fila, esperado, iso in lista:
+            visto = actuales[fila - 1] if len(actuales) >= fila else ""
+            if str(visto).strip() != str(esperado).strip():
+                saltadas += 1
+                continue
+            cuerpo.append({"range": rowcol_to_a1(fila, columna), "values": [[iso]]})
+        if cuerpo:
+            _con_reintento(lambda c=cuerpo: ws.batch_update(c, value_input_option="RAW"))
+            total += len(cuerpo)
+    extra = f" {saltadas} se saltaron porque el Sheet cambió; actualiza y repite." if saltadas else ""
+    return True, f"{total} fecha(s) normalizada(s) a formato AAAA-MM-DD.{extra}"
+
+
+# --- Escrituras: Estatus de Pago --------------------------------------------
+def _buscar_fila_pago(ws, bl: str):
+    """Ubica la fila de un BL en la pestaña Pagos. Devuelve (fila, ambiguo).
+
+    A propósito NO reusa _localizar_fila(): esa función trata 'no encontrado'
+    como un error, porque en tránsito toda fila ya existe de antemano. Aquí
+    'no encontrado' es el caso normal la primera vez que se registra un
+    expediente, así que se resuelve aparte en vez de forzar ese significado."""
+    headers = _headers(ws.title)
+    columna = _columna_indice(headers, COL_BL)
+    if columna is None:
+        return None, False
+    valores = _con_reintento(lambda: ws.col_values(columna)) or []
+    objetivo = _norm(bl)
+    coincidencias = [i + 1 for i, v in enumerate(valores) if i >= 1 and _norm(v) == objetivo]
+    if not coincidencias:
+        return None, False
+    if len(coincidencias) == 1:
+        return coincidencias[0], False
+    return None, True
+
+
+def _aplicar_validaciones_pagos(ws):
+    """Mejor esfuerzo: agrega los selectores nativos de Google Sheets —
+    calendario en Fecha_SinMora / Fecha_PagoRealizado, lista desplegable en
+    Empresa y en Prioridad (1-4) — para que esas columnas se elijan con clic
+    en vez de tecleo libre.
+
+    'strict': False en ambos casos a propósito: si algo no calza exactamente,
+    Sheets lo marca con una advertencia visual en vez de RECHAZAR la
+    escritura — un candado duro aquí podría bloquear una escritura real de la
+    app o de Logística. Devuelve (ok, mensaje): quien llame desde la creación
+    automática de la pestaña puede ignorar el resultado (es cosmético, no
+    debe tumbar una escritura real de datos), pero un disparo manual sí
+    necesita saber si de verdad funcionó."""
+    try:
+        headers = ws.row_values(1)
+        requests = []
+        for col_nombre in (COL_FECHA_SIN_MORA, COL_FECHA_PAGO_REAL):
+            idx = _columna_indice(headers, col_nombre)
+            if not idx:
+                continue
+            requests.append({
+                "setDataValidation": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": 1,
+                        "endRowIndex": 2000,
+                        "startColumnIndex": idx - 1,
+                        "endColumnIndex": idx,
+                    },
+                    "rule": {
+                        "condition": {"type": "DATE_IS_VALID"},
+                        "showCustomUi": True,
+                        "strict": False,
+                    },
+                },
+            })
+        idx_empresa = _columna_indice(headers, COL_EMPRESA)
+        if idx_empresa:
+            requests.append({
+                "setDataValidation": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": 1,
+                        "endRowIndex": 2000,
+                        "startColumnIndex": idx_empresa - 1,
+                        "endColumnIndex": idx_empresa,
+                    },
+                    "rule": {
+                        "condition": {"type": "ONE_OF_LIST",
+                                      "values": [{"userEnteredValue": e} for e in EMPRESAS_PAGO]},
+                        "showCustomUi": True,
+                        "strict": False,
+                    },
+                },
+            })
+        idx_prioridad = _columna_indice(headers, COL_PRIORIDAD)
+        if idx_prioridad:
+            requests.append({
+                "setDataValidation": {
+                    "range": {
+                        "sheetId": ws.id,
+                        "startRowIndex": 1,
+                        "endRowIndex": 2000,
+                        "startColumnIndex": idx_prioridad - 1,
+                        "endColumnIndex": idx_prioridad,
+                    },
+                    "rule": {
+                        "condition": {"type": "ONE_OF_LIST",
+                                      "values": [{"userEnteredValue": str(p)} for p in PRIORIDADES_PAGO]},
+                        "showCustomUi": True,
+                        "strict": False,
+                    },
+                },
+            })
+        if not requests:
+            return False, "No se encontraron las columnas esperadas (fechas / Empresa / Prioridad) en la pestaña."
+        get_spreadsheet().batch_update({"requests": requests})
+        return True, "Selectores aplicados: calendario en las fechas, lista desplegable en Empresa y en Prioridad (1-4)."
+    except Exception as e:  # noqa: BLE001
+        return False, f"No se pudo aplicar los selectores: {e}"
+
+
+def _obtener_o_crear_ws_pagos():
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is not None:
+        return ws
+    ss = get_spreadsheet()
+    ws = ss.add_worksheet(title=PAGOS_SHEET, rows=2000, cols=len(COLUMNAS_PAGOS))
+    _con_reintento(lambda: ws.update(range_name="A1", values=[COLUMNAS_PAGOS], value_input_option="RAW"))
+    _refrescar_estructura()
+    ws = get_worksheet(PAGOS_SHEET)
+    _aplicar_validaciones_pagos(ws)  # mejor esfuerzo, no bloquea si falla
+    return ws
+
+
+def aplicar_selectores_pagos():
+    """Aplica (o reintenta) los selectores de calendario y de Empresa sobre la
+    pestaña Pagos que YA EXISTE. Para correrlo a mano una vez sobre una
+    pestaña creada antes de que estos selectores existieran — la creación
+    automática solo los aplica a pestañas nuevas. Se asegura primero de que
+    las columnas existan (por si Empresa nunca se llegó a crear)."""
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}' todavía."
+    _asegurar_columnas(ws, COLUMNAS_PAGOS)
+    return _aplicar_validaciones_pagos(ws)
+
+
+def mover_empresa_primera_columna():
+    """Mueve la columna Empresa a la posición A (antes de BL) en una pestaña
+    Pagos que ya existía de antes. Puramente cosmético: la app siempre busca
+    las columnas por NOMBRE, nunca por posición, así que esto no cambia nada
+    funcionalmente — es solo para que se vea como Logística lo pidió al
+    trabajar directo en el Sheet. Pensado para correrlo una sola vez.
+
+    Se asegura primero de que la columna exista: si nadie ha guardado nada
+    desde que Empresa se agregó al esquema, la columna todavía no está en el
+    Sheet, y sin esto el botón no encontraba nada que mover."""
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}' todavía."
+    try:
+        headers = _asegurar_columnas(ws, COLUMNAS_PAGOS)
+        idx = _columna_indice(headers, COL_EMPRESA)
+        if not idx:
+            return False, "No se pudo crear ni encontrar la columna 'Empresa'."
+        idx0 = idx - 1
+        if idx0 == 0:
+            return True, "'Empresa' ya es la primera columna."
+        get_spreadsheet().batch_update({"requests": [{
+            "moveDimension": {
+                "source": {"sheetId": ws.id, "dimension": "COLUMNS",
+                          "startIndex": idx0, "endIndex": idx0 + 1},
+                "destinationIndex": 0,
+            },
+        }]})
+        _refrescar_estructura()
+        return True, "'Empresa' movida a la primera columna (A)."
+    except Exception as e:  # noqa: BLE001
+        return False, f"No se pudo mover la columna: {e}"
+
+
+@_con_manejo_apierror
+def guardar_pago(bl: str, conceptos: dict, estado: str = None, empresa: str = None, referencia: dict = None,
+                 sello_esperado=None, llegada: str = None):
+    """Crea o actualiza la fila de Pagos de un BL. `conceptos` trae únicamente
+    los que aplican a este expediente (los que no, se guardan vacíos: 'no
+    aplica' no es lo mismo que 'cero'). `empresa`, si viene, se aplica SIEMPRE
+    (crear o editar) — a diferencia de Descripción/Cantidad/Llegada, Empresa
+    no tiene otra fuente de verdad que pisar: es Logística quien la fija, así
+    que corregirla aquí es exactamente lo que se espera. `referencia`
+    (Descripción/Cantidad/Llegada) solo se usa AL CREAR la fila — si ya
+    existe, no se toca, porque esos vienen de sincronizar_pagos_con_transito().
+    `llegada` (AAAA-MM-DD), si viene, SÍ se aplica siempre (crear o editar):
+    es la única vía para corregir la Llegada guardada en Pagos después de que
+    la sincronización o el alta manual la fijaron la primera vez — pensado
+    para BL sin match en tránsito, donde no hay otra fuente de la que jalarla
+    en vivo (ver LlegadaEfectiva en logica.enriquecer_pagos). No toca las
+    ventanas SIN MORA ni Pago Realizado — esas se fijan aparte, con
+    registrar_sin_mora() y registrar_pago_realizado()."""
+    bl = str(bl or "").strip()
+    if not bl:
+        return False, "Falta el BL."
+
+    ws = _obtener_o_crear_ws_pagos()
+    fila, ambiguo = _buscar_fila_pago(ws, bl)
+    if ambiguo:
+        return False, (f"Hay más de un registro de pago para el BL '{bl}'. Corrígelo a mano en el "
+                       f"Sheet '{PAGOS_SHEET}' antes de continuar.")
+
+    headers = _asegurar_columnas(ws, COLUMNAS_PAGOS)
+    datos = {c: v for c, v in conceptos.items() if c in CONCEPTOS_PAGO}
+    if estado:
+        datos[COL_ESTADO_PAGO] = estado
+    if empresa:
+        datos[COL_EMPRESA] = empresa
+    if llegada:
+        datos[COL_PAGO_LLEGADA] = llegada
+    datos[COL_ACTUALIZACION] = marca_ahora()
+    datos[COL_ACTUALIZADO_POR] = usuario_actual()
+
+    if fila is None:
+        nuevo = {COL_BL: bl, **(referencia or {}), **datos}
+        _con_reintento(lambda: ws.append_row(_fila_desde_dict(headers, nuevo), value_input_option="RAW"))
+        return True, ""
+
+    combinado = _leer_fila(ws, fila, headers)
+    combinado_norm = {_norm_encabezado(k): v for k, v in combinado.items()}
+    conflicto = _conflicto_sello(combinado_norm, sello_esperado, que="expediente")
+    if conflicto:
+        return False, conflicto
+    combinado.update(datos)
+    rango = f"{rowcol_to_a1(fila, 1)}:{rowcol_to_a1(fila, len(headers))}"
+    _con_reintento(lambda: ws.update(range_name=rango, values=[_fila_desde_dict(headers, combinado)],
+                                     value_input_option="RAW"))
+    return True, ""
+
+
+@_con_manejo_apierror
+def registrar_sin_mora(bl: str, fecha, sobrescribir: bool = False):
+    """Fija la fecha límite saludable de pago, a criterio de Logística. Ya NO
+    guarda montos: el total sale en vivo de los conceptos, así que aquí solo
+    hace falta la fecha — sirve para medir después si el pago llegó a tiempo.
+    Con sobrescribir=True se corrige una fecha ya puesta."""
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}'. Registra primero los conceptos del expediente."
+    fila, ambiguo = _buscar_fila_pago(ws, bl)
+    if ambiguo:
+        return False, f"Hay más de un registro de pago para el BL '{bl}'."
+    if fila is None:
+        return False, f"El BL '{bl}' no tiene conceptos registrados todavía en '{PAGOS_SHEET}'."
+
+    headers = _asegurar_columnas(ws, [COL_FECHA_SIN_MORA, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    actual = _leer_fila(ws, fila, headers)
+    ya_registrado = str(actual.get(COL_FECHA_SIN_MORA, "")).strip()
+    if ya_registrado and not sobrescribir:
+        return False, (f"Este expediente ya tiene una fecha saludable registrada ({ya_registrado}). "
+                       "Marca la casilla de corrección para cambiarla.")
+
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_FECHA_SIN_MORA)]), "values": [[fecha.isoformat()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+    ]
+    _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    return True, ""
+
+
+@_con_manejo_apierror
+def registrar_pago_realizado(bl: str, fecha, extra: dict, sobrescribir: bool = False):
+    """Registra que el expediente ya se pagó: la fecha real y el EXTRA pagado
+    de más sobre los conceptos originales (por mora, ajuste, etc.) — lo
+    escribe Logística a mano, en USD y/o DOP; 0 si no hubo diferencia. No es
+    un total: es la diferencia, y se le suma al total de los conceptos para
+    mostrar el costo final. Marca el expediente como Pagado automáticamente.
+    Con sobrescribir=True se corrige un pago ya registrado."""
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}'."
+    fila, ambiguo = _buscar_fila_pago(ws, bl)
+    if ambiguo:
+        return False, f"Hay más de un registro de pago para el BL '{bl}'."
+    if fila is None:
+        return False, f"El BL '{bl}' no tiene conceptos registrados todavía en '{PAGOS_SHEET}'."
+
+    headers = _asegurar_columnas(ws, [COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
+                                       COL_ESTADO_PAGO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    actual = _leer_fila(ws, fila, headers)
+    ya_registrado = str(actual.get(COL_FECHA_PAGO_REAL, "")).strip()
+    if ya_registrado and not sobrescribir:
+        return False, (f"Este expediente ya tiene un pago registrado ({ya_registrado}). "
+                       "Marca la casilla de corrección para cambiarlo.")
+
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_FECHA_PAGO_REAL)]), "values": [[fecha.isoformat()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_PAGOREAL_USD)]), "values": [[extra.get("USD", 0.0)]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_PAGOREAL_DOP)]), "values": [[extra.get("DOP", 0.0)]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ESTADO_PAGO)]), "values": [[ESTADO_PAGO_PAGADO]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+    ]
+    _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    return True, ""
+
+
+@_con_manejo_apierror
+def marcar_estado_pago(bl: str, estado: str):
+    """Pendiente/Pagado: campo manual, lo marca Logística a criterio propio."""
+    if estado not in (ESTADO_PAGO_PENDIENTE, ESTADO_PAGO_PAGADO):
+        return False, f"Estado '{estado}' no reconocido."
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}'."
+    fila, ambiguo = _buscar_fila_pago(ws, bl)
+    if ambiguo:
+        return False, f"Hay más de un registro de pago para el BL '{bl}'."
+    if fila is None:
+        return False, f"El BL '{bl}' no tiene conceptos registrados todavía."
+    headers = _asegurar_columnas(ws, [COL_ESTADO_PAGO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ESTADO_PAGO)]), "values": [[estado]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+    ]
+    _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    return True, ""
+
+
+@_con_manejo_apierror
+def fijar_prioridad_pago(bl: str, prioridad):
+    """Fija la prioridad de pago de un expediente (1-4, donde 1 = pagar
+    primero), o la quita con None (celda vacía). Mismo patrón que
+    marcar_estado_pago(): campo manual de Logística, una sola celda más los
+    sellos de auditoría, sin tocar nada más de la fila."""
+    if prioridad is not None and prioridad not in PRIORIDADES_PAGO:
+        return False, f"Prioridad '{prioridad}' no reconocida: usa 1, 2, 3 o 4."
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}'."
+    fila, ambiguo = _buscar_fila_pago(ws, bl)
+    if ambiguo:
+        return False, f"Hay más de un registro de pago para el BL '{bl}'."
+    if fila is None:
+        return False, f"El BL '{bl}' no tiene conceptos registrados todavía."
+    headers = _asegurar_columnas(ws, [COL_PRIORIDAD, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
+    peticiones = [
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_PRIORIDAD)]),
+         "values": [[prioridad if prioridad is not None else ""]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZACION)]), "values": [[marca_ahora()]]},
+        {"range": rowcol_to_a1(fila, indices[_norm_encabezado(COL_ACTUALIZADO_POR)]), "values": [[usuario_actual()]]},
+    ]
+    _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    return True, ""
+
+
+@st.cache_resource
+def _lock_sync_pagos():
+    """Candado de proceso para sincronizar_pagos_con_transito: serializa la
+    carrera dentro de este proceso (Community Cloud corre un solo proceso)."""
+    return threading.Lock()
+
+
+@_con_manejo_apierror
+def sincronizar_pagos_con_transito(activos: pd.DataFrame, historico: pd.DataFrame):
+    """Agrega a Pagos, con BL/Descripción/Cantidad/Llegada ya llenos, los
+    expedientes de tránsito (activos + histórico) que todavía no tienen fila
+    ahí. Pensado para que Logística pueda abrir el Google Sheet directamente y
+    encontrar la fila ya lista para escribir los montos, sin tener que crearla
+    a mano ni pasar por la app.
+
+    No pisa ni borra nada de lo que ya exista en Pagos: un BL que ya tiene
+    fila se deja tal cual, aunque su descripción o llegada haya cambiado en
+    tránsito después de sincronizado. Sincronizar solo AGREGA lo que falta."""
+    with _lock_sync_pagos():
+        ws = _obtener_o_crear_ws_pagos()
+        headers = _asegurar_columnas(ws, COLUMNAS_PAGOS)
+        columna_bl = _columna_indice(headers, COL_BL)
+        existentes = set()
+        if columna_bl:
+            valores = _con_reintento(lambda: ws.col_values(columna_bl)) or []
+            existentes = {_norm(v) for v in valores[1:] if str(v).strip()}
+
+        sello, autor = marca_ahora(), usuario_actual()
+        nuevas, vistos = [], set()
+        for fuente, es_hist in ((activos, False), (historico, True)):
+            if fuente is None or fuente.empty:
+                continue
+            for _, r in fuente.iterrows():
+                bl = str(r.get(COL_BL, "")).strip()
+                clave = _norm(bl)
+                if not bl or clave in existentes or clave in vistos:
+                    continue
+                if es_hist:
+                    llegada = (parsear_fecha(r.get(COL_FECHA_LLEGADA_PUERTO, ""))
+                              or parsear_fecha(r.get(COL_ETA, "")))
+                else:
+                    llegada = fecha_llegada_fila(r) or parsear_fecha(r.get(COL_ETA, ""))
+                nuevas.append({
+                    COL_BL: bl,
+                    COL_DESC: str(r.get(COL_DESC, "")),
+                    COL_CANT: str(r.get(COL_CANT, "")),
+                    COL_PAGO_LLEGADA: llegada.isoformat() if llegada else "",
+                    COL_ACTUALIZACION: sello,
+                    COL_ACTUALIZADO_POR: autor,
+                })
+                # Empresa se deja en blanco a propósito: tránsito no tiene ese
+                # concepto (solo trackea Antillana), y quién debe cada expediente
+                # lo decide Logística a mano, no la sincronización.
+                vistos.add(clave)
+
+        if not nuevas:
+            return True, "0 expedientes nuevos: Pagos ya tenía todos los BL de tránsito."
+
+        filas = [_fila_desde_dict(headers, n) for n in nuevas]
+        _con_reintento(lambda: ws.append_rows(filas, value_input_option="RAW"))
+        return True, f"{len(nuevas)} expediente(s) agregado(s) a Pagos desde tránsito."

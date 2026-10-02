@@ -1,0 +1,422 @@
+/**
+ * LIMPIEZA DEL SHEET DE TRÁNSITO — Antillana Comercial (v2, 1 oct 2026)
+ *
+ * QUÉ HACE (solo en las 10 pestañas de embarques; NUNCA toca Pagos ni Log):
+ *   1) Fusiona encabezados duplicados (Montacargas: Fecha_Salida; Construcción: sello
+ *      de actualización): copia los datos a la columna que la app lee y borra el duplicado.
+ *   2) Borra columnas vacías que la app no usa: Fecha_Despacho, Contador por BL, Cliente, Stock.
+ *      Si alguna trae datos, NO la borra y te avisa.
+ *   3) En Recibido (Mes) borra Fecha_Solicitud_Pago, Fecha_Pago y Fecha_Despacho aunque
+ *      tengan datos (decisión de Dauris, 1 oct 2026). Antes se hace una copia de respaldo.
+ *   4) Corrige 'AEREO' -> 'Aéreo' en Via_Transporte.
+ *   5) (Paso aparte) Agrega la columna Empresa a la izquierda y la llena.
+ *   6) (Paso aparte, v2) Pagos: formato aaaa-mm-dd en las fechas y orden por Llegada. Es lo ÚNICO
+ *      que toca en Pagos; no cambia montos, empresas ni prioridades.
+ *
+ * NO cambia formatos, colores, anchos ni el orden de las columnas.
+ *
+ * CÓMO USARLO: menú «Limpieza tránsito» (aparece al recargar el Sheet).
+ *   1. «1. PRUEBA de limpieza»  -> solo informa en la pestaña _REPORTE_LIMPIEZA.
+ *   2. «2. APLICAR limpieza»     -> pide confirmación, hace respaldo, aplica y verifica.
+ *   3. Abre la app y confirma que todo carga. Luego:
+ *   4. «3. PRUEBA de Empresa»    -> informa qué escribiría.
+ *   5. «4. AGREGAR columna Empresa».
+ * Ejecútalo cuando nadie esté editando el Sheet ni usando la app para escribir.
+ */
+
+var HOJAS = ['Montacargas', 'Construcción y Minería', 'Agrícola', 'Elevadores', 'Generadores',
+             'General', 'Aéreos', 'Carga Suelta', 'Consolidados', 'Recibido (Mes)'];
+var HOJA_PAGOS = 'Pagos';            // solo lectura
+var HOJA_REPORTE = '_REPORTE_LIMPIEZA';
+
+// Se borran SOLO si están completamente vacías (claves ya normalizadas).
+var BORRAR_SI_VACIA = ['fechadespacho', 'contadorporbl', 'cliente', 'stock'];
+// Se borran aunque tengan datos (decisión expresa).
+var BORRAR_AUNQUE_TENGA = {'Recibido (Mes)': ['fechasolicitudpago', 'fechapago', 'fechadespacho']};
+
+var ANT = 'Antillana Comercial', TEC = 'Tecnicaribe', MOT = 'Motor Ibérico';
+var EMPRESAS = [ANT, TEC, MOT];
+var EMPRESA_FIJA = {'Montacargas': ANT, 'Construcción y Minería': ANT, 'Elevadores': TEC,
+                    'Generadores': TEC, 'Agrícola': MOT};
+var EMPRESAS_LIBRES = {'General': EMPRESAS, 'Aéreos': EMPRESAS, 'Carga Suelta': EMPRESAS,
+                       'Consolidados': [ANT, TEC], 'Recibido (Mes)': EMPRESAS};
+
+// ---------------------------------------------------------------- utilidades puras
+function norm_(s) {
+  return String(s === null || s === undefined ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase().replace(/[\s_\/]+/g, '');
+}
+function vacio_(v) { return v === null || v === undefined || String(v).trim() === ''; }
+function clave_(v) { return v instanceof Date ? 'D' + v.getTime() : String(v).trim(); }
+function canonEmpresa_(v) {
+  var n = norm_(v);
+  if (n === 'antillana') return ANT;
+  for (var i = 0; i < EMPRESAS.length; i++) if (norm_(EMPRESAS[i]) === n) return EMPRESAS[i];
+  return null;
+}
+function claveBL_(v) {
+  if (vacio_(v)) return '';
+  if (typeof v === 'number' && v % 1 === 0) return String(v);
+  return String(v).trim().toUpperCase();
+}
+
+/**
+ * Plan de limpieza de UNA hoja. `valores` = matriz [fila][col] con la fila 1 de encabezados.
+ * No modifica nada; devuelve qué haría.
+ */
+function planearHoja_(nombre, valores) {
+  var plan = {hoja: nombre, bloqueada: false, avisos: [], conflictos: [], mover: [], borrar: [], via: []};
+  if (!valores || !valores.length) { plan.avisos.push('Hoja vacía'); return plan; }
+  var enc = valores[0], nf = valores.length, nc = enc.length;
+  var tieneDatos = function (c) {
+    for (var r = 1; r < nf; r++) if (!vacio_(valores[r][c])) return true;
+    return false;
+  };
+  var contarDatos = function (c) {
+    var n = 0; for (var r = 1; r < nf; r++) if (!vacio_(valores[r][c])) n++; return n;
+  };
+  var grupos = {}, orden = [];
+  for (var c = 0; c < nc; c++) {
+    if (vacio_(enc[c])) continue;
+    var k = norm_(enc[c]);
+    if (!grupos[k]) { grupos[k] = []; orden.push(k); }
+    grupos[k].push(c);
+  }
+  var aBorrar = {};
+  // 1) duplicados: se conserva la PRIMERA columna (la que la app lee)
+  orden.forEach(function (k) {
+    var cols = grupos[k]; if (cols.length < 2) return;
+    var keeper = cols[0];
+    for (var i = 1; i < cols.length; i++) {
+      var otra = cols[i], filas = [];
+      for (var r = 1; r < nf; r++) {
+        if (vacio_(valores[r][otra])) continue;
+        if (vacio_(valores[r][keeper])) filas.push(r);
+        else if (clave_(valores[r][keeper]) !== clave_(valores[r][otra]))
+          plan.conflictos.push('Fila ' + (r + 1) + ' «' + enc[keeper] + '»: columna ' + (keeper + 1) + '=' +
+                               clave_(valores[r][keeper]) + ' vs columna ' + (otra + 1) + '=' + clave_(valores[r][otra]));
+      }
+      if (filas.length) plan.mover.push({desde: otra, hacia: keeper, filas: filas, nombre: String(enc[keeper])});
+      aBorrar[otra] = {col: otra, nombre: String(enc[otra]), motivo: 'duplicado de la columna ' + (keeper + 1),
+                       datos: 0, keeper: keeper};
+    }
+  });
+  // 2) columnas sin uso
+  var siempre = BORRAR_AUNQUE_TENGA[nombre] || [];
+  for (var c2 = 0; c2 < nc; c2++) {
+    if (vacio_(enc[c2]) || aBorrar[c2]) continue;
+    var k2 = norm_(enc[c2]);
+    if (siempre.indexOf(k2) >= 0) {
+      aBorrar[c2] = {col: c2, nombre: String(enc[c2]), motivo: 'aprobada para borrar', datos: contarDatos(c2)};
+    } else if (BORRAR_SI_VACIA.indexOf(k2) >= 0) {
+      if (tieneDatos(c2)) plan.avisos.push('«' + enc[c2] + '» (col ' + (c2 + 1) + ') TIENE DATOS: no se borra.');
+      else aBorrar[c2] = {col: c2, nombre: String(enc[c2]), motivo: 'vacía y sin uso', datos: 0};
+    }
+  }
+  if (plan.conflictos.length) {
+    plan.bloqueada = true;
+    plan.avisos.push('HOJA BLOQUEADA: hay conflictos entre columnas duplicadas; no se cambia nada aquí.');
+    return plan;
+  }
+  Object.keys(aBorrar).forEach(function (c) { plan.borrar.push(aBorrar[c]); });
+  plan.borrar.sort(function (a, b) { return b.col - a.col; });   // de derecha a izquierda
+  // 3) Via_Transporte
+  var gv = grupos['viatransporte'];
+  if (gv) {
+    var cv = gv[0];
+    for (var r2 = 1; r2 < nf; r2++) {
+      var v = valores[r2][cv]; if (vacio_(v)) continue;
+      var nv = norm_(v), nuevo = nv === 'aereo' ? 'Aéreo' : (nv === 'maritimo' ? 'Marítimo' : null);
+      if (nuevo && String(v).trim() !== nuevo) plan.via.push({fila: r2, col: cv, de: String(v), a: nuevo});
+    }
+  }
+  return plan;
+}
+
+/** Verifica que ningún dato de las columnas que se conservan se perdió en una fila. */
+function verificarPerdidas_(antes, despues, colsBorradas, colsDestino) {
+  // colsDestino[c] = columna que absorbe a la duplicada c (si el valor ya estaba allí, no se cuenta dos veces)
+  var perdidas = [];
+  for (var r = 1; r < antes.length; r++) {
+    var pool = {};
+    (despues[r] || []).forEach(function (v) { if (!vacio_(v)) { var k = clave_(v); pool[k] = (pool[k] || 0) + 1; } });
+    for (var c = 0; c < antes[r].length; c++) {
+      var v = antes[r][c];
+      if (vacio_(v)) continue;
+      if (colsBorradas.indexOf(c) >= 0) {
+        if (colsDestino[c] === undefined) continue;                       // borrada por decisión expresa
+        if (clave_(antes[r][colsDestino[c]]) === clave_(v)) continue;     // mismo valor ya en la columna que queda
+      }
+      var k2 = clave_(v);
+      if (pool[k2]) pool[k2]--;
+      else if (norm_(v) === 'aereo' && pool['Aéreo']) pool['Aéreo']--;
+      else if (norm_(v) === 'maritimo' && pool['Marítimo']) pool['Marítimo']--;
+      else perdidas.push('Fila ' + (r + 1) + ' col ' + (c + 1) + ': ' + k2);
+    }
+  }
+  return perdidas;
+}
+
+// ---------------------------------------------------------------- acceso al Sheet
+function leer_(hoja) {
+  var f = hoja.getLastRow(), c = hoja.getLastColumn();
+  if (f < 1 || c < 1) return [];
+  return hoja.getRange(1, 1, f, c).getValues();
+}
+
+function reporte_(titulo, lineas) {
+  var ss = SpreadsheetApp.getActive();
+  var h = ss.getSheetByName(HOJA_REPORTE) || ss.insertSheet(HOJA_REPORTE);
+  h.clear();
+  var filas = [[titulo + '  —  ' + new Date().toLocaleString('es-DO')]].concat(lineas.map(function (l) { return [l]; }));
+  h.getRange(1, 1, filas.length, 1).setNumberFormat('@');   // texto plano: nada se interpreta como fórmula
+  h.getRange(1, 1, filas.length, 1).setValues(filas);
+  h.setColumnWidth(1, 900);
+  h.getRange(1, 1).setFontWeight('bold');
+  ss.setActiveSheet(h);
+}
+
+function resumenPlan_(plan) {
+  var L = ['', '>> ' + plan.hoja];
+  if (plan.bloqueada) L.push('   BLOQUEADA');
+  plan.mover.forEach(function (m) {
+    L.push('   MOVER datos de la columna ' + (m.desde + 1) + ' a la ' + (m.hacia + 1) + ' («' + m.nombre +
+           '»), filas: ' + m.filas.map(function (r) { return r + 1; }).join(', '));
+  });
+  plan.via.forEach(function (v) { L.push('   CORREGIR fila ' + (v.fila + 1) + ': «' + v.de + '» -> «' + v.a + '»'); });
+  plan.borrar.forEach(function (b) {
+    L.push('   BORRAR columna ' + (b.col + 1) + ' «' + b.nombre + '» (' + b.motivo +
+           (b.datos ? '; ' + b.datos + ' valores con datos' : '') + ')');
+  });
+  plan.avisos.forEach(function (a) { L.push('   AVISO: ' + a); });
+  plan.conflictos.forEach(function (a) { L.push('   CONFLICTO: ' + a); });
+  if (L.length === 2) L.push('   (nada que hacer)');
+  return L;
+}
+
+// ---------------------------------------------------------------- 1) y 2) limpieza
+function pruebaLimpieza() { limpieza_(false); }
+function aplicarLimpieza() { limpieza_(true); }
+
+function limpieza_(aplicar) {
+  var ss = SpreadsheetApp.getActive(), ui = SpreadsheetApp.getUi();
+  var lineas = [aplicar ? 'LIMPIEZA APLICADA' : 'PRUEBA (no se cambió nada)'];
+  var planes = [];
+  HOJAS.forEach(function (n) {
+    var h = ss.getSheetByName(n);
+    if (!h) { lineas.push('', '>> ' + n, '   NO EXISTE esta pestaña'); return; }
+    planes.push({plan: planearHoja_(n, leer_(h)), hoja: h});
+  });
+  planes.forEach(function (p) { lineas = lineas.concat(resumenPlan_(p.plan)); });
+  if (!aplicar) { reporte_('PRUEBA DE LIMPIEZA', lineas); ui.alert('Prueba lista. Revisa la pestaña ' + HOJA_REPORTE + '. No se cambió nada.'); return; }
+
+  var r = ui.alert('Aplicar limpieza',
+    'Se hará primero una copia de respaldo en tu Drive y luego se aplicarán los cambios que muestra la pestaña de reporte. ¿Continuar?',
+    ui.ButtonSet.YES_NO);
+  if (r !== ui.Button.YES) return;
+  var copia = ss.copy('RESPALDO antes de limpieza ' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH-mm'));
+  lineas.push('', 'Respaldo creado: ' + copia.getName() + ' ' + copia.getUrl());
+
+  planes.forEach(function (p) {
+    var plan = p.plan, h = p.hoja;
+    if (plan.bloqueada) return;
+    var antes = leer_(h), borradas = plan.borrar.map(function (b) { return b.col; }), destino = {};
+    plan.borrar.forEach(function (b) { if (b.keeper !== undefined) destino[b.col] = b.keeper; });
+    // 1) mover (copyTo conserva el formato de la celda origen, como copiar y pegar)
+    plan.mover.forEach(function (m) {
+      m.filas.forEach(function (f) { h.getRange(f + 1, m.desde + 1).copyTo(h.getRange(f + 1, m.hacia + 1)); });
+    });
+    // 2) vía de transporte (antes de borrar, para no desplazar columnas)
+    plan.via.forEach(function (v) { h.getRange(v.fila + 1, v.col + 1).setValue(v.a); });
+    // 3) borrar de derecha a izquierda
+    plan.borrar.forEach(function (b) { h.deleteColumn(b.col + 1); });
+    SpreadsheetApp.flush();
+    // 4) verificar contra la foto de antes
+    var despues = leer_(h);
+    var perd = verificarPerdidas_(antes, despues, borradas, destino);
+    lineas.push('', 'Verificación ' + h.getName() + ': ' + (perd.length ? 'POSIBLES PÉRDIDAS (' + perd.length + ')' : 'OK, sin pérdidas'));
+    perd.slice(0, 30).forEach(function (x) { lineas.push('   ' + x); });
+  });
+  reporte_('LIMPIEZA APLICADA', lineas);
+  ui.alert('Listo. Revisa la pestaña ' + HOJA_REPORTE + ' (verificación por hoja y enlace al respaldo). Ahora abre la app y confirma que carga.');
+}
+
+// ---------------------------------------------------------------- 3) y 4) Empresa
+function empresasDePagos_() {
+  var h = SpreadsheetApp.getActive().getSheetByName(HOJA_PAGOS), mapa = {};
+  if (!h) return mapa;
+  var v = leer_(h); if (!v.length) return mapa;
+  var cb = -1, ce = -1;
+  v[0].forEach(function (x, i) { if (norm_(x) === 'bl' && cb < 0) cb = i; if (norm_(x) === 'empresa' && ce < 0) ce = i; });
+  if (cb < 0 || ce < 0) return mapa;
+  for (var r = 1; r < v.length; r++) {
+    var bl = claveBL_(v[r][cb]), e = canonEmpresa_(v[r][ce]);
+    if (!bl || !e) continue;
+    mapa[bl] = mapa[bl] || {}; mapa[bl][e] = true;
+  }
+  return mapa;
+}
+
+/** Empresa que le corresponde a cada fila de datos (índice 1..n-1). Función pura. */
+function empresasPorFila_(nombre, valores, pagos) {
+  var enc = valores[0], cb = -1, cd = -1, cc = -1;
+  enc.forEach(function (x, i) {
+    var n = norm_(x);
+    if (n === 'bl' && cb < 0) cb = i; if (n === 'descripcion' && cd < 0) cd = i;
+    if (n === 'categoriaorigen' && cc < 0) cc = i;
+  });
+  var salida = [], sin = [];
+  for (var r = 1; r < valores.length; r++) {
+    var bl = cb >= 0 ? valores[r][cb] : '', ds = cd >= 0 ? valores[r][cd] : '';
+    if (vacio_(bl) && vacio_(ds)) { salida.push(''); continue; }
+    var e = EMPRESA_FIJA[nombre] || null;
+    if (!e && nombre === 'Recibido (Mes)' && cc >= 0) e = EMPRESA_FIJA[String(valores[r][cc]).trim()] || null;
+    if (!e) {
+      var m = pagos[claveBL_(bl)];
+      if (m && Object.keys(m).length === 1) e = Object.keys(m)[0];
+    }
+    if (e && (EMPRESAS_LIBRES[nombre] || []).length && !EMPRESA_FIJA[nombre] &&
+        EMPRESAS_LIBRES[nombre].indexOf(e) < 0) e = null;
+    if (!e) sin.push(r + 1);
+    salida.push(e || '');
+  }
+  return {valores: salida, sinEmpresa: sin};
+}
+
+function pruebaEmpresa() { empresa_(false); }
+function agregarEmpresa() { empresa_(true); }
+
+function empresa_(aplicar) {
+  var ss = SpreadsheetApp.getActive(), ui = SpreadsheetApp.getUi(), pagos = empresasDePagos_();
+  var lineas = [aplicar ? 'COLUMNA EMPRESA AGREGADA' : 'PRUEBA DE EMPRESA (no se cambió nada)'];
+  if (aplicar) {
+    var r = ui.alert('Agregar Empresa', 'Se insertará la columna Empresa a la izquierda en las 10 pestañas (solo lectura de Pagos). ¿Continuar?', ui.ButtonSet.YES_NO);
+    if (r !== ui.Button.YES) return;
+  }
+  HOJAS.forEach(function (n) {
+    var h = ss.getSheetByName(n); lineas.push('', '>> ' + n);
+    if (!h) { lineas.push('   NO EXISTE'); return; }
+    var v = leer_(h);
+    if (!v.length) { lineas.push('   vacía'); return; }
+    if (v[0].some(function (x) { return norm_(x) === 'empresa'; })) { lineas.push('   ya tiene columna Empresa: no se toca'); return; }
+    var e = empresasPorFila_(n, v, pagos);
+    lineas.push('   filas con empresa: ' + e.valores.filter(function (x) { return x; }).length +
+                ' | SIN empresa (llenar a mano), filas: ' + (e.sinEmpresa.length ? e.sinEmpresa.join(', ') : 'ninguna'));
+    if (!aplicar) return;
+    h.insertColumnBefore(1);
+    h.getRange(1, 2, h.getMaxRows(), 1).copyTo(h.getRange(1, 1), SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+    h.getRange(1, 1).setValue('Empresa');
+    if (e.valores.length) h.getRange(2, 1, e.valores.length, 1).setValues(e.valores.map(function (x) { return [x]; }));
+    var lista = EMPRESA_FIJA[n] ? [EMPRESA_FIJA[n]] : EMPRESAS_LIBRES[n];
+    var regla = SpreadsheetApp.newDataValidation().requireValueInList(lista, true).setAllowInvalid(false).build();
+    h.getRange(2, 1, Math.max(h.getMaxRows() - 1, 1), 1).setDataValidation(regla);
+  });
+  reporte_(aplicar ? 'EMPRESA AGREGADA' : 'PRUEBA DE EMPRESA', lineas);
+  ui.alert((aplicar ? 'Listo.' : 'Prueba lista.') + ' Revisa la pestaña ' + HOJA_REPORTE + '.');
+}
+
+
+// ---------------------------------------------------------------- 5) y 6) Pagos: formato de fechas y orden
+// ÚNICA operación sobre Pagos. Cambia el TIPO de las fechas escritas como texto ISO (aaaa-mm-dd) a fecha
+// real, fija el formato aaaa-mm-dd en esas columnas y ordena las filas. No cambia montos ni empresas.
+var PAGOS_COLS_FECHA = ['llegada', 'fechasinmora', 'fechapagorealizado'];
+var PAGOS_ORDEN = ['llegada', 'fechasinmora'];     // primero Llegada, luego Fecha_SinMora (vacías al final)
+
+function planPagos_(valores) {
+  var plan = {error: '', conv: [], ilegibles: [], idx: {}};
+  if (!valores || valores.length < 1) { plan.error = 'Pagos está vacía'; return plan; }
+  valores[0].forEach(function (x, i) { var k = norm_(x); if (k && plan.idx[k] === undefined) plan.idx[k] = i; });
+  PAGOS_COLS_FECHA.concat(PAGOS_ORDEN).forEach(function (k) {
+    if (plan.idx[k] === undefined && !plan.error) plan.error = 'No encuentro la columna «' + k + '» en Pagos';
+  });
+  if (plan.error) return plan;
+  PAGOS_COLS_FECHA.forEach(function (k) {
+    var c = plan.idx[k];
+    for (var r = 1; r < valores.length; r++) {
+      var v = valores[r][c];
+      if (vacio_(v) || v instanceof Date || typeof v === 'number') continue;
+      var t = String(v).trim(), m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(t);
+      if (m && Number(m[2]) >= 1 && Number(m[2]) <= 12 && Number(m[3]) >= 1 && Number(m[3]) <= 31)
+        plan.conv.push({fila: r, col: c, iso: t});
+      else plan.ilegibles.push({fila: r, col: c, valor: t});
+    }
+  });
+  return plan;
+}
+
+function firmaFila_(fila, tz) {
+  return fila.map(function (x) {
+    if (x instanceof Date) return Utilities.formatDate(x, tz, 'yyyy-MM-dd');
+    return String(x === null || x === undefined ? '' : x).trim();
+  }).join('\u0001');
+}
+
+function pruebaPagos() { pagos_(false); }
+function aplicarPagos() { pagos_(true); }
+
+function pagos_(aplicar) {
+  var ss = SpreadsheetApp.getActive(), ui = SpreadsheetApp.getUi(), h = ss.getSheetByName(HOJA_PAGOS);
+  var L = [aplicar ? 'PAGOS: FORMATO Y ORDEN APLICADOS' : 'PAGOS: PRUEBA (no se cambió nada)'];
+  if (!h) { reporte_('PAGOS', L.concat(['No existe la pestaña Pagos'])); return; }
+  var valores = leer_(h), plan = planPagos_(valores), tz = ss.getSpreadsheetTimeZone();
+  if (plan.error) { reporte_('PAGOS', L.concat([plan.error])); ui.alert(plan.error); return; }
+  var ocultas = [];
+  for (var r = 2; r <= valores.length; r++) if (h.isRowHiddenByFilter(r)) ocultas.push(r);
+  L.push('Fechas escritas como texto que pasarían a fecha real: ' + plan.conv.length);
+  plan.conv.slice(0, 15).forEach(function (c) { L.push('   fila ' + (c.fila + 1) + ' col ' + (c.col + 1) + ': ' + c.iso); });
+  L.push('Formato aaaa-mm-dd se fija en las columnas: ' + PAGOS_COLS_FECHA.join(', '));
+  L.push('Orden: ' + PAGOS_ORDEN.join(' y luego ') + ', de la fecha más temprana a la más tardía; filas sin fecha al final.');
+  if (plan.ilegibles.length) L.push('FECHAS ILEGIBLES (no se tocan; corrígelas a mano):');
+  plan.ilegibles.forEach(function (c) { L.push('   fila ' + (c.fila + 1) + ' col ' + (c.col + 1) + ': «' + c.valor + '»'); });
+  if (ocultas.length) {
+    L.push('', 'BLOQUEADO: hay ' + ocultas.length + ' filas ocultas por un filtro. Quita el filtro (Datos → Quitar filtro) y vuelve a correr.');
+    reporte_('PAGOS', L); ui.alert('Hay un filtro activo que oculta filas de Pagos. Quítalo (Datos → Quitar filtro) y repite. Detalle en ' + HOJA_REPORTE); return;
+  }
+  if (!aplicar) { reporte_('PRUEBA DE PAGOS', L); ui.alert('Prueba lista. Revisa la pestaña ' + HOJA_REPORTE + '. No se cambió nada.'); return; }
+  var r2 = ui.alert('Pagos: formato y orden', 'Se hará una copia de respaldo y luego se convertirán las fechas, se fijará el formato y se ordenarán las filas de Pagos. ¿Continuar?', ui.ButtonSet.YES_NO);
+  if (r2 !== ui.Button.YES) return;
+  var copia = ss.copy('RESPALDO antes de ordenar Pagos ' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH-mm'));
+  L.push('', 'Respaldo creado: ' + copia.getName() + ' ' + copia.getUrl());
+  var firmasAntes = valores.slice(1).map(function (f) { return firmaFila_(f, tz); }).sort();
+
+  plan.conv.forEach(function (c) { h.getRange(c.fila + 1, c.col + 1).setValue(Utilities.parseDate(c.iso, tz, 'yyyy-MM-dd')); });
+  PAGOS_COLS_FECHA.forEach(function (k) { h.getRange(2, plan.idx[k] + 1, Math.max(h.getMaxRows() - 1, 1), 1).setNumberFormat('yyyy-mm-dd'); });
+  SpreadsheetApp.flush();
+  var nf = h.getLastRow() - 1, nc = h.getLastColumn();
+  if (nf > 1) h.getRange(2, 1, nf, nc).sort(PAGOS_ORDEN.map(function (k) { return {column: plan.idx[k] + 1, ascending: true}; }));
+  SpreadsheetApp.flush();
+
+  var despues = leer_(h), firmasDespues = despues.slice(1).map(function (f) { return firmaFila_(f, tz); }).sort();
+  var iguales = firmasAntes.length === firmasDespues.length && firmasAntes.every(function (x, i) { return x === firmasDespues[i]; });
+  L.push('Verificación: ' + (iguales ? 'OK, las ' + firmasAntes.length + ' filas están completas (solo cambió el orden y el tipo de fecha).'
+                                    : 'POSIBLE PÉRDIDA O DUPLICADO: revisa contra el respaldo.'));
+  // ¿quedó ordenado?
+  var cL = plan.idx['llegada'], previo = null, desorden = 0;
+  for (var i = 1; i < despues.length; i++) {
+    var d = despues[i][cL]; if (!(d instanceof Date)) continue;
+    if (previo && d.getTime() < previo.getTime()) desorden++; previo = d;
+  }
+  L.push('Orden por Llegada: ' + (desorden ? 'HAY ' + desorden + ' filas fuera de orden (revisa fechas ilegibles)' : 'correcto'));
+  reporte_('PAGOS: FORMATO Y ORDEN APLICADOS', L);
+  ui.alert('Listo. Revisa ' + HOJA_REPORTE + ' (verificación y enlace al respaldo).');
+}
+
+// ---------------------------------------------------------------- menú
+function onOpen() {
+  SpreadsheetApp.getUi().createMenu('Limpieza tránsito')
+    .addItem('1. PRUEBA de limpieza (no cambia nada)', 'pruebaLimpieza')
+    .addItem('2. APLICAR limpieza (con respaldo)', 'aplicarLimpieza')
+    .addSeparator()
+    .addItem('3. PRUEBA de Empresa (no cambia nada)', 'pruebaEmpresa')
+    .addItem('4. AGREGAR columna Empresa', 'agregarEmpresa')
+    .addSeparator()
+    .addItem('5. PRUEBA formato y orden de Pagos (no cambia nada)', 'pruebaPagos')
+    .addItem('6. APLICAR formato y orden de Pagos (con respaldo)', 'aplicarPagos')
+    .addToUi();
+}
+
+if (typeof module !== 'undefined') {
+  module.exports = {norm_: norm_, planearHoja_: planearHoja_, verificarPerdidas_: verificarPerdidas_,
+                    empresasPorFila_: empresasPorFila_, canonEmpresa_: canonEmpresa_, claveBL_: claveBL_,
+                    planPagos_: planPagos_, firmaFila_: firmaFila_};
+}Limpieza sheet · TXT

@@ -209,24 +209,36 @@ html { -webkit-text-size-adjust: 100%; }
    Desktop: grid de 7 columnas (se ve como tabla).
    Celular (<=640px): cada fila se convierte en tarjeta y cada celda
    muestra su etiqueta vía data-l. Sin duplicar el DOM.            */
-.lista { border:1px solid var(--ant-borde); border-radius:12px; overflow:hidden;
-         box-shadow:0 1px 4px rgba(17,24,39,0.06); background:#fff; }
+.lista { border:1px solid #E2E8F0; border-radius:14px; overflow:hidden;
+         box-shadow:0 2px 12px rgba(15,23,42,0.07); background:#fff; }
 .fila-head, .fila {
     display:grid;
-    grid-template-columns: 1fr 1.1fr 1.35fr 1.2fr 0.65fr 0.85fr 0.8fr 1.1fr;
+    grid-template-columns: 1.15fr 1.1fr 1.35fr 1.25fr 0.6fr 0.85fr 0.85fr 1.1fr;
     gap:10px; align-items:center;
 }
-.fila-head { padding:11px 18px; font-size:0.69rem; text-transform:uppercase; letter-spacing:0.05em;
+.fila-head { padding:12px 18px; font-size:0.69rem; text-transform:uppercase; letter-spacing:0.05em;
              font-weight:700; color:#FFFFFF; background:linear-gradient(90deg,#2E86DE,#17A2B8); border-bottom:none; }
-.fila { padding:12px 18px; font-size:0.87rem; background:#fff;
-        border-bottom:1px solid #F3F4F6; border-left:4px solid #6B7280; }
+.fila { padding:14px 18px; font-size:0.88rem; color:#1E293B; background:#fff;
+        border-bottom:1px solid #EEF2F6; border-left:4px solid #6B7280; transition:background .15s ease; }
+.fila:hover { background:#F5F9FF; }
 .fila:last-child { border-bottom:none; }
-.c-bl { font-weight:700; color:var(--ant-texto); word-break:break-all; }
-.c-suave { color:var(--ant-suave); }
-.c-emp { font-weight:600; color:#0C447C; }
-.c-emp.sin { font-weight:500; font-style:italic; color:#9CA3AF; }
-.c-ref { font-weight:500; font-size:0.78rem; color:var(--ant-suave);
+.c-bl { font-weight:700; color:#0F172A; word-break:break-all; letter-spacing:0.1px; }
+.c-suave { color:#334155; font-weight:500; }
+.fila > div[data-l="ETA"] { font-weight:600; color:#0F172A; }
+.fila > div[data-l="Cantidad"] { font-weight:600; }
+/* Empresa como etiqueta de color (una por empresa, tonos suaves) */
+.c-emp { line-height:1; }
+.emp { display:inline-block; padding:4px 11px; border-radius:8px; font-size:0.78rem;
+       font-weight:700; line-height:1.25; border:1px solid transparent; }
+.emp-ant { background:#E8F1FC; color:#1D5FA8; border-color:#CFE2F8; }
+.emp-tec { background:#E2F5F2; color:#0F766E; border-color:#C4EBE5; }
+.emp-mot { background:#FCEFD9; color:#9A5B0B; border-color:#F6DDB4; }
+.emp-sin { background:#F3F4F6; color:#6B7280; border:1px dashed #CBD5E1; font-style:italic; font-weight:600; }
+.c-ref { font-weight:500; font-size:0.78rem; color:#64748B;
          margin-top:2px; letter-spacing:0.2px; }
+.c-suave .c-ref { color:#334155; font-weight:600; }
+.c-ref b { color:#94A3B8; font-weight:700; font-size:0.66rem; text-transform:uppercase;
+           letter-spacing:0.05em; margin-right:3px; }
 .badge { display:inline-block; padding:3px 11px; border-radius:999px;
          font-size:0.73rem; font-weight:700; color:#fff; white-space:nowrap; }
 .badge.linea { background:#fff !important; color:#4B5563; border:1px solid var(--ant-borde); }
@@ -704,10 +716,10 @@ def render_lista(df: pd.DataFrame):
             badge_alerta += ('<span class="badge" style="background:#7C3AED;" '
                              'title="Este BL aparece en más de una fila">⧉ BL repetido</span>')
         empresa = str(r.get("EmpresaTransito", "") or "").strip() or EMPRESA_SIN_ASIGNAR
-        clase_emp = "c-emp sin" if empresa == EMPRESA_SIN_ASIGNAR else "c-emp"
+        clase_emp = dict(zip(EMPRESAS_PAGO, ("emp-ant", "emp-tec", "emp-mot"))).get(empresa, "emp-sin")
         partes.append(
             f'<div class="fila" style="border-left-color:{color};">'
-            f'<div class="{clase_emp}" data-l="Empresa">{esc(empresa)}</div>'
+            f'<div class="c-emp" data-l="Empresa"><span class="emp {clase_emp}">{esc(empresa)}</span></div>'
             f'<div class="c-bl" data-l="BL">{esc(r[COL_BL]) if str(r[COL_BL]).strip() else "(sin BL)"}'
             f'{_ref_oc_ee(r)}</div>'
             f'<div class="c-suave" data-l="Descripción">{esc(r[COL_DESC])}</div>'

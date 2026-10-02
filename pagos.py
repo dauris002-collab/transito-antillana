@@ -529,19 +529,19 @@ def _html_plan(filas: list, titulo: str) -> str:
         "<tr>"
         f"<td class=\"pago-aging-dias\">{i}</td>"
         f"<td>{esc(f['bl'])}</td><td>{esc(f['empresa'])}</td><td>{esc(f['desc'])}</td>"
-        f"<td>{esc(f['llegada'])}</td><td>{esc(f['sin_mora'])}</td>"
+        f"<td>{esc(f['llegada'])}</td><td>{esc(f['sin_mora'])}</td><td>{esc(f['dias'])}</td>"
         f'<td class="pago-monto">{esc(f["usd"])}</td><td class="pago-monto">{esc(f["dop"])}</td></tr>'
         for i, f in enumerate(filas, start=1)
     )
     return (
         f'<div class="pago-plan-titulo">{esc(titulo)}</div>'
         '<div class="pago-aging-wrap"><table class="pago-aging pago-plan">'
-        "<colgroup><col style=\"width:4%\"><col style=\"width:14%\"><col style=\"width:13%\"><col style=\"width:21%\">"
-        "<col style=\"width:10%\"><col style=\"width:9%\"><col style=\"width:13%\"><col style=\"width:16%\"></colgroup>"
+        "<colgroup><col style=\"width:4%\"><col style=\"width:13%\"><col style=\"width:12%\"><col style=\"width:18%\">"
+        "<col style=\"width:8%\"><col style=\"width:8%\"><col style=\"width:8%\"><col style=\"width:14%\"><col style=\"width:15%\"></colgroup>"
         "<thead><tr><th>#</th><th>BL</th><th>Empresa</th><th>Descripción</th><th>Llegada</th>"
-        "<th>Sin mora</th><th>USD</th><th>DOP</th></tr></thead>"
+        "<th>Sin mora</th><th>Días sin pagar</th><th>Monto total en Dólares</th><th>Monto total en Pesos</th></tr></thead>"
         f"<tbody>{cuerpo}</tbody>"
-        f'<tfoot><tr><td colspan="6">Total · {len(filas)} expediente(s)</td>'
+        f'<tfoot><tr><td colspan="7">Total · {len(filas)} expediente(s)</td>'
         f'<td class="pago-monto">{total_usd:,.2f}</td><td class="pago-monto">{total_dop:,.2f}</td></tr></tfoot>'
         "</table></div>"
     )
@@ -572,10 +572,12 @@ def _plan_captura(enriquecido: pd.DataFrame):
         total = r.get("TotalActual") or {}
         usd, dop = total.get("USD") or 0.0, total.get("DOP") or 0.0
         llegada, sin_mora = r.get("LlegadaEfectiva"), r.get("FechaSinMoraParsed")
+        dias = r.get("DiasSinPagar")
         datos[bl] = {
             "bl": bl, "empresa": r.get("EmpresaEfectiva", "") or EMPRESA_ANTILLANA,
             "desc": str(r.get(COL_DESC, "") or "").strip(),
             "llegada": _fecha_corta(llegada), "sin_mora": _fecha_corta(sin_mora),
+            "dias": "—" if dias is None or pd.isna(dias) else str(int(dias)),
             "usd_n": usd, "dop_n": dop,
             "usd": f"{usd:,.2f}" if usd else "—", "dop": f"{dop:,.2f}" if dop else "—",
         }

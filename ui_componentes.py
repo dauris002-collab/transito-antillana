@@ -217,7 +217,7 @@ html { -webkit-text-size-adjust: 100%; }
     gap:10px; align-items:center;
 }
 .fila-head { padding:11px 18px; font-size:0.69rem; text-transform:uppercase; letter-spacing:0.05em;
-             font-weight:700; color:#374151; background:#E5E7EB; border-bottom:1px solid #D1D5DB; }
+             font-weight:700; color:#FFFFFF; background:linear-gradient(90deg,#2E86DE,#17A2B8); border-bottom:none; }
 .fila { padding:12px 18px; font-size:0.87rem; background:#fff;
         border-bottom:1px solid #F3F4F6; border-left:4px solid #6B7280; }
 .fila:last-child { border-bottom:none; }

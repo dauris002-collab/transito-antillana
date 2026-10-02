@@ -32,9 +32,9 @@ from sheets_io import (
     formato_eta,
     guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago,
     mover_empresa_primera_columna, parsear_fecha, parsear_marca, registrar_log,
-    registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
+    igualar_llegadas_pagos, registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
 )
-from logica import PALETA_PAISES, enriquecer_pagos, esc, resumen_pagos, totales_conceptos
+from logica import PALETA_PAISES, enriquecer_pagos, esc, llegadas_desfasadas, resumen_pagos, totales_conceptos
 from ui_componentes import COLOR_TOTAL, _logo_base64, rerun_fragmento
 
 
@@ -927,6 +927,22 @@ def panel_pagos(datos: dict, es_admin: bool):
             st.rerun()
         else:
             st.warning(f"No se pudo sincronizar Pagos con tránsito automáticamente: {mensaje}")
+
+    # Igualar la celda Llegada con el ETA de Tránsito: mismo criterio (solo
+    # admin, solo si la comparación en memoria encuentra diferencias). Cada
+    # conjunto de diferencias se intenta UNA vez por sesión: si la lectura
+    # posterior no las refleja (formato de celda raro), no entra en bucle.
+    if es_admin:
+        cambios = llegadas_desfasadas(df_pagos, activos, historico)
+        firma = tuple(sorted((bl, f.isoformat()) for bl, f in cambios))
+        if cambios and st.session_state.get("pagos_llegada_intentada") != firma:
+            st.session_state["pagos_llegada_intentada"] = firma
+            ok, mensaje = igualar_llegadas_pagos(cambios)
+            if ok:
+                invalidar_caches()
+                st.rerun()
+            else:
+                st.warning(f"No se pudo igualar la Llegada de Pagos con Tránsito: {mensaje}")
 
     enriquecido = _enriquecer_pagos_cacheado(df_pagos, activos, historico)
 

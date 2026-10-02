@@ -716,6 +716,38 @@ def _etas_activos(activos: pd.DataFrame) -> dict:
     return mapa
 
 
+def llegadas_desfasadas(df_pagos: pd.DataFrame, activos: pd.DataFrame,
+                        historico: pd.DataFrame) -> list:
+    """[(bl, fecha)] de los expedientes de Pagos cuya celda Llegada no coincide
+    con Tránsito. La fecha de Tránsito es la misma que muestra LlegadaEfectiva:
+    llegada confirmada > ETA vigente del embarque activo > llegada del archivo
+    (o su ETA si esa falta). Comparación en memoria: no toca la API. Un BL que
+    aparece en más de una fila de Pagos se omite (no hay forma segura de elegir)."""
+    if df_pagos is None or df_pagos.empty or COL_BL not in df_pagos.columns:
+        return []
+    confirmadas = _llegadas_confirmadas(activos, historico)
+    etas = _etas_activos(activos)
+    etas_hist = {}
+    if historico is not None and not historico.empty:
+        for _, r in historico.iterrows():
+            bl = str(r.get(COL_BL, "")).strip()
+            if bl and bl not in etas_hist:
+                f = parsear_fecha(r.get(COL_ETA, ""))
+                if f:
+                    etas_hist[bl] = f
+    bls = df_pagos[COL_BL].astype(str).str.strip()
+    repetidos = set(bls[bls.duplicated(keep=False)])
+    celdas = df_pagos[COL_PAGO_LLEGADA] if COL_PAGO_LLEGADA in df_pagos.columns else [""] * len(df_pagos)
+    cambios = []
+    for bl, cruda in zip(bls, celdas):
+        if not bl or bl in repetidos:
+            continue
+        destino = confirmadas.get(bl) or etas.get(bl) or etas_hist.get(bl)
+        if destino and parsear_fecha(cruda) != destino:
+            cambios.append((bl, destino))
+    return cambios
+
+
 def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
                      historico: pd.DataFrame) -> pd.DataFrame:
     """Agrega al DataFrame de Pagos lo que no vive directamente en sus celdas:

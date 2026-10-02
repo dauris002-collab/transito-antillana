@@ -119,10 +119,10 @@ Borrador generado el 2026-10-01.
 - **Reconsiderar si:** [?]
 
 ## 20. La Llegada de Pagos sigue a Tránsito (v5.2)
-- **Decisión:** la Llegada que muestra Pagos sale de Tránsito en este orden: llegada confirmada (activo o archivado) > ETA vigente del embarque activo sin confirmar > la celda guardada en Pagos. Se calcula en vivo, sin escribir en Pagos. Los días sin pagar siguen corriendo solo desde la llegada CONFIRMADA: un ETA no es una llegada. Para igualar también la celda del Sheet hay un paso manual con respaldo (menú 7 y 8 del script de limpieza), que escribe solo en la columna `Llegada`. [PE, 2 oct 2026]
-- **Por qué:** al mover un ETA en Tránsito, Pagos quedaba con la fecha vieja hasta que alguien la actualizara a mano (7 de 23 BLs sin confirmar en los datos del 1 oct 2026).
-- **Costo aceptado:** `sincronizar_pagos_con_transito` sigue solo AGREGANDO filas; la celda `Llegada` de Pagos puede quedar atrasada entre corridas del paso manual, aunque la app ya muestre la fecha correcta. Un ETA con error de tipeo en Tránsito se propaga a Pagos.
-- **Reconsiderar si:** la celda atrasada molesta al leer o ordenar Pagos directo en el Sheet (entonces, activador automático en Apps Script).
+- **Decisión:** cada ETA de Tránsito se refleja en Pagos, pero los días sin pagar solo corren desde la llegada CONFIRMADA (un ETA no es una llegada). La Llegada de Pagos sale de Tránsito en este orden: llegada confirmada (activo o archivado) > ETA vigente del embarque activo > llegada del archivo (o su ETA) > la celda de Pagos. Dos capas: (1) la app la muestra en vivo; (2) cuando el administrador abre Pagos, la app iguala la celda `Llegada` del Sheet con un solo `batch_update`, solo en esa columna, solo si hay diferencias y solo si el BL aparece una vez; cada conjunto de diferencias se intenta una vez por sesión. Los viewers nunca escriben. El script de limpieza (menú 7 y 8) hace lo mismo a pedido, con respaldo. [PE, 2 oct 2026]
+- **Por qué:** al mover un ETA en Tránsito, Pagos quedaba con la fecha vieja hasta actualizarla a mano (7 de 23 BLs sin confirmar el 1 oct 2026).
+- **Costo aceptado:** la app ahora SÍ sobrescribe la celda `Llegada` de Pagos (antes `sincronizar_pagos_con_transito` solo agregaba filas). Una fecha escrita a mano en esa celda se pierde si Tránsito dice otra; un ETA mal tecleado en Tránsito se propaga a Pagos. Las ediciones directas en el Sheet se reflejan la próxima vez que el administrador abra Pagos.
+- **Reconsiderar si:** alguna vez Logística necesite una Llegada en Pagos distinta de la de Tránsito (hoy no).
 
 ## Limitación, no decisión
 - **Repo público:** quedó público por un problema de permisos con repos privados que no se resolvió [CHAT]. No contiene credenciales. Es una limitación, no una elección.

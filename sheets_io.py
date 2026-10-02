@@ -1938,6 +1938,46 @@ def guardar_pago(bl: str, conceptos: dict, estado: str = None, empresa: str = No
 
 
 @_con_manejo_apierror
+def igualar_llegadas_pagos(cambios: list):
+    """Escribe en la columna Llegada de Pagos las fechas de Tránsito que
+    difieren (cambios = [(bl, fecha)], ver logica.llegadas_desfasadas). Solo
+    toca esa columna. Una sola lectura de la hoja y un solo batch_update: las
+    filas se ubican por BL en la MISMA lectura y se verifica el BL de cada una
+    antes de escribir; un BL repetido o que ya no está se omite. Texto ISO sin
+    interpretar (RAW), igual que el resto de escrituras de la app."""
+    if not cambios:
+        return True, "Pagos ya coincide con Tránsito."
+    ws = get_worksheet(PAGOS_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{PAGOS_SHEET}'."
+    valores = _con_reintento(lambda: ws.get_all_values()) or []
+    if not valores:
+        return False, "Pagos está vacía."
+    encabezados = [_norm_encabezado(h) for h in valores[0]]
+    try:
+        c_bl, c_ll = encabezados.index(_norm_encabezado(COL_BL)), encabezados.index(_norm_encabezado(COL_PAGO_LLEGADA))
+    except ValueError:
+        return False, "Pagos no tiene las columnas BL y Llegada."
+    filas = {}
+    for i, fila in enumerate(valores[1:], start=2):
+        clave = _norm(fila[c_bl]) if len(fila) > c_bl else ""
+        if clave:
+            filas.setdefault(clave, []).append(i)
+    peticiones, omitidos = [], 0
+    for bl, fecha in cambios:
+        donde = filas.get(_norm(bl), [])
+        if len(donde) != 1:
+            omitidos += 1
+            continue
+        peticiones.append({"range": rowcol_to_a1(donde[0], c_ll + 1), "values": [[fecha.isoformat()]]})
+    if not peticiones:
+        return True, "Nada que actualizar (BLs repetidos o no encontrados)."
+    _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    registrar_log("Igualar Llegada de Pagos con Tránsito", detalle=f"{len(peticiones)} fecha(s) actualizada(s)")
+    return True, f"{len(peticiones)} fecha(s) de Llegada igualadas con Tránsito." + (f" {omitidos} omitida(s)." if omitidos else "")
+
+
+@_con_manejo_apierror
 def registrar_sin_mora(bl: str, fecha, sobrescribir: bool = False):
     """Fija la fecha límite saludable de pago, a criterio de Logística. Ya NO
     guarda montos: el total sale en vivo de los conceptos, así que aquí solo

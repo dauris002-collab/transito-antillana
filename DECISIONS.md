@@ -69,6 +69,7 @@ Borrador generado el 2026-10-01.
 
 ## 11. Prioridad de pago
 - **Decisión:** número 1-4 puesto a mano (formulario de admin o directo en el Sheet). La plataforma lo muestra (borde) y ordena de 1 a 4, con "sin prioridad" debajo. NO hay filtro por prioridad. [PE]
+- **Orden (v5.1):** en 'Pendientes por antigüedad' y en la lista de expedientes: primero los que tienen prioridad (1 arriba), y dentro de cada nivel los que llevan más días sin pagar; sin llegada confirmada al final, por llegada más antigua. Una carga sin prioridad nunca pasa por encima de una con prioridad, aunque lleve más días. [PE, 1 oct 2026]
 - **Por qué:** el filtro sobraba como control. Vacío ≠ 4: son expedientes a los que nadie ha dado turno.
 - **Reconsiderar si:** [?]
 
@@ -109,6 +110,11 @@ Borrador generado el 2026-10-01.
 - **Decisión:** la empresa sale de la categoría en Montacargas y Construcción y Minería (Antillana Comercial), Elevadores y Generadores (Tecnicaribe) y Agrícola (Motor Ibérico). En General, Aéreos, Carga Suelta y Consolidados se llena fila por fila en la columna `Empresa` (Sheet o Excel de carga masiva); Consolidados solo admite Antillana Comercial y Tecnicaribe. Vacía = "Sin empresa". [PE, 1 oct 2026]
 - **Por qué:** Logística necesita ver el tránsito por empresa.
 - **Costo aceptado:** en las categorías de empresa fija, lo que alguien escriba en la columna `Empresa` se ignora.
+- **Reconsiderar si:** [?]
+
+## 19. Pagos: tiempo promedio de pago y avisos de mantenimiento (v5.1)
+- **Decisión:** la tarjeta 'Mora promedio' se reemplazó por 'Tiempo promedio de pago' = días entre la llegada y el pago realizado (promedio de los expedientes pagados con ambas fechas). `DiasMora` (pago vs. fecha saludable) se sigue calculando pero ya no es el KPI. El aviso 'expedientes de Pagos sin BL coincidente en tránsito' solo lo ve el administrador. [PE, 1 oct 2026]
+- **Por qué:** con pagos hechos antes de la fecha saludable la mora promedio salía negativa (-2 d), que no refleja cuánto tarda la empresa en pagar (con los datos del 1 oct 2026: ~10 días de llegada a pago, mediana 9).
 - **Reconsiderar si:** [?]
 
 ## Limitación, no decisión

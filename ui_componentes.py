@@ -192,8 +192,12 @@ html { -webkit-text-size-adjust: 100%; }
 .paso .et { font-size:0.68rem; color:#6B7280; margin-top:6px; line-height:1.2; }
 .paso.actual .et { color:#111827; font-weight:700; }
 .paso .fch { font-size:0.66rem; color:#9CA3AF; }
-.flujo-cabeza { display:flex; justify-content:space-between; align-items:baseline;
+.flujo-cabeza { display:flex; justify-content:space-between; align-items:flex-start;
                 gap:10px; flex-wrap:wrap; }
+.flujo-que { color:#1E293B; font-weight:600; font-size:0.86rem; margin-top:2px; }
+.flujo-cli { color:#0F172A; font-weight:600; font-size:0.82rem; }
+.flujo-cli b { color:#64748B; font-weight:700; font-size:0.66rem; text-transform:uppercase;
+               letter-spacing:0.04em; margin-right:4px; }
 .flujo-bl { font-weight:700; color:#111827; }
 .flujo-desc { color:#6B7280; font-size:0.86rem; }
 .contador { display:inline-block; font-size:0.76rem; color:#1E4E8C; background:#EEF5FC; font-weight:600;
@@ -1134,11 +1138,14 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
                      f'fila {esc(fila.get("FilaSheet", "?"))}</span>'
                      if fila.get("BLRepetido") else "")
         raro = str(fila.get("FlujoRaro", "") or "").strip()
+        cliente = str(fila.get(COL_CLIENTE_STOCK, "") or "").strip()
 
         st.markdown(
-            f'<div class="flujo-cabeza"><span class="flujo-bl">{esc(bl) if bl else "(sin BL)"} '
+            f'<div class="flujo-cabeza"><div><span class="flujo-bl">{esc(bl) if bl else "(sin BL)"} '
             f'{marca_dup}</span>'
-            f'<span class="flujo-desc">{esc(fila[COL_DESC])} · {esc(categoria)}</span></div>'
+            f'<div class="flujo-que">{esc(fila[COL_DESC]) or "—"}</div>'
+            f'<div class="flujo-cli"><b>Cliente:</b> {esc(cliente) if cliente else "—"}</div></div>'
+            f'<span class="flujo-desc">{esc(categoria)}</span></div>'
             + html_flujo(fechas_flujo_de_fila(fila), etapa, es_aerea=es_aerea)
             + html_contadores(fila)
             + (f'<div class="alerta-fila" style="color:#B45309;font-weight:600;">⚠ {esc(alerta)}</div>'

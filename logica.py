@@ -364,9 +364,16 @@ def estado_embarque(eta_valor, llego=None, hoy: date = None):
     return EST_TRANSITO, None
 
 
-def texto_estado(estado: str, dias, via="") -> str:
+ETIQUETA_POR_CONFIRMAR = "Por confirmar llegada"
+
+
+def texto_estado(estado: str, dias, via="", sin_confirmar=False) -> str:
     if estado == EST_RETRASADO and dias is not None:
         return f"Retrasado {texto_dias(dias)}"
+    if estado == EST_PUERTO and sin_confirmar:
+        # ETA vencido y nadie ha respondido '¿llegó?': decir "En Puerto" daba a
+        # entender que la llegada estaba confirmada. Los días viven en la alerta.
+        return ETIQUETA_POR_CONFIRMAR
     if estado == EST_PUERTO and dias is not None:
         donde = "Aeropuerto" if es_aereo(via) else "Puerto"
         return f"En {donde} hace {texto_dias(dias)}"

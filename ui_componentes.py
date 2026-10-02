@@ -196,14 +196,15 @@ html { -webkit-text-size-adjust: 100%; }
                 gap:10px; flex-wrap:wrap; }
 .flujo-bl { font-weight:700; color:#111827; }
 .flujo-desc { color:#6B7280; font-size:0.86rem; }
-.contador { display:inline-block; font-size:0.76rem; color:#4B5563; background:#F3F4F6;
-            border-radius:6px; padding:2px 8px; margin:2px 6px 2px 0; }
+.contador { display:inline-block; font-size:0.76rem; color:#1E4E8C; background:#EEF5FC; font-weight:600;
+            box-shadow:inset 0 0 0 1px #D3E3F6; border-radius:6px; padding:2px 8px; margin:2px 6px 2px 0; }
 .contador.ojo { background:#FEF3C7; color:#92400E; font-weight:700; }
 .contador.mal { background:#FEE2E2; color:#991B1B; font-weight:800;
                 box-shadow:inset 0 0 0 1px #FCA5A5; }
 .contador.cerrado.ojo { background:#FFFBEB; box-shadow:inset 0 0 0 1px #FCD34D; font-weight:600; }
 .contador.cerrado.mal { background:#FFF; box-shadow:inset 0 0 0 1px #FCA5A5; font-weight:700; }
 .contador.bien { background:#DCFCE7; color:#166534; font-weight:600; }
+.contador.ojo, .contador.bien { box-shadow:none; }
 
 /* ---------- Lista de embarques: UN solo markup ----------
    Desktop: grid de 7 columnas (se ve como tabla).

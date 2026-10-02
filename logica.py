@@ -697,6 +697,25 @@ def _llegadas_confirmadas(activos: pd.DataFrame, historico: pd.DataFrame) -> dic
     return mapa
 
 
+def _etas_activos(activos: pd.DataFrame) -> dict:
+    """BL -> ETA vigente en tránsito, de los embarques ACTIVOS cuya llegada aún
+    no se confirma. Solo sirve para MOSTRAR la Llegada de un expediente de
+    Pagos con la misma fecha que Tránsito mientras no haya llegada confirmada.
+    No arranca ningún contador: los días sin pagar siguen corriendo solo desde
+    la llegada confirmada (ver fecha_llegada_fila)."""
+    mapa = {}
+    if activos is None or activos.empty:
+        return mapa
+    for _, r in activos.iterrows():
+        bl = str(r.get(COL_BL, "")).strip()
+        if not bl or bl in mapa:
+            continue
+        eta = parsear_fecha(r.get(COL_ETA, ""))
+        if eta:
+            mapa[bl] = eta
+    return mapa
+
+
 def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
                      historico: pd.DataFrame) -> pd.DataFrame:
     """Agrega al DataFrame de Pagos lo que no vive directamente en sus celdas:
@@ -708,10 +727,10 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
 
     Descripción, Cantidad y Llegada NO se cruzan aquí: viven en la propia hoja
     Pagos, sincronizadas por sincronizar_pagos_con_transito() — se leen tal
-    cual de sus columnas. La ÚNICA excepción es la llegada CONFIRMADA que usa
-    el contador de días sin pagar: esa sí se recalcula en vivo, porque si se
-    queda con el valor sincronizado una vez, nunca se actualiza cuando la
-    llegada se confirma después."""
+    cual de sus columnas. La ÚNICA excepción es la Llegada: la confirmada (que
+    usa el contador de días sin pagar) y, mientras no haya confirmación, el ETA
+    vigente en tránsito se leen en vivo, porque el valor sincronizado una vez
+    nunca se actualiza cuando el ETA cambia o la llegada se confirma después."""
     df = df_pagos.copy()
     calculadas = ["BLSinTransito", "TieneMontos", "TotalActual", "DiasSinPagar", "LlegadaEfectiva",
                   "EmpresaEfectiva", "EstadoEfectivo", "MontoExtra",
@@ -803,8 +822,12 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     # Lo que se MUESTRA como Llegada: en vivo desde tránsito si el BL tiene
     # match ahí (activo o archivado); si no hay match, la celda guardada en
     # Pagos. El criterio es solo el BL — no importa qué Empresa tenga la fila.
+    # Orden: llegada confirmada (activo o archivado) > ETA vigente en tránsito
+    # (aún sin confirmar) > la celda guardada en Pagos. Así un cambio de ETA en
+    # tránsito se ve en Pagos sin tocar nada a mano.
+    etas_activos = _etas_activos(activos)
     df["LlegadaEfectiva"] = [
-        llegadas_confirmadas.get(bl) or parsear_fecha(cruda)
+        llegadas_confirmadas.get(bl) or etas_activos.get(bl) or parsear_fecha(cruda)
         for bl, cruda in zip(df[COL_BL].astype(str).str.strip(), df.get(COL_PAGO_LLEGADA, []))
     ]
 

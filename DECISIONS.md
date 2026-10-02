@@ -118,5 +118,11 @@ Borrador generado el 2026-10-01.
 - **Por qué:** con pagos hechos antes de la fecha saludable la mora promedio salía negativa (-2 d), que no refleja cuánto tarda la empresa en pagar (con los datos del 1 oct 2026: ~10 días de llegada a pago, mediana 9).
 - **Reconsiderar si:** [?]
 
+## 20. La Llegada de Pagos sigue a Tránsito (v5.2)
+- **Decisión:** la Llegada que muestra Pagos sale de Tránsito en este orden: llegada confirmada (activo o archivado) > ETA vigente del embarque activo sin confirmar > la celda guardada en Pagos. Se calcula en vivo, sin escribir en Pagos. Los días sin pagar siguen corriendo solo desde la llegada CONFIRMADA: un ETA no es una llegada. Para igualar también la celda del Sheet hay un paso manual con respaldo (menú 7 y 8 del script de limpieza), que escribe solo en la columna `Llegada`. [PE, 2 oct 2026]
+- **Por qué:** al mover un ETA en Tránsito, Pagos quedaba con la fecha vieja hasta que alguien la actualizara a mano (7 de 23 BLs sin confirmar en los datos del 1 oct 2026).
+- **Costo aceptado:** `sincronizar_pagos_con_transito` sigue solo AGREGANDO filas; la celda `Llegada` de Pagos puede quedar atrasada entre corridas del paso manual, aunque la app ya muestre la fecha correcta. Un ETA con error de tipeo en Tránsito se propaga a Pagos.
+- **Reconsiderar si:** la celda atrasada molesta al leer o ordenar Pagos directo en el Sheet (entonces, activador automático en Apps Script).
+
 ## Limitación, no decisión
 - **Repo público:** quedó público por un problema de permisos con repos privados que no se resolvió [CHAT]. No contiene credenciales. Es una limitación, no una elección.

@@ -42,7 +42,7 @@ from logica import (
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------------------------
-VERSION_APP = "5.0"
+VERSION_APP = "5.1"
 
 
 VISTA_EN_PROCESO_PUERTO = "Puerto/Aeropuerto · Estatus"
@@ -213,16 +213,18 @@ html { -webkit-text-size-adjust: 100%; }
          box-shadow:0 1px 4px rgba(17,24,39,0.06); background:#fff; }
 .fila-head, .fila {
     display:grid;
-    grid-template-columns: 1.15fr 1.45fr 1.25fr 0.75fr 0.9fr 0.85fr 1.15fr;
+    grid-template-columns: 1fr 1.1fr 1.35fr 1.2fr 0.65fr 0.85fr 0.8fr 1.1fr;
     gap:10px; align-items:center;
 }
-.fila-head { padding:10px 18px; font-size:0.67rem; text-transform:uppercase; letter-spacing:0.05em;
-             color:#9CA3AF; background:#F9FAFB; border-bottom:1px solid var(--ant-borde); }
+.fila-head { padding:11px 18px; font-size:0.69rem; text-transform:uppercase; letter-spacing:0.05em;
+             font-weight:700; color:#0C447C; background:#DCEBFA; border-bottom:1px solid #BBD5F2; }
 .fila { padding:12px 18px; font-size:0.87rem; background:#fff;
         border-bottom:1px solid #F3F4F6; border-left:4px solid #6B7280; }
 .fila:last-child { border-bottom:none; }
 .c-bl { font-weight:700; color:var(--ant-texto); word-break:break-all; }
 .c-suave { color:var(--ant-suave); }
+.c-emp { font-weight:600; color:#0C447C; }
+.c-emp.sin { font-weight:500; font-style:italic; color:#9CA3AF; }
 .c-ref { font-weight:500; font-size:0.78rem; color:var(--ant-suave);
          margin-top:2px; letter-spacing:0.2px; }
 .badge { display:inline-block; padding:3px 11px; border-radius:999px;
@@ -682,7 +684,7 @@ def render_lista(df: pd.DataFrame):
 
     partes = [
         '<div class="lista"><div class="fila-head">'
-        "<div>BL</div><div>Descripción</div><div>Modelo/Serie · Cliente</div><div>Cant.</div>"
+        "<div>Empresa</div><div>BL</div><div>Descripción</div><div>Modelo/Serie · Cliente</div><div>Cant.</div>"
         "<div>País</div><div>ETA</div><div>Estado</div></div>"
     ]
     for _, r in df.iterrows():
@@ -701,8 +703,11 @@ def render_lista(df: pd.DataFrame):
         if r.get("BLRepetido"):
             badge_alerta += ('<span class="badge" style="background:#7C3AED;" '
                              'title="Este BL aparece en más de una fila">⧉ BL repetido</span>')
+        empresa = str(r.get("EmpresaTransito", "") or "").strip() or EMPRESA_SIN_ASIGNAR
+        clase_emp = "c-emp sin" if empresa == EMPRESA_SIN_ASIGNAR else "c-emp"
         partes.append(
             f'<div class="fila" style="border-left-color:{color};">'
+            f'<div class="{clase_emp}" data-l="Empresa">{esc(empresa)}</div>'
             f'<div class="c-bl" data-l="BL">{esc(r[COL_BL]) if str(r[COL_BL]).strip() else "(sin BL)"}'
             f'{_ref_oc_ee(r)}</div>'
             f'<div class="c-suave" data-l="Descripción">{esc(r[COL_DESC])}</div>'

@@ -125,6 +125,11 @@ PAGOS_CSS = """
 .pago-aging.pago-plan td.pago-monto { white-space:nowrap; text-align:right; padding-right:12px; font-variant-numeric:tabular-nums; font-weight:700; }
 .pago-aging.pago-plan th { padding:9px 4px; font-size:0.64rem; letter-spacing:0.02em; overflow-wrap:normal; }
 .pago-aging.pago-plan td { padding:8px 6px; font-size:0.8rem; }
+.pago-aging.pago-plan th.pago-th-dias { background:#B45309; }
+.pago-aging.pago-plan td.pago-celda-dias { background:#FFFBEB; }
+.pago-dias-pildora { display:inline-block; min-width:36px; padding:3px 10px; border-radius:999px;
+                     background:#FDE68A; color:#78350F; font-size:1.05rem; font-weight:800;
+                     box-shadow:inset 0 0 0 1px #F59E0B; }
 .pago-aging tfoot td { font-weight:800; background:#EEF5FC; color:#0C447C; border-top:2px solid #0C447C; }
 @media (max-width:640px) { .pago-totales { gap:14px 18px; } }
 </style>
@@ -517,6 +522,14 @@ def _plan_vaciar():
     st.session_state["plan_captura"] = []
 
 
+def _pildora_dias(dias: str) -> str:
+    """Los días sin pagar son lo que Finanzas debe ver primero en la captura:
+    número grande dentro de una píldora ámbar. Un solo color a propósito: no
+    hay umbral definido de qué cuenta como grave, y un rojo/verde inventado
+    diría lo que nadie ha decidido."""
+    return f'<span class="pago-dias-pildora">{esc(dias)}</span>' if dias != "—" else "—"
+
+
 def _fecha_corta(d) -> str:
     """'24 sep' (sin año): la tabla de captura tiene que caber entera en pantalla."""
     return f"{d.day:02d} {MESES_ES_CORTO[d.month]}" if d else "—"
@@ -529,7 +542,7 @@ def _html_plan(filas: list, titulo: str) -> str:
         "<tr>"
         f"<td class=\"pago-aging-dias\">{i}</td>"
         f"<td>{esc(f['bl'])}</td><td>{esc(f['empresa'])}</td><td>{esc(f['desc'])}</td>"
-        f"<td>{esc(f['llegada'])}</td><td>{esc(f['sin_mora'])}</td><td>{esc(f['dias'])}</td>"
+        f"<td>{esc(f['llegada'])}</td><td>{esc(f['sin_mora'])}</td><td class=\"pago-celda-dias\">{_pildora_dias(f['dias'])}</td>"
         f'<td class="pago-monto">{esc(f["usd"])}</td><td class="pago-monto">{esc(f["dop"])}</td></tr>'
         for i, f in enumerate(filas, start=1)
     )
@@ -539,7 +552,7 @@ def _html_plan(filas: list, titulo: str) -> str:
         "<colgroup><col style=\"width:4%\"><col style=\"width:13%\"><col style=\"width:12%\"><col style=\"width:18%\">"
         "<col style=\"width:8%\"><col style=\"width:8%\"><col style=\"width:8%\"><col style=\"width:14%\"><col style=\"width:15%\"></colgroup>"
         "<thead><tr><th>#</th><th>BL</th><th>Empresa</th><th>Descripción</th><th>Llegada</th>"
-        "<th>Sin mora</th><th>Días sin pagar</th><th>Monto total en Dólares</th><th>Monto total en Pesos</th></tr></thead>"
+        "<th>Sin mora</th><th class=\"pago-th-dias\">Días sin pagar</th><th>Monto total en Dólares</th><th>Monto total en Pesos</th></tr></thead>"
         f"<tbody>{cuerpo}</tbody>"
         f'<tfoot><tr><td colspan="7">Total · {len(filas)} expediente(s)</td>'
         f'<td class="pago-monto">{total_usd:,.2f}</td><td class="pago-monto">{total_dop:,.2f}</td></tr></tfoot>'

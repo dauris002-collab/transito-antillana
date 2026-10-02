@@ -584,7 +584,15 @@ def _plan_captura(enriquecido: pd.DataFrame):
     salieron = len(st.session_state.get("plan_captura", [])) - len(plan)
     st.session_state["plan_captura"] = plan
 
-    with st.expander("Plan para captura (orden manual · no se guarda)", expanded=bool(plan)):
+    # Interruptor y no st.expander: con expanded=bool(plan) el desplegable se
+    # cerraba solo al primer cambio de un widget (el plan seguía vacío) y no
+    # dejaba agregar nada. El estado de un toggle sí se conserva entre reruns.
+    etiqueta = "Plan para captura (orden manual · no se guarda)"
+    if plan:
+        etiqueta += f" · {len(plan)} en la lista"
+    if not st.toggle(etiqueta, key="plan_abierto"):
+        return
+    with st.container(border=True):
         st.caption("Arma el orden a mano y sácale una captura para Finanzas. Es solo visual: no cambia el "
                    "Sheet, ni fechas, ni prioridades, y se borra al recargar la página.")
         if salieron:

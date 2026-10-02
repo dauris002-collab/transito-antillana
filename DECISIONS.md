@@ -75,6 +75,7 @@ Borrador generado el 2026-10-01.
 
 ## 12. Analítica
 - **Decisión:** vive dentro de esta misma app (Streamlit/Plotly), no en Power BI ni Looker Studio. [CHAT] Pagos queda FUERA de Analítica por ahora. [CÓDIGO]
+- **Enfoque (2 oct 2026):** Analítica mide EMBARQUES (BL) y promedios por embarque, no unidades; no hay selector de unidades. Promedios con 1 solo embarque se muestran en barra clara. [PE]
 - **Tiempos (v5.2, 1 oct 2026):** el titular es el PROMEDIO de puerto → almacén, con la mediana y el n al lado (antes: solo mediana). Los promedios usan solo embarques con `Fecha_Almacen` real; los que usaban `Fecha_Recibido` como respaldo quedan fuera (sep 2026: 9 d de promedio con respaldo contra 25 d con fecha real). [PE, 1 oct 2026]
 - **Por qué:** hay muy poca data de pagos para que un promedio signifique algo. En tiempos de puerto el promedio es lo que pide Logística; la mediana se muestra al lado porque un embarque trancado tres meses sí mueve el promedio de toda una categoría.
 - **Descartado:** gráficas de % de incumplimiento contra el SLA (Logística no lo usa como criterio real).

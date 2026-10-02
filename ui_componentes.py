@@ -28,7 +28,7 @@ from sheets_io import (
     registrar_log, sla_etapas,
 )
 from logica import (
-    CATEGORIAS_CON_OC_EE, EMPRESA_SIN_ASIGNAR, EST_PROXIMO,
+    CATEGORIAS_CON_OC_EE, EMPRESA_SIN_ASIGNAR, ETIQUETA_POR_CONFIRMAR, EST_PROXIMO,
     EST_PUERTO, EST_RETRASADO, EST_SIN_FECHA, EST_TRANSITO, ETIQUETA_CORTA_ETAPA,
     ICONO_ALMACEN, ICONO_ETAPA, PALETA_PAISES, SEMANAS_HORIZONTE, STATUS_COLOR,
     STATUS_ORDER, UMBRAL_PROXIMO,
@@ -687,8 +687,9 @@ def render_lista(df: pd.DataFrame):
     ]
     for _, r in df.iterrows():
         color = STATUS_COLOR.get(r["EstadoTexto"], "#6B7280")
-        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], r.get(COL_VIA, ""))
         etapa = str(r.get("EtapaActual", "")).strip()
+        etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], r.get(COL_VIA, ""),
+                                sin_confirmar=not etapa)
         badge_etapa = ""
         if etapa:
             icono = "✈️" if (etapa == ETAPAS_PUERTO[0] and es_aereo(r.get(COL_VIA, ""))) \
@@ -736,7 +737,7 @@ def _figura_linea_tiempo(df: pd.DataFrame) -> go.Figure:
 
     vencidos = int((df["EstadoTexto"] == EST_PUERTO).sum())
     if vencidos:
-        etiquetas.append("En puerto")
+        etiquetas.append("Por confirmar")
         valores.append(vencidos)
         colores.append(STATUS_COLOR[EST_PUERTO])
 
@@ -844,7 +845,8 @@ def _ficha_embarque(fila):
         ("Empresa", fila.get("EmpresaTransito", "") or EMPRESA_SIN_ASIGNAR),
         ("Vía", via or VIA_MARITIMA),
         ("ETA", formato_eta(fila[COL_ETA])),
-        ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"], via)),
+        ("Estado", texto_estado(fila["EstadoTexto"], fila["DiasRel"], via,
+                                sin_confirmar=not str(fila.get("EtapaActual", "")).strip())),
     ]
     if categoria in CATEGORIAS_CON_OC_EE:
         if str(fila.get(COL_OC, "")).strip():
@@ -1206,6 +1208,9 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
         bl = str(r[COL_BL]).strip()
         categoria = r["Categoria"]
         etiqueta = texto_estado(r["EstadoTexto"], r["DiasRel"], r.get("Categoria", ""))
+        if r["EstadoTexto"] == EST_PUERTO and r["DiasRel"] is not None:
+            # Aquí no hay alerta al lado: se dicen los días del ETA vencido en vez de "En Puerto".
+            etiqueta = f"ETA vencido hace {texto_dias(r['DiasRel'])} · sin confirmar"
         color = STATUS_COLOR.get(r["EstadoTexto"], "#6B7280")
         c1, c2, c3 = st.columns([3.2, 1.3, 1.5])
         c1.markdown(
@@ -1251,7 +1256,7 @@ def _panel_confirmacion(df: pd.DataFrame, tab_key: str):
     for _, r in pendientes.head(TOPE).iterrows():
         _fila_confirmacion(r, False)
     if len(pendientes) > TOPE:
-        st.caption(f"…y {len(pendientes) - TOPE} más. Filtra por estado 'En Puerto' para verlos todos.")
+        st.caption(f"…y {len(pendientes) - TOPE} más. Filtra por estado 'Por confirmar llegada' para verlos todos.")
 
     if not retrasados.empty:
         st.markdown(
@@ -1284,9 +1289,10 @@ def tabla_exportable(df: pd.DataFrame) -> pd.DataFrame:
                else VIA_MARITIMA),
         "ETA": [formato_eta(v) for v in df[COL_ETA]],
         "¿Llegó?": df[COL_LLEGO] if COL_LLEGO in df.columns else "",
-        "Estado": [texto_estado(e, d, v) for e, d, v in
+        "Estado": [texto_estado(e, d, v, sin_confirmar=not str(et).strip()) for e, d, v, et in
                    zip(df["EstadoTexto"], df["DiasRel"],
-                       df[COL_VIA] if COL_VIA in df.columns else [""] * len(df))],
+                       df[COL_VIA] if COL_VIA in df.columns else [""] * len(df),
+                       df["EtapaActual"])],
         "Etapa": df["EtapaActual"],
         "Categoría": df["Categoria"],
         "Salida": [formato_eta(f) if f else "" for f in df["F_Salida"]],
@@ -1490,7 +1496,8 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     busqueda = f1.text_input("Buscar", key=f"busca_{tab_key}",
                              placeholder="BL, descripción, modelo, OC, cliente…", label_visibility="collapsed")
     pais_sel = f2.selectbox("País", paises, key=f"pais_{tab_key}", label_visibility="collapsed")
-    estado_sel = f3.selectbox("Estado", estados, key=f"estado_{tab_key}", label_visibility="collapsed")
+    estado_sel = f3.selectbox("Estado", estados, key=f"estado_{tab_key}", label_visibility="collapsed",
+                              format_func=lambda e: ETIQUETA_POR_CONFIRMAR if e == EST_PUERTO else e)
 
     # Conteos dinámicos: cada número de Mes ETA y de Empresa dice cuántos
     # embarques quedarían AL ELEGIR esa opción, con los DEMÁS filtros ya
@@ -1544,7 +1551,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
         activos_txt.append(f"país: {pais_sel}")
     if estado_sel != "Todos":
         filtrado = filtrado[filtrado["EstadoTexto"] == estado_sel]
-        activos_txt.append(f"estado: {estado_sel}")
+        activos_txt.append(f"estado: {ETIQUETA_POR_CONFIRMAR if estado_sel == EST_PUERTO else estado_sel}")
     if mes_sel != "Todos":
         filtrado = filtrado[filtrado["MesETA"] == mes_sel]
         activos_txt.append(f"mes ETA: {_etiqueta_mes_eta(mes_sel)}")

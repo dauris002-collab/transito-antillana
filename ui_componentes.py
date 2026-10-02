@@ -223,11 +223,12 @@ html { -webkit-text-size-adjust: 100%; }
 .fila:hover { background:#F5F9FF; }
 .fila:last-child { border-bottom:none; }
 .c-bl { font-weight:700; color:#0F172A; word-break:break-all; letter-spacing:0.1px; }
-.c-suave { color:#334155; font-weight:500; }
+.c-suave { color:#1E293B; font-weight:600; }
 .fila > div[data-l="ETA"] { font-weight:600; color:#0F172A; }
-.fila > div[data-l="Cantidad"] { font-weight:600; }
+.fila > div[data-l="Cantidad"], .fila > div[data-l="País"] { font-weight:600; color:#1E293B; }
 /* Empresa como etiqueta de color (una por empresa, tonos suaves) */
 .c-emp { line-height:1; }
+@media (min-width:641px) { .fila-head > div, .fila > div { text-align:center; } }
 .emp { display:inline-block; padding:4px 11px; border-radius:8px; font-size:0.78rem;
        font-weight:700; line-height:1.25; border:1px solid transparent; }
 .emp-ant { background:#E8F1FC; color:#1D5FA8; border-color:#CFE2F8; }
@@ -236,8 +237,8 @@ html { -webkit-text-size-adjust: 100%; }
 .emp-sin { background:#F3F4F6; color:#6B7280; border:1px dashed #CBD5E1; font-style:italic; font-weight:600; }
 .c-ref { font-weight:500; font-size:0.78rem; color:#64748B;
          margin-top:2px; letter-spacing:0.2px; }
-.c-suave .c-ref { color:#334155; font-weight:600; }
-.c-ref b { color:#94A3B8; font-weight:700; font-size:0.66rem; text-transform:uppercase;
+.c-suave .c-ref { color:#0F172A; font-weight:600; font-size:0.82rem; }
+.c-ref b { color:#64748B; font-weight:700; font-size:0.66rem; text-transform:uppercase;
            letter-spacing:0.05em; margin-right:3px; }
 .badge { display:inline-block; padding:3px 11px; border-radius:999px;
          font-size:0.73rem; font-weight:700; color:#fff; white-space:nowrap; }
@@ -269,6 +270,27 @@ div[data-testid="stButtonGroup"] button[aria-selected="true"] {
 div[data-testid="stButtonGroup"] button[aria-checked="true"] p,
 div[data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"] p,
 div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"] p { color:#0C447C !important; }
+
+/* Filtro por categoría: tono azul suave en reposo y degradado del tablero en la activa */
+.st-key-categoria_activa div[data-testid="stButtonGroup"] button {
+    background:#EEF5FC !important; border:1px solid #D3E3F6 !important;
+    color:#1E4E8C !important; font-weight:600 !important;
+}
+.st-key-categoria_activa div[data-testid="stButtonGroup"] button:hover {
+    background:#DFEBFA !important; border-color:#B9D4F1 !important; color:#0C447C !important;
+}
+.st-key-categoria_activa div[data-testid="stButtonGroup"] button[aria-checked="true"],
+.st-key-categoria_activa div[data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"],
+.st-key-categoria_activa div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"],
+.st-key-categoria_activa div[data-testid="stButtonGroup"] button[aria-selected="true"] {
+    background:linear-gradient(90deg,#2E86DE,#17A2B8) !important; color:#fff !important;
+    border:1px solid #2E86DE !important; font-weight:700 !important;
+    box-shadow:0 2px 8px rgba(46,134,222,0.28) !important;
+}
+.st-key-categoria_activa div[data-testid="stButtonGroup"] button[aria-checked="true"] p,
+.st-key-categoria_activa div[data-testid="stButtonGroup"] button[data-testid="stBaseButton-segmented_controlActive"] p,
+.st-key-categoria_activa div[data-testid="stButtonGroup"] button[kind="segmented_controlActive"] p,
+.st-key-categoria_activa div[data-testid="stButtonGroup"] button[aria-selected="true"] p { color:#fff !important; }
 
 /* Botones primarios (Entrar, Guardar, Confirmar): azul del tablero */
 button[kind="primary"], button[data-testid="stBaseButton-primary"],

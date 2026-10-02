@@ -125,5 +125,12 @@ Borrador generado el 2026-10-01.
 - **Costo aceptado:** la app ahora SÍ sobrescribe la celda `Llegada` de Pagos (antes `sincronizar_pagos_con_transito` solo agregaba filas). Una fecha escrita a mano en esa celda se pierde si Tránsito dice otra; un ETA mal tecleado en Tránsito se propaga a Pagos. Las ediciones directas en el Sheet se reflejan la próxima vez que el administrador abra Pagos.
 - **Reconsiderar si:** alguna vez Logística necesite una Llegada en Pagos distinta de la de Tránsito (hoy no).
 
+## 21. Plan para captura en Pagos (v5.3)
+- **Decisión:** el admin arma a mano una lista ordenada de pendientes (agregar, ▲▼, quitar) para sacarle captura y mandarla a Finanzas. Es SOLO visual: vive en `st.session_state`, no escribe en el Sheet (ni fechas, ni prioridad, ni columnas nuevas) y se borra al recargar o cerrar la página. Vista de captura: tabla numerada (BL, Empresa, Descripción, Llegada, Sin mora, USD, DOP) con título editable y totales. [PE, 2 oct 2026]
+- **Por qué:** la prioridad 1-4 (#11) dice qué importa más, no el orden en que se paga esa semana. Guardarlo en el Sheet se descartó: es para momentos puntuales y no debe alterar datos.
+- **Costo aceptado:** si la sesión se reinicia (recarga, reconexión del celular, app dormida) el plan se pierde y hay que rearmarlo. Las cifras de la captura quedan fijas en la imagen aunque luego cambien en el Sheet.
+- **Descartado por ahora:** arrastrar y soltar (componente de terceros, riesgo de mantenimiento); botón de descargar imagen; plan guardado por semana en el Sheet (`Plan_Semana`/`Plan_Orden`).
+- **Reconsiderar si:** se necesita conservar el historial de lo enviado a Finanzas o que otros usuarios vean el mismo plan.
+
 ## Limitación, no decisión
 - **Repo público:** quedó público por un problema de permisos con repos privados que no se resolvió [CHAT]. No contiene credenciales. Es una limitación, no una elección.

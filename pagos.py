@@ -18,6 +18,8 @@ Usa Streamlit e importa de sheets_io.py, logica.py y ui_componentes.py.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pandas as pd
 import streamlit as st
 
@@ -117,6 +119,13 @@ PAGOS_CSS = """
 .pago-aging tbody tr:nth-child(even) { background:#F9FAFB; }
 .pago-aging td.pago-aging-dias { font-weight:800; }
 .pago-aging td.pago-aging-vacio { color:#9CA3AF; }
+.pago-plan-titulo { font-size:1.05rem; font-weight:800; color:#111827; margin:10px 0 4px; text-align:center; }
+.pago-aging.pago-plan { table-layout:fixed; }
+.pago-aging.pago-plan td, .pago-aging.pago-plan th { overflow-wrap:anywhere; white-space:normal; }
+.pago-aging.pago-plan td.pago-monto { white-space:nowrap; text-align:right; padding-right:12px; font-variant-numeric:tabular-nums; font-weight:700; }
+.pago-aging.pago-plan th { padding:9px 4px; font-size:0.64rem; letter-spacing:0.02em; overflow-wrap:normal; }
+.pago-aging.pago-plan td { padding:8px 6px; font-size:0.8rem; }
+.pago-aging tfoot td { font-weight:800; background:#EEF5FC; color:#0C447C; border-top:2px solid #0C447C; }
 @media (max-width:640px) { .pago-totales { gap:14px 18px; } }
 </style>
 """
@@ -465,6 +474,146 @@ def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
     )
 
 
+# ---------------------------------------------------------------------------
+# PLAN PARA CAPTURA (solo admin; orden visual, NO se guarda en el Sheet)
+# ---------------------------------------------------------------------------
+def _titulo_plan_semana() -> str:
+    """'Plan de pagos · semana del 5 al 9 de oct' (lunes a viernes de la semana
+    en curso; sábado y domingo apuntan ya a la que viene)."""
+    hoy = hoy_rd()
+    lunes = hoy + timedelta(days=7 - hoy.weekday()) if hoy.weekday() >= 5 else hoy - timedelta(days=hoy.weekday())
+    viernes = lunes + timedelta(days=4)
+    if lunes.month == viernes.month:
+        rango = f"{lunes.day} al {viernes.day} de {MESES_ES_CORTO[viernes.month]}"
+    else:
+        rango = f"{lunes.day} {MESES_ES_CORTO[lunes.month]} al {viernes.day} {MESES_ES_CORTO[viernes.month]}"
+    return f"Plan de pagos · semana del {rango}"
+
+
+def _plan_agregar():
+    plan = st.session_state.setdefault("plan_captura", [])
+    for bl in st.session_state.get("plan_agregar_sel", []):
+        if bl not in plan:
+            plan.append(bl)
+    st.session_state["plan_agregar_sel"] = []
+
+
+def _plan_mover(bl: str, delta: int):
+    plan = st.session_state.get("plan_captura", [])
+    if bl in plan:
+        i = plan.index(bl)
+        j = i + delta
+        if 0 <= j < len(plan):
+            plan[i], plan[j] = plan[j], plan[i]
+
+
+def _plan_quitar(bl: str):
+    plan = st.session_state.get("plan_captura", [])
+    if bl in plan:
+        plan.remove(bl)
+
+
+def _plan_vaciar():
+    st.session_state["plan_captura"] = []
+
+
+def _fecha_corta(d) -> str:
+    """'24 sep' (sin año): la tabla de captura tiene que caber entera en pantalla."""
+    return f"{d.day:02d} {MESES_ES_CORTO[d.month]}" if d else "—"
+
+
+def _html_plan(filas: list, titulo: str) -> str:
+    total_usd = sum(f["usd_n"] for f in filas)
+    total_dop = sum(f["dop_n"] for f in filas)
+    cuerpo = "".join(
+        "<tr>"
+        f"<td class=\"pago-aging-dias\">{i}</td>"
+        f"<td>{esc(f['bl'])}</td><td>{esc(f['empresa'])}</td><td>{esc(f['desc'])}</td>"
+        f"<td>{esc(f['llegada'])}</td><td>{esc(f['sin_mora'])}</td>"
+        f'<td class="pago-monto">{esc(f["usd"])}</td><td class="pago-monto">{esc(f["dop"])}</td></tr>'
+        for i, f in enumerate(filas, start=1)
+    )
+    return (
+        f'<div class="pago-plan-titulo">{esc(titulo)}</div>'
+        '<div class="pago-aging-wrap"><table class="pago-aging pago-plan">'
+        "<colgroup><col style=\"width:4%\"><col style=\"width:14%\"><col style=\"width:13%\"><col style=\"width:21%\">"
+        "<col style=\"width:10%\"><col style=\"width:9%\"><col style=\"width:13%\"><col style=\"width:16%\"></colgroup>"
+        "<thead><tr><th>#</th><th>BL</th><th>Empresa</th><th>Descripción</th><th>Llegada</th>"
+        "<th>Sin mora</th><th>USD</th><th>DOP</th></tr></thead>"
+        f"<tbody>{cuerpo}</tbody>"
+        f'<tfoot><tr><td colspan="6">Total · {len(filas)} expediente(s)</td>'
+        f'<td class="pago-monto">{total_usd:,.2f}</td><td class="pago-monto">{total_dop:,.2f}</td></tr></tfoot>'
+        "</table></div>"
+    )
+
+
+def _plan_captura(enriquecido: pd.DataFrame):
+    """Lista ordenada a mano de los pendientes que se van a pagar, pensada para
+    sacarle una captura y mandarla a Finanzas. Vive SOLO en la sesión del
+    navegador (st.session_state): no escribe en el Sheet, no toca fechas ni
+    prioridades, y desaparece al recargar o cerrar la página. Toma los datos de
+    'enriquecido' completo (no de la vista filtrada) para que cambiar el
+    filtro de Empresa o Mes no vacíe el plan. Quien se pague o salga de los
+    pendientes mientras tanto sale del plan solo."""
+    if enriquecido is None or enriquecido.empty:
+        return
+    pend = enriquecido[enriquecido["TieneMontos"] & (enriquecido["EstadoEfectivo"] != ESTADO_PAGO_PAGADO)]
+    pend = pend[pend[COL_BL].astype(str).str.strip() != ""]
+    if pend.empty and not st.session_state.get("plan_captura"):
+        return
+    orden = sorted(range(len(pend)), key=lambda i: _clave_antiguedad(
+        pend.iloc[i].get("PrioridadPago"), pend.iloc[i].get("DiasSinPagar"), pend.iloc[i].get("LlegadaEfectiva")))
+    datos = {}
+    for i in orden:
+        r = pend.iloc[i]
+        bl = str(r[COL_BL]).strip()
+        if bl in datos:
+            continue
+        total = r.get("TotalActual") or {}
+        usd, dop = total.get("USD") or 0.0, total.get("DOP") or 0.0
+        llegada, sin_mora = r.get("LlegadaEfectiva"), r.get("FechaSinMoraParsed")
+        datos[bl] = {
+            "bl": bl, "empresa": r.get("EmpresaEfectiva", "") or EMPRESA_ANTILLANA,
+            "desc": str(r.get(COL_DESC, "") or "").strip(),
+            "llegada": _fecha_corta(llegada), "sin_mora": _fecha_corta(sin_mora),
+            "usd_n": usd, "dop_n": dop,
+            "usd": f"{usd:,.2f}" if usd else "—", "dop": f"{dop:,.2f}" if dop else "—",
+        }
+
+    plan = [b for b in st.session_state.get("plan_captura", []) if b in datos]
+    salieron = len(st.session_state.get("plan_captura", [])) - len(plan)
+    st.session_state["plan_captura"] = plan
+
+    with st.expander("Plan para captura (orden manual · no se guarda)", expanded=bool(plan)):
+        st.caption("Arma el orden a mano y sácale una captura para Finanzas. Es solo visual: no cambia el "
+                   "Sheet, ni fechas, ni prioridades, y se borra al recargar la página.")
+        if salieron:
+            st.caption(f"{salieron} expediente(s) salieron del plan porque ya no están pendientes.")
+        titulo = st.text_input("Título", value=_titulo_plan_semana(), key="plan_titulo")
+        captura = st.toggle("Vista de captura (oculta los controles)", key="plan_modo_captura")
+
+        if not captura:
+            disponibles = [b for b in datos if b not in plan]
+            st.multiselect("Agregar pendientes al plan", disponibles, key="plan_agregar_sel",
+                           format_func=lambda b: f"{b} · {datos[b]['desc'][:40] or 'sin descripción'} · {datos[b]['empresa']}",
+                           placeholder="Elige uno o varios…")
+            c_add, c_clear, _ = st.columns([1, 1, 2])
+            c_add.button("Agregar al plan", on_click=_plan_agregar, type="primary", key="plan_btn_agregar")
+            c_clear.button("Vaciar plan", on_click=_plan_vaciar, key="plan_btn_vaciar", disabled=not plan)
+            for i, bl in enumerate(plan):
+                a, b_, c, d, e = st.columns([0.5, 6, 0.8, 0.8, 0.8], vertical_alignment="center")
+                a.markdown(f"**{i + 1}**")
+                b_.markdown(f"{esc(bl)} · {esc(datos[bl]['desc'][:50])}")
+                c.button("▲", key=f"plan_up_{bl}", on_click=_plan_mover, args=(bl, -1), disabled=i == 0)
+                d.button("▼", key=f"plan_dn_{bl}", on_click=_plan_mover, args=(bl, 1), disabled=i == len(plan) - 1)
+                e.button("✕", key=f"plan_rm_{bl}", on_click=_plan_quitar, args=(bl,))
+
+        if plan:
+            st.markdown(_html_plan([datos[b] for b in plan], titulo), unsafe_allow_html=True)
+        elif captura:
+            st.info("El plan está vacío: apaga la vista de captura y agrega expedientes.")
+
+
 def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False):
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -576,6 +725,8 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False):
                    "montos cargados.")
 
     _tabla_antiguedad_pendientes(con_montos, filtro_activo)
+    if es_admin:
+        _plan_captura(enriquecido)
 
     filtrado = _aplicar_filtro_kpi(con_montos, filtro_activo)
     # Mismo orden que 'Pendientes por antigüedad' (ver _clave_antiguedad):

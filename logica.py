@@ -715,7 +715,7 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     df = df_pagos.copy()
     calculadas = ["BLSinTransito", "TieneMontos", "TotalActual", "DiasSinPagar", "LlegadaEfectiva",
                   "EmpresaEfectiva", "EstadoEfectivo", "MontoExtra",
-                  "TotalPagado", "DiasMora", "FechaSinMoraParsed", "FechaPagoRealParsed",
+                  "TotalPagado", "DiasMora", "DiasHastaPago", "FechaSinMoraParsed", "FechaPagoRealParsed",
                   "PrioridadPago"]
     if df.empty:
         for c in calculadas:
@@ -832,6 +832,13 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
         (pr - sm).days if (sm and pr) else None
         for sm, pr in zip(df["FechaSinMoraParsed"], df["FechaPagoRealParsed"])
     ]
+    # Tiempo REAL de pago: días entre la llegada y el pago realizado. Es lo que
+    # mide cuánto tarda la empresa en pagar; DiasMora solo dice si se pagó antes
+    # o después de la fecha que Logística fijó (con pagos puntuales sale negativo).
+    df["DiasHastaPago"] = [
+        (pr - ll).days if (pr and ll) else None
+        for pr, ll in zip(df["FechaPagoRealParsed"], df["LlegadaEfectiva"])
+    ]
     return df
 
 
@@ -844,6 +851,7 @@ def resumen_pagos(df: pd.DataFrame) -> dict:
     positivo — un pago más barato que lo estimado no "resta" sobrecosto,
     simplemente no genera ninguno)."""
     vacio = {"n_pagados": 0, "n_abiertos": 0, "n_a_tiempo": 0, "dias_mora_promedio": None,
+             "dias_pago_promedio": None, "n_dias_pago": 0,
              "sobrecosto": {"USD": 0.0, "DOP": 0.0}, "total_por_pagar": {"USD": 0.0, "DOP": 0.0}}
     if df is None or df.empty or "EstadoEfectivo" not in df.columns:
         return vacio
@@ -869,6 +877,8 @@ def resumen_pagos(df: pd.DataFrame) -> dict:
 
     dias = [d for d in cerrados["DiasMora"] if d is not None and pd.notna(d)]
     a_tiempo = sum(1 for d in dias if d <= 0)
+    dias_pago = [d for d in (cerrados["DiasHastaPago"] if "DiasHastaPago" in cerrados.columns else [])
+                 if d is not None and pd.notna(d)]
     sobrecosto = {"USD": 0.0, "DOP": 0.0}
     for extra in cerrados["MontoExtra"]:
         for moneda in ("USD", "DOP"):
@@ -881,6 +891,8 @@ def resumen_pagos(df: pd.DataFrame) -> dict:
         "n_abiertos": vacio["n_abiertos"],
         "n_a_tiempo": a_tiempo,
         "dias_mora_promedio": (sum(dias) / len(dias)) if dias else None,
+        "dias_pago_promedio": (sum(dias_pago) / len(dias_pago)) if dias_pago else None,
+        "n_dias_pago": len(dias_pago),
         "sobrecosto": sobrecosto,
         "total_por_pagar": total_por_pagar,
     }

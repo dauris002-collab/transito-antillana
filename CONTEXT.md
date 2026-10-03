@@ -50,7 +50,7 @@ Columnas: la fuente de verdad son las constantes de `sheets_io.py` (`REQUIRED_CO
 
 - Login por PIN de 4 dígitos. Roles `admin` (8 secciones) y `viewer` (Dashboard, Analítica, Histórico, Estatus de Pago).
 - Secrets esperados (solo nombres): `gcp_service_account`, `SHEET_ID`, tabla `pins` (por PIN: nombre y rol; respaldo: `ADMIN_PIN` / `VIEWER_PIN`), `sla` (opcional: `llegada_a_puerto`, `recepcion_y_declaracion`, `retraso`).
-- Sesión: token en la URL cuyo contenido vive en el servidor, atado a una huella del navegador. Vida 120 min (admin) / 720 min (viewer). Admin: la vigencia se valida y renueva en cada rerun (`validar_vigencia_admin`, 3 oct 2026), así que es inactividad real. Viewer: la ventana solo se renueva al abrir una sesión nueva del navegador (login o recarga), no con cada clic; una pestaña viewer ya abierta no se vence. La huella del navegador es solo un hash del User-Agent (débil entre equipos iguales).
+- Sesión: token en la URL cuyo contenido vive en el servidor, atado a una huella del navegador. Vida 15 min (admin) / 720 min (viewer). Admin: la vigencia se valida y renueva en cada rerun completo (`validar_vigencia_admin`, 3 oct 2026). Límite conocido: las interacciones DENTRO de un `@st.fragment` (Analítica, Pagos, cada categoría del Dashboard) no corren `main()`, así que ni renuevan ni validan la vigencia hasta el próximo rerun completo. Viewer: la ventana solo se renueva al abrir una sesión nueva del navegador (login o recarga), no con cada clic; una pestaña viewer ya abierta no se vence. La huella del navegador es solo un hash del User-Agent (débil entre equipos iguales).
 - Sin bloqueo por intentos fallidos, solo 1 s de espera por intento (ver DECISIONS.md).
 
 ## Reglas de negocio que más se tocan [L]

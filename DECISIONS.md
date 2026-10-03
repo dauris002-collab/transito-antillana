@@ -82,11 +82,11 @@ Borrador generado el 2026-10-01.
 - **Reconsiderar si:** haya más data de pagos (umbral [?]).
 
 ## 13. Acceso
-- **Decisión:** PIN de 4 dígitos por persona, SIN bloqueo por intentos fallidos, con 1 s de espera por intento. Sesión por token en la URL atado a la huella del navegador; 120 min admin, 720 min viewer. [PE]
+- **Decisión:** PIN de 4 dígitos por persona, SIN bloqueo por intentos fallidos, con 1 s de espera por intento. Sesión por token en la URL atado a la huella del navegador; 15 min admin (antes 120; 3 oct 2026), 720 min viewer. [PE]
 - **Por qué:** el presidente abre el link desde el celular una vez al día; volver a pedirle el PIN a cada rato es la forma más rápida de que deje de usarla.
 - **Descartado:** bloqueo de 15 minutos tras 5 intentos (existió).
 - **Admin con inactividad real (3 oct 2026):** antes `expira` solo se comparaba al abrir una sesión nueva del navegador, así que una pestaña de admin ya abierta no vencía nunca. Ahora `validar_vigencia_admin()` lo valida y lo renueva en cada rerun. El viewer queda como estaba (720 min). [PE, 3 oct 2026]
-- **Costo aceptado:** si el admin deja la app quieta más de 120 min, la próxima interacción lo manda al login; un formulario a medio llenar se pierde.
+- **Costo aceptado:** si el admin deja la app quieta más de 15 min, la próxima interacción lo manda al login; un formulario a medio llenar y el plan de captura de Pagos (vive en `st.session_state`) se pierden. Límite conocido sin resolver: las interacciones dentro de un `@st.fragment` no renuevan ni validan la vigencia (ver CONTEXT.md).
 - **Pendiente, sin decidir:** registrar en `Log` los intentos de PIN fallidos (hoy solo se registra el login exitoso).
 - **Reconsiderar si:** [?]
 

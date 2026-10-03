@@ -106,7 +106,7 @@ LARGO_PIN = 4               # dígitos del PIN
 # Vida de sesión por rol. El admin trabaja sentado en la app; el viewer (el
 # presidente, gerentes) abre el link desde el celular una vez al día y volver a
 # pedirle el PIN cada rato es la forma más rápida de que deje de usarla.
-VIDA_SESION_MIN = {"admin": 15, "viewer": 720}
+VIDA_SESION_MIN = {"admin": 30, "viewer": 720}
 
 
 # ---------------------------------------------------------------------------

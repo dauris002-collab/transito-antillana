@@ -191,6 +191,23 @@ def cerrar_sesion():
     st.query_params.clear()
 
 
+def validar_vigencia_admin():
+    """Inactividad real para el admin. restaurar_sesion() solo corre al abrir una
+    sesión nueva del navegador; una pestaña que sigue conectada nunca volvía a
+    comparar `expira`. Aquí se compara en cada rerun (cada interacción) y se
+    renueva la ventana. Si venció o el servidor ya no conoce el token, se cierra
+    la sesión y main() muestra el login. El viewer no pasa por aquí (decisión 13:
+    el presidente no debe ver el PIN a cada rato)."""
+    if st.session_state.get("rol") != "admin":
+        return
+    ahora = time.time()
+    datos = _sesiones_activas().get(st.session_state.get("token", ""))
+    if not datos or datos["expira"] < ahora:
+        cerrar_sesion()
+        return
+    datos["expira"] = ahora + _vida_sesion("admin") * 60
+
+
 def _resolver_pin(pin: str):
     """Devuelve (rol, nombre) o (None, None). Soporta PIN por persona con la
     tabla [pins] de secrets:  [pins.1234]  nombre = "Dauris"  rol = "admin".
@@ -259,6 +276,7 @@ def login_screen():
 # ---------------------------------------------------------------------------
 def main():
     restaurar_sesion()
+    validar_vigencia_admin()
 
     if "rol" not in st.session_state:
         login_screen()

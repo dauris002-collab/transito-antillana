@@ -493,12 +493,24 @@ def _titulo_plan_semana() -> str:
     return f"Plan de pagos · semana del {rango}"
 
 
-def _plan_agregar():
+def _por_llegada(bls, llegadas: dict) -> list:
+    """Más antigua primero (la que lleva más tiempo esperando). Sin fecha de
+    llegada al final. Estable: a igual fecha se respeta el orden recibido."""
+    return sorted(bls, key=lambda b: (llegadas.get(b) is None, llegadas.get(b) or 0))
+
+
+def _plan_agregar(llegadas: dict):
+    """Lo que se agrega entra ordenado por llegada (la más antigua arriba) y
+    va DESPUÉS de lo que ya estaba: el orden manual que ya armó el admin no
+    se toca."""
     plan = st.session_state.setdefault("plan_captura", [])
-    for bl in st.session_state.get("plan_agregar_sel", []):
-        if bl not in plan:
-            plan.append(bl)
+    nuevos = [b for b in st.session_state.get("plan_agregar_sel", []) if b not in plan]
+    plan.extend(_por_llegada(nuevos, llegadas))
     st.session_state["plan_agregar_sel"] = []
+
+
+def _plan_ordenar(llegadas: dict):
+    st.session_state["plan_captura"] = _por_llegada(st.session_state.get("plan_captura", []), llegadas)
 
 
 def _plan_mover(bl: str, delta: int):
@@ -589,7 +601,7 @@ def _plan_captura(enriquecido: pd.DataFrame):
             "desc": str(r.get(COL_DESC, "") or "").strip(),
             "llegada": _fecha_corta(llegada), "sin_mora": _fecha_corta(sin_mora),
             "dias": "—" if dias is None or pd.isna(dias) else str(int(dias)),
-            "usd_n": usd, "dop_n": dop,
+            "llegada_d": llegada, "usd_n": usd, "dop_n": dop,
             "usd": f"{usd:,.2f}" if usd else "—", "dop": f"{dop:,.2f}" if dop else "—",
         }
 
@@ -618,8 +630,12 @@ def _plan_captura(enriquecido: pd.DataFrame):
             st.multiselect("Agregar pendientes al plan", disponibles, key="plan_agregar_sel",
                            format_func=lambda b: f"{b} · {datos[b]['desc'][:40] or 'sin descripción'} · {datos[b]['empresa']}",
                            placeholder="Elige uno o varios…")
-            c_add, c_clear, _ = st.columns([1, 1, 2])
-            c_add.button("Agregar al plan", on_click=_plan_agregar, type="primary", key="plan_btn_agregar")
+            llegadas = {b: d["llegada_d"] for b, d in datos.items()}
+            c_add, c_ord, c_clear, _ = st.columns([1, 1.4, 1, 1])
+            c_add.button("Agregar al plan", on_click=_plan_agregar, args=(llegadas,), type="primary",
+                         key="plan_btn_agregar")
+            c_ord.button("Ordenar por llegada", on_click=_plan_ordenar, args=(llegadas,), key="plan_btn_ordenar",
+                         disabled=len(plan) < 2, help="Pone arriba la que lleva más tiempo desde su llegada.")
             c_clear.button("Vaciar plan", on_click=_plan_vaciar, key="plan_btn_vaciar", disabled=not plan)
             for i, bl in enumerate(plan):
                 a, b_, c, d, e = st.columns([0.5, 6, 0.8, 0.8, 0.8], vertical_alignment="center")

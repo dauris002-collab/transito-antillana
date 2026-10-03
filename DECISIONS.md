@@ -82,11 +82,11 @@ Borrador generado el 2026-10-01.
 - **Reconsiderar si:** haya más data de pagos (umbral [?]).
 
 ## 13. Acceso
-- **Decisión:** PIN de 4 dígitos por persona, SIN bloqueo por intentos fallidos, con 1 s de espera por intento. Sesión por token en la URL atado a la huella del navegador; 30 min admin (antes 120; 3 oct 2026), 720 min viewer. [PE]
+- **Decisión:** PIN de 4 dígitos por persona, SIN bloqueo por intentos fallidos, con 1 s de espera por intento. Sesión por token en la URL atado a la huella del navegador; 120 min admin, 720 min viewer. [PE]
 - **Por qué:** el presidente abre el link desde el celular una vez al día; volver a pedirle el PIN a cada rato es la forma más rápida de que deje de usarla.
 - **Descartado:** bloqueo de 15 minutos tras 5 intentos (existió).
-- **Admin con inactividad real (3 oct 2026):** antes `expira` solo se comparaba al abrir una sesión nueva del navegador, así que una pestaña de admin ya abierta no vencía nunca. Ahora `validar_vigencia_admin()` lo valida y lo renueva en cada rerun. El viewer queda como estaba (720 min). [PE, 3 oct 2026]
-- **Costo aceptado:** si el admin deja la app quieta más de 30 min, la próxima interacción lo manda al login; un formulario a medio llenar y el plan de captura de Pagos (vive en `st.session_state`) se pierden. Límite conocido sin resolver: las interacciones dentro de un `@st.fragment` no renuevan ni validan la vigencia (ver CONTEXT.md).
+- **Admin con inactividad real (3 oct 2026):** antes `expira` solo se comparaba al abrir una sesión nueva del navegador, así que una pestaña de admin ya abierta no vencía nunca. Ahora `validar_vigencia_admin()` lo valida y lo renueva en cada rerun, con el mismo valor de 120 min (se probaron 15 y 30; Dauris dejó 120). El viewer queda como estaba (720 min). [PE, 3 oct 2026]
+- **Costo aceptado:** si el admin deja la app quieta más de 120 min, la próxima interacción lo manda al login; un formulario a medio llenar se pierde (el plan de captura de Pagos ya no, ver #21). Límite conocido sin resolver: las interacciones dentro de un `@st.fragment` no renuevan ni validan la vigencia (ver CONTEXT.md).
 - **Pendiente, sin decidir:** registrar en `Log` los intentos de PIN fallidos (hoy solo se registra el login exitoso).
 - **Reconsiderar si:** [?]
 
@@ -129,9 +129,9 @@ Borrador generado el 2026-10-01.
 - **Reconsiderar si:** alguna vez Logística necesite una Llegada en Pagos distinta de la de Tránsito (hoy no).
 
 ## 21. Plan para captura en Pagos (v5.3)
-- **Decisión:** el admin arma a mano una lista ordenada de pendientes (agregar, ▲▼, quitar) para sacarle captura y mandarla a Finanzas. Es SOLO visual: vive en `st.session_state`, no escribe en el Sheet (ni fechas, ni prioridad, ni columnas nuevas) y se borra al recargar o cerrar la página. Lo que se agrega entra ordenado por llegada (la más antigua arriba) y después de lo ya armado; el botón «Ordenar por llegada» reordena todo el plan así, y ▲▼ permiten ajustar a mano. Vista de captura: tabla numerada (BL, Empresa, Descripción, Llegada, Sin mora, Días sin pagar, Monto total en Dólares/Pesos) con título editable y totales. [PE, 2 oct 2026]
+- **Decisión:** el admin arma a mano una lista ordenada de pendientes (agregar, ▲▼, quitar) para sacarle captura y mandarla a Finanzas. Es SOLO visual: no escribe en el Sheet (ni fechas, ni prioridad, ni columnas nuevas). La lista de BL y el título se respaldan en la memoria del servidor, un plan por admin, y duran 120 min desde la última vez que se ve o edita (`VIDA_PLAN_MIN` en `pagos.py`, 3 oct 2026); sobreviven a recargas, reconexiones y al cierre de sesión. Lo que se agrega entra ordenado por llegada (la más antigua arriba) y después de lo ya armado; el botón «Ordenar por llegada» reordena todo el plan así, y ▲▼ permiten ajustar a mano. Vista de captura: tabla numerada (BL, Empresa, Descripción, Llegada, Sin mora, Días sin pagar, Monto total en Dólares/Pesos) con título editable y totales. [PE, 2 oct 2026]
 - **Por qué:** la prioridad 1-4 (#11) dice qué importa más, no el orden en que se paga esa semana. Guardarlo en el Sheet se descartó: es para momentos puntuales y no debe alterar datos.
-- **Costo aceptado:** si la sesión se reinicia (recarga, reconexión del celular, app dormida) el plan se pierde y hay que rearmarlo. Las cifras de la captura quedan fijas en la imagen aunque luego cambien en el Sheet.
+- **Costo aceptado:** si la app se reinicia, se redespliega o Community Cloud la duerme, o pasan 120 min sin usar el plan, se pierde y hay que rearmarlo. Con el PIN genérico `ADMIN_PIN` todos los admin comparten el nombre "Administrador" y, por tanto, el mismo plan. Las cifras de la captura quedan fijas en la imagen aunque luego cambien en el Sheet.
 - **Descartado por ahora:** arrastrar y soltar (componente de terceros, riesgo de mantenimiento); botón de descargar imagen; plan guardado por semana en el Sheet (`Plan_Semana`/`Plan_Orden`).
 - **Reconsiderar si:** se necesita conservar el historial de lo enviado a Finanzas o que otros usuarios vean el mismo plan.
 

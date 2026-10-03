@@ -43,14 +43,14 @@ Columnas: la fuente de verdad son las constantes de `sheets_io.py` (`REQUIRED_CO
 - Lectura: UNA llamada `values_batch_get` trae todas las pestañas (`A1:AZ20000`), con caché de 45 s (`CACHE_TTL`). Un error de lectura no se cachea. Tope de 20.000 filas por pestaña, con aviso.
 - Reintentos ante 429/500/502/503: hasta 5 intentos con esperas de 2, 4, 8 y 16 s.
 - Escritura: por número de fila del Sheet, verificado contra el BL (`_localizar_fila`). Si el BL está repetido y la pantalla quedó desactualizada, se niega a escribir. Después de escribir se invalidan las cachés. Encabezados: caché de 120 s.
-- Estado en memoria del servidor (`st.cache_resource`): cliente gspread, índice de hojas y sesiones activas. Se pierde al reiniciar o redesplegar.
+- Estado en memoria del servidor (`st.cache_resource`): cliente gspread, índice de hojas, sesiones activas y el plan de captura de Pagos (uno por admin, 120 min desde su último uso; `pagos.py`). Se pierde al reiniciar o redesplegar.
 - [?] Cuotas de la API de Sheets: no están en el código. Verificar los valores vigentes en la documentación de Google.
 
 ## Acceso [L]
 
 - Login por PIN de 4 dígitos. Roles `admin` (8 secciones) y `viewer` (Dashboard, Analítica, Histórico, Estatus de Pago).
 - Secrets esperados (solo nombres): `gcp_service_account`, `SHEET_ID`, tabla `pins` (por PIN: nombre y rol; respaldo: `ADMIN_PIN` / `VIEWER_PIN`), `sla` (opcional: `llegada_a_puerto`, `recepcion_y_declaracion`, `retraso`).
-- Sesión: token en la URL cuyo contenido vive en el servidor, atado a una huella del navegador. Vida 30 min (admin) / 720 min (viewer). Admin: la vigencia se valida y renueva en cada rerun completo (`validar_vigencia_admin`, 3 oct 2026). Límite conocido: las interacciones DENTRO de un `@st.fragment` (Analítica, Pagos, cada categoría del Dashboard) no corren `main()`, así que ni renuevan ni validan la vigencia hasta el próximo rerun completo. Viewer: la ventana solo se renueva al abrir una sesión nueva del navegador (login o recarga), no con cada clic; una pestaña viewer ya abierta no se vence. La huella del navegador es solo un hash del User-Agent (débil entre equipos iguales).
+- Sesión: token en la URL cuyo contenido vive en el servidor, atado a una huella del navegador. Vida 120 min (admin) / 720 min (viewer). Admin: la vigencia se valida y renueva en cada rerun completo (`validar_vigencia_admin`, 3 oct 2026). Límite conocido: las interacciones DENTRO de un `@st.fragment` (Analítica, Pagos, cada categoría del Dashboard) no corren `main()`, así que ni renuevan ni validan la vigencia hasta el próximo rerun completo. Viewer: la ventana solo se renueva al abrir una sesión nueva del navegador (login o recarga), no con cada clic; una pestaña viewer ya abierta no se vence. La huella del navegador es solo un hash del User-Agent (débil entre equipos iguales).
 - Sin bloqueo por intentos fallidos, solo 1 s de espera por intento (ver DECISIONS.md).
 
 ## Reglas de negocio que más se tocan [L]

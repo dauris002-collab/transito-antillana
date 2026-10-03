@@ -18,6 +18,7 @@ Usa Streamlit e importa de sheets_io.py, logica.py y ui_componentes.py.
 
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 
 import pandas as pd
@@ -491,6 +492,45 @@ def _titulo_plan_semana() -> str:
     return f"Plan de pagos · semana del {rango}"
 
 
+# Plan guardado en la MEMORIA DEL SERVIDOR (no en el Sheet): sobrevive a recargas,
+# reconexiones del celular y al cierre de sesión; se pierde si la app se reinicia,
+# se redespliega o se duerme. Un plan por admin (clave: nombre de usuario). Solo se
+# guarda la lista de BL y el título; las cifras se recalculan siempre en vivo.
+# La vida se cuenta desde la última vez que el admin ve o edita el plan.
+VIDA_PLAN_MIN = 120
+
+
+@st.cache_resource
+def _planes_guardados() -> dict:
+    return {}
+
+
+def _plan_usuario() -> str:
+    return str(st.session_state.get("usuario", "desconocido"))
+
+
+def _plan_leer():
+    """Plan vigente del admin actual ({'bls', 'titulo', 'expira'}) o None.
+    De paso borra los planes vencidos de todos."""
+    ahora = time.time()
+    almacen = _planes_guardados()
+    for k in [k for k, v in almacen.items() if v["expira"] < ahora]:
+        almacen.pop(k, None)
+    return almacen.get(_plan_usuario())
+
+
+def _plan_guardar(plan: list, titulo):
+    """Guarda (y renueva la vida de) el plan del admin actual. Plan vacío = se borra."""
+    almacen = _planes_guardados()
+    usuario = _plan_usuario()
+    if not plan:
+        almacen.pop(usuario, None)
+        return
+    previo = almacen.get(usuario) or {}
+    almacen[usuario] = {"bls": list(plan), "titulo": titulo or previo.get("titulo"),
+                        "expira": time.time() + VIDA_PLAN_MIN * 60}
+
+
 def _por_llegada(bls, llegadas: dict) -> list:
     """Más antigua primero (la que lleva más tiempo esperando). Sin fecha de
     llegada al final. Estable: a igual fecha se respeta el orden recibido."""
@@ -570,14 +610,21 @@ def _html_plan(filas: list, titulo: str) -> str:
 
 def _plan_captura(enriquecido: pd.DataFrame):
     """Lista ordenada a mano de los pendientes que se van a pagar, pensada para
-    sacarle una captura y mandarla a Finanzas. Vive SOLO en la sesión del
-    navegador (st.session_state): no escribe en el Sheet, no toca fechas ni
-    prioridades, y desaparece al recargar o cerrar la página. Toma los datos de
+    sacarle una captura y mandarla a Finanzas. No escribe en el Sheet ni toca
+    fechas o prioridades: la lista de BL trabaja en st.session_state y se
+    respalda en memoria del servidor por admin (VIDA_PLAN_MIN), así que
+    sobrevive a recargas y al cierre de sesión. Toma los datos de
     'enriquecido' completo (no de la vista filtrada) para que cambiar el
     filtro de Empresa o Mes no vacíe el plan. Quien se pague o salga de los
     pendientes mientras tanto sale del plan solo."""
     if enriquecido is None or enriquecido.empty:
         return
+    if "plan_captura" not in st.session_state:        # sesión nueva: recupera el plan guardado
+        guardado = _plan_leer()
+        if guardado:
+            st.session_state["plan_captura"] = list(guardado["bls"])
+            st.session_state["_plan_titulo_ini"] = guardado.get("titulo") or ""
+            st.session_state["plan_abierto"] = True
     pend = enriquecido[enriquecido["TieneMontos"] & (enriquecido["EstadoEfectivo"] != ESTADO_PAGO_PAGADO)]
     pend = pend[pend[COL_BL].astype(str).str.strip() != ""]
     if pend.empty and not st.session_state.get("plan_captura"):
@@ -606,21 +653,27 @@ def _plan_captura(enriquecido: pd.DataFrame):
     plan = [b for b in st.session_state.get("plan_captura", []) if b in datos]
     salieron = len(st.session_state.get("plan_captura", [])) - len(plan)
     st.session_state["plan_captura"] = plan
+    titulo_vigente = st.session_state.get("plan_titulo") or st.session_state.get("_plan_titulo_ini")
+    if titulo_vigente:
+        st.session_state["_plan_titulo_ini"] = titulo_vigente
+    _plan_guardar(plan, titulo_vigente)
 
     # Interruptor y no st.expander: con expanded=bool(plan) el desplegable se
     # cerraba solo al primer cambio de un widget (el plan seguía vacío) y no
     # dejaba agregar nada. El estado de un toggle sí se conserva entre reruns.
-    etiqueta = "Plan para captura (orden manual · no se guarda)"
+    etiqueta = f"Plan para captura (orden manual · se conserva {VIDA_PLAN_MIN} min)"
     if plan:
         etiqueta += f" · {len(plan)} en la lista"
     if not st.toggle(etiqueta, key="plan_abierto"):
         return
     with st.container(border=True):
         st.caption("Arma el orden a mano y sácale una captura para Finanzas. Es solo visual: no cambia el "
-                   "Sheet, ni fechas, ni prioridades, y se borra al recargar la página.")
+                   "Sheet, ni fechas, ni prioridades. Se conserva "
+                   f"{VIDA_PLAN_MIN} min desde la última vez que lo uses; si la app se reinicia, se pierde.")
         if salieron:
             st.caption(f"{salieron} expediente(s) salieron del plan porque ya no están pendientes.")
-        titulo = st.text_input("Título", value=_titulo_plan_semana(), key="plan_titulo")
+        titulo = st.text_input("Título", value=st.session_state.get("_plan_titulo_ini") or _titulo_plan_semana(),
+                               key="plan_titulo")
         captura = st.toggle("Vista de captura (oculta los controles)", key="plan_modo_captura")
 
         if not captura:

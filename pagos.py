@@ -125,9 +125,7 @@ PAGOS_CSS = """
 .pago-aging.pago-plan td.pago-monto { white-space:nowrap; text-align:right; padding-right:12px; font-variant-numeric:tabular-nums; font-weight:700; }
 .pago-aging.pago-plan th { padding:9px 4px; font-size:0.64rem; letter-spacing:0.02em; overflow-wrap:normal; }
 .pago-aging.pago-plan td { padding:8px 6px; font-size:0.8rem; }
-.pago-dias-pildora { display:inline-block; min-width:30px; padding:2px 9px; border-radius:6px;
-                     background:#FEE2E2; color:#991B1B; font-size:0.9rem; font-weight:800;
-                     box-shadow:inset 0 0 0 1px #FECACA; }
+.pago-dias-pildora { color:#B91C1C; font-size:0.95rem; font-weight:800; }
 .pago-aging tfoot td { font-weight:800; background:#EEF5FC; color:#0C447C; border-top:2px solid #0C447C; }
 @media (max-width:640px) { .pago-totales { gap:14px 18px; } }
 </style>
@@ -534,10 +532,9 @@ def _plan_vaciar():
 
 def _pildora_dias(dias: str) -> str:
     """Los días sin pagar son lo que Finanzas debe ver primero en la captura:
-    número en negrita dentro de una etiqueta rojo claro, la misma de los
-    contadores 'mal' de Tránsito (mismos colores y esquinas), para que destaque
-    sin romper la estética. Un solo tono para todos: no hay umbral definido
-    de qué cuenta como grave."""
+    número en negrita y en rojo, sin fondo, para que destaque sin romper la
+    estética de la tabla. Un solo tono para todos: no hay umbral definido de
+    qué cuenta como grave."""
     return f'<span class="pago-dias-pildora">{esc(dias)}</span>' if dias != "—" else "—"
 
 

@@ -17,6 +17,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
+from ui_encabezado import encabezado_html
+
 from sheets_io import (
     CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
     COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_LLEGO, COL_MODELO,
@@ -556,21 +558,7 @@ def encabezado(datos: dict):
             sello += f" · por {persona}"
     else:
         sello = "Sin registro de la última carga de información"
-    logo = _logo_base64()
-    img = f'<img class="ant-logo" src="{logo}" alt="Antillana Comercial">' if logo else ""
-    st.markdown(
-        f'<div class="ant-head">{img}'
-        f'<span class="ant-eyebrow">'
-        f'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0C447C" stroke-width="2" '
-        f'stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/>'
-        f'<path d="M9 21v-6h6v6"/></svg> Logística e Importaciones {anio}</span>'
-        f'<div class="ant-title">Estatus de Cargas</div>'
-        f'<div class="ant-rule"></div>'
-        f'<div class="ant-sub">Antillana Comercial</div>'
-        f'<div class="ant-stamp"><span class="ant-dot"></span> {esc(sello)}</div>'
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(encabezado_html("Estatus de Cargas", "transito", anio, sello), unsafe_allow_html=True)
 
 
 def tarjeta_kpi(label: str, valor, color: str, sub: str = "") -> str:

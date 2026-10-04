@@ -37,7 +37,8 @@ from sheets_io import (
     igualar_llegadas_pagos, registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
 )
 from logica import PALETA_PAISES, enriquecer_pagos, esc, llegadas_desfasadas, resumen_pagos, totales_conceptos
-from ui_componentes import COLOR_TOTAL, _logo_base64, rerun_fragmento
+from ui_componentes import COLOR_TOTAL, rerun_fragmento
+from ui_encabezado import encabezado_html
 
 
 COLOR_SOBRECOSTO = "#991B1B"
@@ -1078,21 +1079,7 @@ def _encabezado_pagos(sello_info: dict):
             sello += f" · por {persona}"
     else:
         sello = "Sin registro de la última carga de información en Pagos"
-    logo = _logo_base64()
-    img = f'<img class="ant-logo" src="{logo}" alt="Antillana Comercial">' if logo else ""
-    st.markdown(
-        f'<div class="ant-head">{img}'
-        f'<span class="ant-eyebrow">'
-        f'<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#0C447C" stroke-width="2" '
-        f'stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l7-4 7 4v14"/>'
-        f'<path d="M9 21v-6h6v6"/></svg> Logística e Importaciones {anio}</span>'
-        f'<div class="ant-title">Estatus de Pagos</div>'
-        f'<div class="ant-rule"></div>'
-        f'<div class="ant-sub">Antillana Comercial</div>'
-        f'<div class="ant-stamp"><span class="ant-dot"></span> {esc(sello)}</div>'
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(encabezado_html("Estatus de Pagos", "pagos", anio, sello), unsafe_allow_html=True)
 
 
 @st.fragment

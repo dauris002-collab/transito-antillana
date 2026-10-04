@@ -85,7 +85,7 @@ import streamlit as st
 
 from sheets_io import cargar_todo, invalidar_caches, registrar_log
 from ui_componentes import CUSTOM_CSS, VERSION_APP, mostrar_dashboard, selector_horizontal
-from ui_login import LOGIN_CSS, html_cabecera, html_portada, html_tarjeta
+from ui_login import LOGIN_CSS, html_portada, html_tarjeta
 from vistas_admin import (
     form_alta_manual, form_carga_masiva, form_editar, herramientas, mostrar_historico,
 )
@@ -214,13 +214,13 @@ def _resolver_pin(pin: str):
 
 def login_screen():
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-    st.markdown(LOGIN_CSS + html_cabecera(), unsafe_allow_html=True)
+    st.markdown(LOGIN_CSS, unsafe_allow_html=True)
 
     izq, centro = st.columns([1.5, 1], gap="large", vertical_alignment="center")
     with izq:
         st.markdown(html_portada(), unsafe_allow_html=True)
     with centro:
-        with st.container(border=True, key="login_card"):
+        with st.container(key="login_card"):
             st.markdown(html_tarjeta(), unsafe_allow_html=True)
             # El PIN va dentro de un st.form a propósito: con un text_input suelto +
             # st.button, presionar Enter solo dispara un rerun y el botón nunca queda
@@ -228,8 +228,7 @@ def login_screen():
             # que en celular es la diferencia entre entrar y quedarse trancado.
             with st.form("form_login", clear_on_submit=True, border=False):
                 pin = st.text_input("PIN", type="password", max_chars=LARGO_PIN,
-                                    label_visibility="collapsed",
-                                    placeholder="PIN")
+                                    placeholder="••••")
                 entrar = st.form_submit_button("Entrar", type="primary", width="stretch")
 
     if not entrar:

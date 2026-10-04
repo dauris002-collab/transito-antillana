@@ -1,9 +1,12 @@
 """
-ui_login.py - Presentacion de la pantalla de acceso (portada B2)
-=================================================================
+ui_login.py - Presentacion de la pantalla de acceso (portada B)
+================================================================
 
 Solo HTML/CSS: no toca la sesion, el PIN ni Google Sheets (eso sigue en app.py).
 Capa: igual que ui_componentes.py, solo puede importar hacia abajo.
+
+Diseno: mitad izquierda gris con el titular y la ruta aereo/maritimo; mitad
+derecha blanca con los logos (Antillana principal, TecniCaribe pequeno) y el PIN.
 
 Los logos viven en assets/login_antillana.png y assets/login_tecnicaribe.png.
 Los nombres NO son assets/logo.png a proposito: ui_componentes._logo_base64()
@@ -25,6 +28,8 @@ import streamlit as st
 
 _ASSETS = Path(__file__).parent / "assets"
 _FUENTE = "'Barlow Condensed','Arial Narrow',sans-serif"
+# La mitad blanca arranca en el hueco entre las dos columnas (1.5 : 1, gap grande).
+_CORTE = "59%"
 
 
 @st.cache_data(show_spinner=False)
@@ -46,24 +51,23 @@ LOGIN_CSS = (
     "<style>"
     "@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&display=swap');"
     ".stApp { background:#F3F4F6; }"
-    ".lg-band { display:flex; align-items:center; justify-content:space-between; gap:1rem;"
-    " background:#FFFFFF; border-bottom:4px solid #D80C27; border-radius:14px;"
-    " padding:0.8rem 1.6rem; margin:0.4rem 0 1.4rem 0; }"
-    ".lg-main { height:clamp(64px, 11vw, 120px); width:auto; }"
-    ".lg-sec { height:clamp(22px, 3vw, 36px); width:auto; }"
-    ".lg-alt { font-weight:700; color:#1F2430; }"
     f".lg-tag {{ font-family:{_FUENTE}; font-weight:600; font-size:1.05rem;"
     " letter-spacing:0.16em; text-transform:uppercase; color:#C40A22; }"
     f".lg-h1 {{ font-family:{_FUENTE}; font-weight:700;"
-    " font-size:clamp(2.4rem, 5vw, 4rem); line-height:0.95; color:#1F2430;"
-    " margin:0.5rem 0 1rem 0; }"
+    " font-size:clamp(2.6rem, 8vw, 6.5rem); line-height:0.92; color:#1F2430;"
+    " margin:0.6rem 0 1.2rem 0; }"
     ".lg-h1 span { color:#C40A22; }"
     ".lg-ruta { width:100%; max-width:700px; height:auto; display:block; overflow:visible; }"
-    f".lg-acceso {{ font-family:{_FUENTE}; font-weight:600; font-size:1rem;"
-    " letter-spacing:0.14em; text-transform:uppercase; color:#6D6E71; }"
-    f".lg-pin-titulo {{ font-family:{_FUENTE}; font-weight:700; font-size:2.1rem;"
-    " line-height:1; color:#1F2430; margin:0.3rem 0 0.8rem 0; }"
-    ".st-key-login_card { background:#FFFFFF; border-radius:18px;"
+    ".lg-logos { display:flex; flex-direction:column; align-items:center; gap:1.2rem; }"
+    ".lg-main { height:clamp(110px, 14vw, 200px); width:auto; }"
+    ".lg-sec { height:clamp(24px, 2.6vw, 34px); width:auto; }"
+    ".lg-alt { font-weight:700; color:#1F2430; }"
+    ".lg-linea { width:48px; height:3px; border-radius:2px; background:#D80C27; }"
+    ".lg-hr { height:1px; background:#E3E6EB; margin:1.6rem 0 1.2rem 0; }"
+    f".lg-acceso {{ display:flex; align-items:center; gap:8px; font-family:{_FUENTE};"
+    " font-weight:600; font-size:1rem; letter-spacing:0.14em; text-transform:uppercase;"
+    " color:#6D6E71; margin-bottom:0.4rem; }"
+    ".st-key-login_card { background:#FFFFFF; border-radius:18px; padding:1.4rem;"
     " box-shadow:0 24px 60px rgba(31,36,48,0.14); }"
     ".st-key-login_card [data-testid='stBaseButton-primaryFormSubmit'],"
     ".st-key-login_card button[kind='primaryFormSubmit']"
@@ -71,7 +75,12 @@ LOGIN_CSS = (
     ".st-key-login_card [data-testid='stBaseButton-primaryFormSubmit']:hover,"
     ".st-key-login_card button[kind='primaryFormSubmit']:hover"
     " { background:#B50A20 !important; border-color:#B50A20 !important; }"
-    # En celular el PIN tiene que quedar a la vista sin bajar: se oculta el dibujo.
+    # Escritorio: fondo partido gris | blanco de borde a borde y el panel sin tarjeta.
+    "@media (min-width: 641px) { .stApp { background:linear-gradient(90deg,"
+    f" #F3F4F6 {_CORTE}, #E3E6EB {_CORTE}, #E3E6EB calc({_CORTE} + 1px),"
+    f" #FFFFFF calc({_CORTE} + 1px)); }}"
+    " .st-key-login_card { background:transparent; box-shadow:none; padding:0; } }"
+    # Celular: el PIN tiene que quedar a la vista sin bajar, se oculta el dibujo.
     "@media (max-width: 640px) { .lg-ruta { display:none; } .lg-h1 { font-size:2.3rem; } }"
     "</style>"
 )
@@ -102,29 +111,31 @@ _RUTA = (
     "</svg>"
 )
 
-
-def html_cabecera() -> str:
-    """Franja blanca: Antillana grande (principal), TecniCaribe pequena."""
-    return (
-        '<div class="lg-band">'
-        + _logo("login_antillana.png", "Antillana Comercial", "lg-main")
-        + _logo("login_tecnicaribe.png", "TecniCaribe", "lg-sec")
-        + "</div>"
-    )
+_CANDADO = (
+    '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#D80C27" stroke-width="2" '
+    'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>'
+)
 
 
 def html_portada() -> str:
-    """Columna izquierda: rotulo, titular y la ruta aereo/maritimo."""
+    """Columna izquierda: rotulo, titular en 3 lineas y la ruta aereo/maritimo."""
     return (
         '<div class="lg-tag">Logística e Importaciones</div>'
-        '<div class="lg-h1" role="heading" aria-level="1">Tránsito<br>y Estatus de <span>Pago</span></div>'
+        '<div class="lg-h1" role="heading" aria-level="1">Tránsito<br>y Estatus<br>de <span>Pago</span></div>'
         + _RUTA
     )
 
 
 def html_tarjeta() -> str:
-    """Titulo de la tarjeta del PIN (el formulario lo arma app.py)."""
+    """Parte alta del panel derecho: logos (Antillana principal) y rotulo de acceso.
+    El formulario del PIN lo arma app.py justo debajo."""
     return (
-        '<div class="lg-acceso">Acceso restringido</div>'
-        '<div class="lg-pin-titulo">Ingresa tu PIN</div>'
+        '<div class="lg-logos">'
+        + _logo("login_antillana.png", "Antillana Comercial", "lg-main")
+        + '<div class="lg-linea"></div>'
+        + _logo("login_tecnicaribe.png", "TecniCaribe", "lg-sec")
+        + "</div>"
+        '<div class="lg-hr"></div>'
+        f'<div class="lg-acceso">{_CANDADO}<span>Acceso restringido</span></div>'
     )

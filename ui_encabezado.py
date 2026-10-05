@@ -50,7 +50,7 @@ _CSS = (
     " text-transform:uppercase; color:#111827; }"
     ".eh-vs { width:1px; height:30px; background:#D1D5DB; }"
     ".eh-tc { height:clamp(30px, 3vw, 36px); width:auto; display:block; }"
-    ".eh-mi { height:clamp(32px, 3.2vw, 40px); width:auto; display:block; }"
+    ".eh-mi { height:clamp(27px, 2.7vw, 34px); width:auto; display:block; }"
     ".eh-ruta { width:min(420px,100%); margin:12px auto 0 auto; display:flex; align-items:center; gap:8px; }"
     ".eh-ruta .l { flex:1; border-top:2px dashed #C7CDD6; }"
     ".eh-ruta .p { width:8px; height:8px; border-radius:50%; flex:none; }"

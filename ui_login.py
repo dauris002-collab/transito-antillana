@@ -62,7 +62,7 @@ LOGIN_CSS = (
     ".lg-logos { display:flex; flex-direction:column; align-items:center; gap:1.2rem; }"
     ".lg-main { height:clamp(110px, 14vw, 200px); width:auto; }"
     ".lg-sec { height:clamp(24px, 2.6vw, 34px); width:auto; }"
-    ".lg-mi { height:clamp(28px, 3vw, 38px); width:auto; }"
+    ".lg-mi { height:clamp(23px, 2.4vw, 31px); width:auto; }"
     ".lg-asoc { display:flex; align-items:center; justify-content:center; gap:12px 22px; flex-wrap:wrap; }"
     ".lg-vs { width:1px; height:28px; background:#D1D5DB; }"
     ".lg-alt { font-weight:700; color:#1F2430; }"

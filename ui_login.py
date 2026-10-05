@@ -6,9 +6,10 @@ Solo HTML/CSS: no toca la sesion, el PIN ni Google Sheets (eso sigue en app.py).
 Capa: igual que ui_componentes.py, solo puede importar hacia abajo.
 
 Diseno: mitad izquierda gris con el titular y la ruta aereo/maritimo; mitad
-derecha blanca con los logos (Antillana principal, TecniCaribe pequeno) y el PIN.
+derecha blanca con los logos (Antillana principal; TecniCaribe y Motor Iberico debajo, pequenos) y el PIN.
 
-Los logos viven en assets/login_antillana.png y assets/login_tecnicaribe.png.
+Los logos viven en assets/login_antillana.png, assets/login_tecnicaribe.png y
+assets/motor_iberico.png (recorte de un membrete fotografiado: pedir el original).
 Los nombres NO son assets/logo.png a proposito: ui_componentes._logo_base64()
 busca ese nombre para el encabezado del dashboard y lo cambiaria.
 Si un logo falta, se muestra el nombre de la empresa en texto: el login nunca
@@ -61,6 +62,9 @@ LOGIN_CSS = (
     ".lg-logos { display:flex; flex-direction:column; align-items:center; gap:1.2rem; }"
     ".lg-main { height:clamp(110px, 14vw, 200px); width:auto; }"
     ".lg-sec { height:clamp(24px, 2.6vw, 34px); width:auto; }"
+    ".lg-mi { height:clamp(28px, 3vw, 38px); width:auto; }"
+    ".lg-asoc { display:flex; align-items:center; justify-content:center; gap:12px 22px; flex-wrap:wrap; }"
+    ".lg-vs { width:1px; height:28px; background:#D1D5DB; }"
     ".lg-alt { font-weight:700; color:#1F2430; }"
     ".lg-linea { width:48px; height:3px; border-radius:2px; background:#D80C27; }"
     ".lg-hr { height:1px; background:#E3E6EB; margin:1.6rem 0 1.2rem 0; }"
@@ -81,6 +85,7 @@ LOGIN_CSS = (
     f" #FFFFFF calc({_CORTE} + 1px)); }}"
     " .st-key-login_card { background:transparent; box-shadow:none; padding:0; } }"
     # Celular: el PIN tiene que quedar a la vista sin bajar, se oculta el dibujo.
+    "@media (max-width: 1100px) { .lg-vs { display:none; } }"
     "@media (max-width: 640px) { .lg-ruta { display:none; } .lg-h1 { font-size:2.3rem; } }"
     "</style>"
 )
@@ -133,8 +138,12 @@ def html_tarjeta() -> str:
     return (
         '<div class="lg-logos">'
         + _logo("login_antillana.png", "Antillana Comercial", "lg-main")
-        + '<div class="lg-linea"></div>'
+        + "</div>"
+        '<div class="lg-hr"></div>'
+        '<div class="lg-asoc">'
         + _logo("login_tecnicaribe.png", "TecniCaribe", "lg-sec")
+        + '<span class="lg-vs"></span>'
+        + _logo("motor_iberico.png", "Motor Ibérico", "lg-mi")
         + "</div>"
         '<div class="lg-hr"></div>'
         f'<div class="lg-acceso">{_CANDADO}<span>Acceso restringido</span></div>'

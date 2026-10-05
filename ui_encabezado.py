@@ -5,11 +5,11 @@ ui_encabezado.py - Encabezado compartido de Tránsito y Pagos
 Solo HTML/CSS: no lee datos ni toca Sheets. Capa igual que ui_login.py:
 puede importar hacia abajo (nada de logica ni sheets_io).
 
-Fila de marca (emblema + nombre de Antillana, "+" y TecniCaribe en cápsula),
+Fila de marca (emblema + nombre de Antillana, TecniCaribe y Motor Ibérico, con separadores),
 una ruta decorativa, el título, el año y el sello de actualización.
 
-Los dos primeros logos viven en assets/emblema_antillana.png y
-assets/login_tecnicaribe.png. NO se llaman assets/logo.png a propósito (ver
+Los logos viven en assets/emblema_antillana.png,
+assets/login_tecnicaribe.png y assets/motor_iberico.png. NO se llaman assets/logo.png a propósito (ver
 ui_login.py). Si falta una imagen, se muestra el nombre en texto: el
 encabezado nunca se rompe por un archivo.
 
@@ -43,13 +43,14 @@ _MONEDA = ('<circle cx="12" cy="12" r="9"/><path d="M14.5 9.5c-.5-1-1.5-1.5-2.5-
 _CSS = (
     "<style>"
     ".eh { text-align:center; margin:0 0 1.1rem 0; }"
-    ".eh-marca { display:flex; align-items:center; justify-content:center; gap:10px 16px; flex-wrap:wrap; }"
+    ".eh-marca { display:flex; align-items:center; justify-content:center; gap:12px 24px; flex-wrap:wrap; }"
     ".eh-par { display:flex; align-items:center; gap:12px; }"
-    ".eh-emb { height:clamp(48px, 7vw, 64px); width:auto; }"
-    ".eh-nombre { font-size:clamp(0.95rem, 2.6vw, 1.15rem); font-weight:800; letter-spacing:0.14em; text-transform:uppercase; color:#111827; }"
-    ".eh-mas { font-size:0.7rem; font-weight:700; color:#9CA3AF; }"
-    ".eh-tc { display:inline-flex; align-items:center; padding:6px 16px; border:1px solid #E5E7EB; border-radius:999px; }"
-    ".eh-tc img { height:clamp(32px, 5vw, 42px); width:auto; display:block; }"
+    ".eh-emb { height:clamp(46px, 5vw, 54px); width:auto; }"
+    ".eh-nombre { font-size:clamp(0.9rem, 1.3vw, 1rem); font-weight:800; letter-spacing:0.14em;"
+    " text-transform:uppercase; color:#111827; }"
+    ".eh-vs { width:1px; height:30px; background:#D1D5DB; }"
+    ".eh-tc { height:clamp(30px, 3vw, 36px); width:auto; display:block; }"
+    ".eh-mi { height:clamp(32px, 3.2vw, 40px); width:auto; display:block; }"
     ".eh-ruta { width:min(420px,100%); margin:12px auto 0 auto; display:flex; align-items:center; gap:8px; }"
     ".eh-ruta .l { flex:1; border-top:2px dashed #C7CDD6; }"
     ".eh-ruta .p { width:8px; height:8px; border-radius:50%; flex:none; }"
@@ -62,8 +63,9 @@ _CSS = (
     ".eh-sello { display:inline-flex; align-items:center; gap:7px; font-size:0.76rem; color:#6B7280;"
     " margin-top:8px; flex-wrap:wrap; justify-content:center; }"
     ".eh-dot { width:8px; height:8px; border-radius:50%; background:#22C55E; display:inline-block; }"
-    "@media (max-width:640px) { .eh-titulo { font-size:2rem; } .eh-marca { flex-direction:column; } .eh-nodo b { display:none; }"
-    " .eh-ruta.rotulos { margin-bottom:0; } .eh-mas { display:none; } }"
+    "@media (max-width:900px) { .eh-vs { display:none; } .eh-marca { flex-direction:column; } }"
+    "@media (max-width:640px) { .eh-titulo { font-size:2rem; } .eh-nodo b { display:none; }"
+    " .eh-ruta.rotulos { margin-bottom:0; } }"
     "</style>"
 )
 
@@ -77,12 +79,12 @@ def _uri(nombre: str) -> str:
 
 
 def _marca() -> str:
-    emb, tc = _uri("emblema_antillana.png"), _uri("login_tecnicaribe.png")
+    emb, tc, mi = _uri("emblema_antillana.png"), _uri("login_tecnicaribe.png"), _uri("motor_iberico.png")
     img_emb = f'<img class="eh-emb" src="{emb}" alt="">' if emb else ""
-    tc_html = (f'<span class="eh-tc"><img src="{tc}" alt="TecniCaribe"></span>' if tc
-               else '<span class="eh-nombre">TecniCaribe</span>')
+    tc_html = f'<img class="eh-tc" src="{tc}" alt="TecniCaribe">' if tc else '<span class="eh-nombre">TecniCaribe</span>'
+    mi_html = f'<img class="eh-mi" src="{mi}" alt="Motor Ibérico">' if mi else '<span class="eh-nombre">Motor Ibérico</span>'
     return (f'<div class="eh-marca"><div class="eh-par">{img_emb}<span class="eh-nombre">Antillana Comercial</span></div>'
-            f'<span class="eh-mas">+</span>{tc_html}</div>')
+            f'<span class="eh-vs"></span>{tc_html}<span class="eh-vs"></span>{mi_html}</div>')
 
 
 def _punto(color: str) -> str:

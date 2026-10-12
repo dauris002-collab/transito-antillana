@@ -650,8 +650,43 @@ def _plan_captura(enriquecido: pd.DataFrame):
             st.info("El plan está vacío: apaga la vista de captura y agrega expedientes.")
 
 
-def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False):
-    c1, c2, c3 = st.columns(3)
+def _selector_origen():
+    """Filtro 'Origen' (Embarques / Taller). Solo existe si Taller está configurado."""
+    st.selectbox("Origen", ["Embarques", "Taller"], key="pago_origen")
+
+
+def _mostrar_taller(escribe: bool) -> bool:
+    """Dibuja la vista de Taller. Devuelve False si no pudo cargarse (se vuelve a
+    Embarques): un fallo de Taller nunca debe tumbar Pagos de embarques."""
+    try:
+        from taller import panel_taller
+    except Exception as e:  # noqa: BLE001
+        st.session_state["pago_origen"] = "Embarques"   # el widget aún no existe en esta pasada
+        st.error(f"La vista de Taller no pudo cargarse: {e}")
+        return False
+    dibujado = []
+
+    def selector():
+        dibujado.append(True)
+        _selector_origen()
+
+    try:
+        panel_taller(escribe, selector)
+    except Exception as e:  # noqa: BLE001
+        if not dibujado:
+            _selector_origen()
+        st.error(f"Error en la vista de Taller: {e}")
+    return True
+
+
+def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False,
+                            con_origen: bool = False):
+    if con_origen:
+        c0, c1, c2, c3 = st.columns(4)
+        with c0:
+            _selector_origen()
+    else:
+        c1, c2, c3 = st.columns(3)
     with c1:
         empresa_sel = st.selectbox("Empresa", ["Todas"] + EMPRESAS_PAGO, key="pago_filtro_empresa")
 
@@ -1083,7 +1118,12 @@ def _encabezado_pagos(sello_info: dict):
 
 
 @st.fragment
-def panel_pagos(datos: dict, es_admin: bool):
+def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
+    """taller_escribe: None = Taller no disponible (sin filtro Origen); True/False =
+    disponible, y si el rol puede escribir en él."""
+    if taller_escribe is not None and st.session_state.get("pago_origen") == "Taller":
+        if _mostrar_taller(bool(taller_escribe)):
+            return
     activos = datos.get("activos", pd.DataFrame())
     historico = datos.get("historico", pd.DataFrame())
     df_pagos = datos.get("pagos", pd.DataFrame())
@@ -1119,7 +1159,7 @@ def panel_pagos(datos: dict, es_admin: bool):
 
     enriquecido = _enriquecer_pagos_cacheado(df_pagos, activos, historico)
 
-    mostrar_dashboard_pagos(enriquecido, es_admin)
+    mostrar_dashboard_pagos(enriquecido, es_admin, con_origen=taller_escribe is not None)
 
     if not es_admin:
         return

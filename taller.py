@@ -31,10 +31,12 @@ import streamlit as st
 from sheets_io import (
     COL_T_CLIENTE, COL_T_CORTE, COL_T_DOP, COL_T_EMPRESA, COL_T_PRIORIDAD,
     COL_T_PROVEEDOR, COL_T_SOLICITUD, COL_T_USD, EMPRESA_ANTILLANA,
-    EMPRESA_MOTOR_IBERICO, EMPRESA_TECNICARIBE, EMPRESAS_PAGO, PRIORIDADES_PAGO,
-    a_numero, cargar_taller, hoy_rd, parsear_fecha, snapshot_taller, taller_agregar,
-    taller_editar, taller_limpiar, taller_marcar_pago,
+    EMPRESA_MOTOR_IBERICO, EMPRESA_TECNICARIBE, EMPRESAS_PAGO, MESES_ES_CORTO,
+    PRIORIDADES_PAGO, a_numero, ahora_rd, cargar_taller, hoy_rd, parsear_fecha,
+    snapshot_taller, taller_agregar, taller_editar, taller_limpiar, taller_marcar_pago,
 )
+from html import escape as _esc
+from ui_encabezado import encabezado_html
 
 # El Sheet puede traer "ANTILLANA" o "Antillana Comercial": ambas valen.
 _EMPRESAS = {
@@ -235,13 +237,111 @@ def _gestion(datos_raw: pd.DataFrame, df: pd.DataFrame):
             _resultado(*taller_limpiar(n, sel["snap"]))
 
 
-def panel_taller(puede_escribir: bool = False):
-    st.subheader("Taller")
+# --- Vista (mismo estilo que Estatus de Pagos de embarques) -----------------
+_CSS = (
+    "<style>"
+    ".tl-wrap { overflow-x:auto; margin:6px 0 16px; }"
+    ".tl-tabla { width:100%; border-collapse:separate; border-spacing:0; background:#fff;"
+    " border:1px solid #E5E7EB; border-radius:12px; overflow:hidden; box-shadow:0 1px 4px rgba(17,24,39,0.06); }"
+    ".tl-tabla th { background:#111827; color:#fff; font-size:0.72rem; font-weight:700; text-transform:uppercase;"
+    " letter-spacing:0.05em; padding:11px 14px; text-align:center; white-space:nowrap; }"
+    ".tl-tabla td { padding:9px 14px; text-align:center; font-size:0.88rem; color:#111827;"
+    " border-top:1px solid #F3F4F6; white-space:nowrap; }"
+    ".tl-tabla tbody tr:nth-child(even) { background:#F9FAFB; }"
+    ".tl-tabla td.d { font-weight:800; } .tl-tabla td.v { color:#9CA3AF; }"
+    ".tl-prio { display:inline-block; font-size:0.72rem; font-weight:800; letter-spacing:0.03em; padding:1px 10px;"
+    " border-radius:999px; border:2px solid; background:#fff; white-space:nowrap; }"
+    ".tl-prio b { font-size:0.95rem; }"
+    ".tl-tarjetas { display:grid; grid-template-columns:repeat(4,1fr); gap:1rem; margin:0.4rem 0 0.8rem; }"
+    ".tl-t { color:#fff; border-radius:14px; min-height:92px; display:flex; flex-direction:column;"
+    " align-items:center; justify-content:center; padding:14px 10px; text-align:center;"
+    " box-shadow:0 2px 8px rgba(17,24,39,0.12); }"
+    ".tl-t .e { font-size:0.68rem; font-weight:700; letter-spacing:0.05em; text-transform:uppercase; opacity:0.92; }"
+    ".tl-t .n { font-size:1.35rem; font-weight:800; margin-top:6px; }"
+    "@media (max-width:900px) { .tl-tarjetas { grid-template-columns:repeat(2,1fr); } }"
+    "</style>"
+)
+_COLOR_PRIO = {1: "#B91C1C", 2: "#B45309", 3: "#0C447C", 4: "#6B7280"}
+_ESTATUS = ["Todos", "Pendiente", "Pagado"]
+
+
+def _fd(d) -> str:
+    return "—" if d is None or pd.isna(d) else f"{d.day:02d} {MESES_ES_CORTO[d.month]} {d.year}"
+
+
+def _usd(x) -> str:
+    return "—" if pd.isna(x) or not x else f"US$ {x:,.2f}"
+
+
+def _dop(x) -> str:
+    return "—" if pd.isna(x) or not x else f"RD$ {x:,.2f}"
+
+
+def _pildora(n) -> str:
+    if pd.isna(n):
+        return '<td class="v">—</td>'
+    n = int(n)
+    c = _COLOR_PRIO.get(n, "#6B7280")
+    return f'<td><span class="tl-prio" style="border-color:{c}; color:{c};">PRIORIDAD&nbsp;<b>{n}</b></span></td>'
+
+
+def _celda(x, clase: str = "") -> str:
+    vacio = x is None or x == "" or (isinstance(x, float) and pd.isna(x))
+    return '<td class="v">—</td>' if vacio else f'<td class="{clase}">{_esc(str(x))}</td>'
+
+
+def _tabla(df: pd.DataFrame, pagados: bool) -> str:
+    if pagados:
+        cab = ["Empresa", "Proveedor", "Prioridad", "Cliente", "Solicitud", "Fecha de pago",
+               "Días de pago", "USD pagado", "DOP pagado"]
+    else:
+        cab = ["Empresa", "Proveedor", "Prioridad", "Cliente", "Solicitud", "Días sin pagar",
+               "USD pendiente", "DOP pendiente"]
+    filas = []
+    for r in df.itertuples():
+        dias = "" if pd.isna(r.Dias) else int(r.Dias)
+        celdas = [_celda(r.Empresa), _celda(r.Proveedor), _pildora(r.Prioridad), _celda(r.Cliente),
+                  _celda(_fd(r.Solicitud) if r.Solicitud is not None else "")]
+        if pagados:
+            celdas.append(_celda(_fd(r.Pago) if r.Pago is not None else ""))
+        celdas += [_celda(dias, "d"), _celda(_usd(r.USD) if _usd(r.USD) != "—" else ""),
+                   _celda(_dop(r.DOP) if _dop(r.DOP) != "—" else "")]
+        filas.append("<tr>" + "".join(celdas) + "</tr>")
+    return ('<div class="tl-wrap"><table class="tl-tabla"><thead><tr>'
+            + "".join(f"<th>{c}</th>" for c in cab) + "</tr></thead><tbody>" + "".join(filas)
+            + "</tbody></table></div>")
+
+
+def _tarjetas(pagados: pd.DataFrame, pend: pd.DataFrame) -> str:
+    con_ambas = pagados[pagados["Dias"].notna()]
+    prom = f"{con_ambas['Dias'].mean():.0f} d" if len(con_ambas) else "—"
+    total = (f"US$ {pend['USD'].sum():,.2f} · RD$ {pend['DOP'].sum():,.2f}")
+    t = lambda color, etq, val: (f'<div class="tl-t" style="background:{color};"><div class="e">{etq}</div>'
+                                 f'<div class="n">{val}</div></div>')
+    return ('<div class="tl-tarjetas">' + t("#17A2B8", "Pagados", len(pagados))
+            + t("#2E86DE", "Pendientes", len(pend)) + t("#B45309", "Tiempo promedio de pago", prom)
+            + t("#0C447C", "Total por pagar", total) + "</div>"), len(con_ambas)
+
+
+def _encabezado(hora) -> None:
+    sello = f"Sheet de Taller leído a las {hora.strftime('%I:%M %p').lstrip('0').lower()} (hora RD)"
+    st.markdown(encabezado_html("Estatus de Pagos", "taller", hoy_rd().year, sello, " · Taller"),
+                unsafe_allow_html=True)
+
+
+def panel_taller(puede_escribir: bool, selector_origen):
+    """Vista de Taller dentro de Estatus de Pagos. selector_origen() dibuja el filtro
+    'Origen' (lo provee pagos.py) en la primera columna de la fila de filtros."""
+    st.markdown(_CSS, unsafe_allow_html=True)
     datos = cargar_taller()
+    _encabezado(datos["hora"] if datos["hora"] else ahora_rd())
+    df, avisos = enriquecer_taller(datos["df"], hoy_rd()) if not datos["error"] else (pd.DataFrame(), [])
+    c0, c1, c2, c3 = st.columns(4)
+    with c0:
+        selector_origen()
     if datos["error"]:
         st.error(datos["error"])
         return
-    df, avisos = enriquecer_taller(datos["df"], hoy_rd())
     if datos["aviso"]:
         st.warning(datos["aviso"])
     if df.empty:
@@ -250,38 +350,40 @@ def panel_taller(puede_escribir: bool = False):
             _gestion(datos["df"], df)
         return
 
-    c_emp, c_est = st.columns(2)
-    with c_emp:
-        empresa = st.selectbox("Empresa", ["Todas"] + sorted(df["Empresa"].unique()),
-                               key="taller_empresa")
-    with c_est:
-        estado = st.radio("Estado", ["Pendientes", "Pagados", "Todos"], horizontal=True,
-                          key="taller_estado")
-    if empresa != "Todas":
-        df = df[df["Empresa"] == empresa]
+    with c1:
+        empresa = st.selectbox("Empresa", ["Todas"] + EMPRESAS_PAGO, key="taller_empresa")
+    vista = df if empresa == "Todas" else df[df["Empresa"] == empresa]
+    meses = sorted({(d.year, d.month) for d in vista["Solicitud"] if d is not None and not pd.isna(d)})
+    opciones_mes = ["Todos"] + [f"{MESES_ES_CORTO[m]} {a}" for a, m in meses]
+    if st.session_state.get("taller_mes") not in opciones_mes:   # antes de crear el widget
+        st.session_state["taller_mes"] = "Todos"
+    with c2:
+        estatus = st.selectbox("Estatus", _ESTATUS, key="taller_estatus")
+    with c3:
+        mes = st.selectbox("Mes (Solicitud)", opciones_mes, key="taller_mes")
+    if mes != "Todos":
+        a_sel, m_sel = next((a, m) for a, m in meses if f"{MESES_ES_CORTO[m]} {a}" == mes)
+        vista = vista[vista["Solicitud"].apply(
+            lambda d: d is not None and not pd.isna(d) and d.year == a_sel and d.month == m_sel)]
 
-    pend = df[~df["Pagado"]]
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Pendientes", len(pend))
-    k2.metric("USD pendiente", _num(pend["USD"].sum(), "US$ ", 2))
-    k3.metric("DOP pendiente", _num(pend["DOP"].sum(), "RD$ ", 2))
-    k4.metric("Más antiguo (días)", _num(pend["Dias"].max()))
-
-    vista = df if estado == "Todos" else df[df["Pagado"] == (estado == "Pagados")]
-    if vista.empty:
-        st.info("No hay renglones con ese filtro.")
-    else:
-        v = ordenar_taller(vista)
-        st.dataframe(pd.DataFrame({
-            "Empresa": v["Empresa"], "Proveedor": v["Proveedor"],
-            "Prioridad": v["Prioridad"].map(_num),
-            "Cliente": v["Cliente"].replace("", "—"),
-            "Fecha de la solicitud": v["Solicitud"].map(_fecha),
-            "Días sin pagar": v["Dias"].map(_num),
-            "Fecha de corte (pago)": v["Pago"].map(_fecha),
-            "USD": v["USD"].map(lambda x: _num(x, "US$ ", 2)),
-            "DOP": v["DOP"].map(lambda x: _num(x, "RD$ ", 2)),
-        }), hide_index=True, width="stretch")
+    pagados, pend = vista[vista["Pagado"]], vista[~vista["Pagado"]]
+    html_t, n_prom = _tarjetas(pagados, pend)
+    st.markdown(html_t, unsafe_allow_html=True)
+    if n_prom:
+        st.caption(f"Tiempo promedio de pago: días entre la solicitud y el pago realizado, "
+                   f"sobre {n_prom} renglón(es) pagados con ambas fechas.")
+    if estatus in ("Todos", "Pendiente"):
+        st.markdown("**Pendientes por antigüedad**")
+        if pend.empty:
+            st.caption("No hay pendientes con esta selección.")
+        else:
+            st.markdown(_tabla(ordenar_taller(pend), False), unsafe_allow_html=True)
+    if estatus in ("Todos", "Pagado"):
+        st.markdown("**Pagados**")
+        if pagados.empty:
+            st.caption("No hay pagos registrados con esta selección.")
+        else:
+            st.markdown(_tabla(pagados.sort_values("Pago", ascending=False), True), unsafe_allow_html=True)
 
     if avisos:
         with st.expander(f"Datos por revisar en el Sheet ({len(avisos)})"):
@@ -289,8 +391,6 @@ def panel_taller(puede_escribir: bool = False):
                 st.write(a)
             if len(avisos) > 50:
                 st.write(f"… y {len(avisos) - 50} más.")
-    st.caption(f"Sheet de Taller leído a las {datos['hora'].strftime('%H:%M:%S')}."
-               + ("" if puede_escribir else " Solo lectura."))
     if puede_escribir:
         st.divider()
         _gestion(datos["df"], df)

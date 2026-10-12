@@ -269,12 +269,10 @@ def main():
     secciones = (["Dashboard", "Analítica", "Agregar", "Editar", "Carga masiva", "Histórico",
                   "Estatus de Pago", "Herramientas"]
                  if es_admin else ["Dashboard", "Analítica", "Histórico", "Estatus de Pago"])
-    # Taller (Sheet aparte): aparece si existe el secret TALLER_SHEET_ID. El rol "taller"
-    # ve el resto como viewer (es_admin False) y solo escribe en esta sección; el admin
-    # también escribe aquí.
-    puede_escribir_taller = st.session_state.rol in ("admin", "taller")
-    if taller_configurado():
-        secciones = secciones + ["Taller"]
+    # Taller (Sheet aparte) vive dentro de Estatus de Pago, como opción del filtro
+    # "Origen", y solo si existe el secret TALLER_SHEET_ID. El rol "taller" ve el resto
+    # como viewer (es_admin False) y solo escribe en Taller; el admin también.
+    taller_escribe = (st.session_state.rol in ("admin", "taller")) if taller_configurado() else None
 
     # Navegación con estado propio en vez de st.tabs: además de no ejecutar el
     # cuerpo de todas las secciones en cada rerun, permite saltar por código
@@ -330,18 +328,9 @@ def main():
     elif seccion == "Histórico":
         mostrar_historico(datos, "admin" if es_admin else "viewer")
     elif seccion == "Estatus de Pago":
-        panel_pagos(datos, es_admin)
+        panel_pagos(datos, es_admin, taller_escribe)
     elif seccion == "Herramientas":
         herramientas(datos)
-    elif seccion == "Taller":
-        # Import perezoso a propósito: si taller.py fallara, solo fallaría esta
-        # sección y no el arranque de Tránsito ni de Pagos.
-        try:
-            from taller import panel_taller
-        except Exception as e:  # noqa: BLE001
-            st.error(f"La sección Taller no pudo cargarse: {e}")
-        else:
-            panel_taller(puede_escribir_taller)
 
 
 if __name__ == "__main__":

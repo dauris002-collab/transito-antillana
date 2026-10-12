@@ -1154,6 +1154,99 @@ def cargar_todo() -> dict:
 def invalidar_caches():
     _cargar_todo_remoto.clear()
     _headers.clear()
+    _cargar_taller_remoto.clear()
+
+
+# --- Taller (Sheet aparte) --------------------------------------------------
+# Sheet independiente del principal, con su propio secret TALLER_SHEET_ID. Se lee
+# con su propia llamada y su propia caché a propósito: un fallo de Taller (permisos,
+# cuota, pestaña renombrada) no debe tumbar Tránsito ni Pagos, que usan cargar_todo().
+# OJO: get_worksheet, _headers, _asegurar_columnas y _localizar_fila buscan hojas por
+# título dentro del Sheet PRINCIPAL; no sirven para este.
+TALLER_SHEET = "Taller"                 # nombre de la pestaña dentro del Sheet de Taller
+COL_T_EMPRESA = "EMPRESA"
+COL_T_PROVEEDOR = "PROVEEDOR"
+COL_T_PRIORIDAD = "PRIORIDAD"           # 1-4, igual que Pagos (PRIORIDADES_PAGO)
+COL_T_CLIENTE = "CLIENTE"
+COL_T_SOLICITUD = "FECHA DE LA SOLICITUD"
+COL_T_DIAS = "DÍAS SIN PAGAR"           # fórmula del Sheet; la app lo calcula y no lo lee
+COL_T_CORTE = "FECHA DE CORTE"          # = fecha en que se pagó (decisión del 12 oct 2026)
+COL_T_USD = "USD PENDIENTE"             # solo dólares
+COL_T_DOP = "DOP PENDIENTE"             # solo pesos
+COLUMNAS_TALLER = [COL_T_EMPRESA, COL_T_PROVEEDOR, COL_T_PRIORIDAD, COL_T_CLIENTE,
+                   COL_T_SOLICITUD, COL_T_DIAS, COL_T_CORTE, COL_T_USD, COL_T_DOP]
+MAX_FILAS_TALLER = 5000
+
+
+def taller_configurado() -> bool:
+    """True si existe el secret TALLER_SHEET_ID. Sin él, la sección Taller no aparece."""
+    try:
+        return bool(str(st.secrets.get("TALLER_SHEET_ID", "") or "").strip())
+    except Exception:
+        return False
+
+
+@st.cache_resource
+def get_spreadsheet_taller():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"], scopes=scopes
+    )
+    client = gspread.authorize(creds)
+    return client.open_by_key(str(st.secrets["TALLER_SHEET_ID"]).strip())
+
+
+def _mensaje_taller(e) -> str:
+    codigo = _codigo_api(e)
+    if codigo == 403:
+        return ("El Sheet de Taller rechazó el acceso. Verifica que siga compartido como "
+                "Editor con la cuenta de servicio de la app.")
+    if codigo == 404:
+        return "No se encontró el Sheet de Taller. Verifica el ID en el secret TALLER_SHEET_ID."
+    if codigo == 400:
+        return (f"No se pudo leer la pestaña '{TALLER_SHEET}' del Sheet de Taller. "
+                "Verifica que exista con ese nombre.")
+    if codigo == 429:
+        return "Google Sheets está limitando las peticiones. Espera unos segundos y pulsa Actualizar."
+    return f"Google Sheets no respondió al leer Taller ({e})."
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _cargar_taller_remoto() -> dict:
+    """UNA llamada a la API. No atrapa errores: st.cache_data solo guarda retornos
+    exitosos, así que un fallo no queda cacheado y el siguiente rerun reintenta.
+    Lee valores SIN formato (números y fechas seriales): así no depende de la
+    configuración regional del Sheet (15/10 vs 10/15, coma vs punto decimal)."""
+    try:
+        ss = get_spreadsheet_taller()
+    except gspread.exceptions.APIError as e:
+        raise RuntimeError(_mensaje_taller(e)) from e
+    except Exception as e:
+        raise RuntimeError(f"No se pudo abrir el Sheet de Taller: {e}") from e
+    rango = f"'{TALLER_SHEET}'!A1:Z{MAX_FILAS_TALLER}"
+    params = {"valueRenderOption": "UNFORMATTED_VALUE", "dateTimeRenderOption": "SERIAL_NUMBER"}
+    try:
+        respuesta = _con_reintento(lambda: ss.values_get(rango, params=params))
+    except gspread.exceptions.APIError as e:
+        raise RuntimeError(_mensaje_taller(e)) from e
+    df = _df_desde_valores(respuesta.get("values", []), COLUMNAS_TALLER)
+    df["FilaSheet"] = range(2, len(df) + 2)   # fila real = índice + 2 (encabezado + base 1)
+    return {"df": df, "hora": ahora_rd()}
+
+
+def cargar_taller() -> dict:
+    """Lectura cacheada del Sheet de Taller. El FRACASO no se cachea y nunca sube
+    como excepción: vuelve en "error" para que solo la sección Taller lo muestre."""
+    try:
+        r = _cargar_taller_remoto()
+    except Exception as e:  # noqa: BLE001 - la UI muestra este mensaje; nunca un traceback
+        return {"df": pd.DataFrame(columns=COLUMNAS_TALLER + ["FilaSheet"]),
+                "hora": ahora_rd(), "aviso": "", "error": str(e)}
+    aviso = ""
+    if len(r["df"]) + 1 >= MAX_FILAS_TALLER:
+        aviso = (f"El Sheet de Taller llegó al tope de {MAX_FILAS_TALLER:,} filas que la app lee. "
+                 "Puede haber renglones más abajo que no se muestran.")
+    return {"df": r["df"], "hora": r["hora"], "aviso": aviso, "error": None}
 
 
 # --- Escrituras -------------------------------------------------------------

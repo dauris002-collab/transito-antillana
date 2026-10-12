@@ -83,7 +83,7 @@ from secrets import token_urlsafe
 
 import streamlit as st
 
-from sheets_io import cargar_todo, invalidar_caches, registrar_log
+from sheets_io import cargar_todo, invalidar_caches, registrar_log, taller_configurado
 from ui_componentes import CUSTOM_CSS, VERSION_APP, mostrar_dashboard, selector_horizontal
 from ui_login import LOGIN_CSS, html_portada, html_tarjeta
 from vistas_admin import (
@@ -269,6 +269,10 @@ def main():
     secciones = (["Dashboard", "Analítica", "Agregar", "Editar", "Carga masiva", "Histórico",
                   "Estatus de Pago", "Herramientas"]
                  if es_admin else ["Dashboard", "Analítica", "Histórico", "Estatus de Pago"])
+    # Taller (Sheet aparte): solo aparece si existe el secret TALLER_SHEET_ID. En este
+    # primer paso solo la ve el administrador; se abre a los demás roles después.
+    if es_admin and taller_configurado():
+        secciones = secciones + ["Taller"]
 
     # Navegación con estado propio en vez de st.tabs: además de no ejecutar el
     # cuerpo de todas las secciones en cada rerun, permite saltar por código
@@ -325,6 +329,15 @@ def main():
         panel_pagos(datos, es_admin)
     elif seccion == "Herramientas":
         herramientas(datos)
+    elif seccion == "Taller":
+        # Import perezoso a propósito: si taller.py fallara, solo fallaría esta
+        # sección y no el arranque de Tránsito ni de Pagos.
+        try:
+            from taller import panel_taller
+        except Exception as e:  # noqa: BLE001
+            st.error(f"La sección Taller no pudo cargarse: {e}")
+        else:
+            panel_taller()
 
 
 if __name__ == "__main__":

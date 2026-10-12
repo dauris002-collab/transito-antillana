@@ -286,7 +286,7 @@ def main():
     with st.sidebar:
         st.markdown(f"**{st.session_state.get('usuario', 'Usuario')}**")
         st.caption("Administrador" if es_admin else
-                   "Taller · edita solo la sección Taller" if st.session_state.rol == "taller"
+                   "Repuesto y Taller · edita solo esa sección" if st.session_state.rol == "taller"
                    else "Solo visualización")
         st.write("")
         if st.button("Actualizar datos", width="stretch"):

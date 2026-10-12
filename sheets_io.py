@@ -1163,7 +1163,8 @@ def invalidar_caches():
 # cuota, pestaña renombrada) no debe tumbar Tránsito ni Pagos, que usan cargar_todo().
 # OJO: get_worksheet, _headers, _asegurar_columnas y _localizar_fila buscan hojas por
 # título dentro del Sheet PRINCIPAL; no sirven para este.
-TALLER_SHEET = "Taller"                 # nombre de la pestaña dentro del Sheet de Taller
+NOMBRE_TALLER = "Repuesto y Taller"     # nombre visible de la sección y de la pestaña
+PESTANAS_TALLER = (NOMBRE_TALLER, "Taller")   # pestaña: nombre nuevo primero; "Taller" por compatibilidad
 COL_T_EMPRESA = "EMPRESA"
 COL_T_PROVEEDOR = "PROVEEDOR"
 COL_T_PRIORIDAD = "PRIORIDAD"           # 1-4, igual que Pagos (PRIORIDADES_PAGO)
@@ -1179,7 +1180,7 @@ MAX_FILAS_TALLER = 5000
 
 
 def taller_configurado() -> bool:
-    """True si existe el secret TALLER_SHEET_ID. Sin él, la sección Taller no aparece."""
+    """True si existe el secret TALLER_SHEET_ID. Sin él, la sección Repuesto y Taller no aparece."""
     try:
         return bool(str(st.secrets.get("TALLER_SHEET_ID", "") or "").strip())
     except Exception:
@@ -1199,19 +1200,40 @@ def get_spreadsheet_taller():
 def _mensaje_taller(e) -> str:
     codigo = _codigo_api(e)
     if codigo == 403:
-        return ("El Sheet de Taller rechazó el acceso. Verifica que siga compartido como "
+        return ("El Sheet de Repuesto y Taller rechazó el acceso. Verifica que siga compartido como "
                 "Editor con la cuenta de servicio de la app.")
     if codigo == 404:
-        return "No se encontró el Sheet de Taller. Verifica el ID en el secret TALLER_SHEET_ID."
+        return "No se encontró el Sheet de Repuesto y Taller. Verifica el ID en el secret TALLER_SHEET_ID."
     if codigo == 400:
-        return (f"No se pudo leer la pestaña '{TALLER_SHEET}' del Sheet de Taller. "
+        return (f"No se pudo leer la pestaña '{NOMBRE_TALLER}' (o 'Taller') del Sheet de {NOMBRE_TALLER}. "
                 "Verifica que exista con ese nombre.")
     if codigo == 429:
         return "Google Sheets está limitando las peticiones. Espera unos segundos y pulsa Actualizar."
-    return f"Google Sheets no respondió al leer Taller ({e})."
+    return f"Google Sheets no respondió al leer Repuesto y Taller ({e})."
 
 
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+# Más larga que CACHE_TTL a propósito: toda escritura de la app limpia esta caché (así que
+# solo se retrasa lo que alguien teclee directo en el Sheet) y "Actualizar" también la limpia.
+TTL_TALLER = 120
+
+
+def _leer_pestana_taller(ss) -> tuple:
+    """values_get de la pestaña de Repuesto y Taller. Prueba el nombre nuevo y, si Google
+    dice que ese rango no existe (400), el antiguo 'Taller'. Devuelve (respuesta, nombre)."""
+    params = {"valueRenderOption": "UNFORMATTED_VALUE", "dateTimeRenderOption": "SERIAL_NUMBER"}
+    ultimo = None
+    for nombre in PESTANAS_TALLER:
+        rango = f"'{nombre}'!A1:Z{MAX_FILAS_TALLER}"
+        try:
+            return _con_reintento(lambda: ss.values_get(rango, params=params)), nombre
+        except gspread.exceptions.APIError as e:
+            ultimo = e
+            if getattr(getattr(e, "response", None), "status_code", None) != 400:
+                raise
+    raise ultimo
+
+
+@st.cache_data(ttl=TTL_TALLER, show_spinner=False)
 def _cargar_taller_remoto() -> dict:
     """UNA llamada a la API. No atrapa errores: st.cache_data solo guarda retornos
     exitosos, así que un fallo no queda cacheado y el siguiente rerun reintenta.
@@ -1221,12 +1243,14 @@ def _cargar_taller_remoto() -> dict:
         ss = get_spreadsheet_taller()
     except gspread.exceptions.APIError as e:
         raise RuntimeError(_mensaje_taller(e)) from e
+    except gspread.exceptions.SpreadsheetNotFound as e:
+        raise RuntimeError("No se encontró el Sheet de Repuesto y Taller, o no está compartido con la cuenta de "
+                           "servicio de la app. Verifica el ID en TALLER_SHEET_ID y que el Sheet esté "
+                           "compartido como Editor con esa cuenta.") from e
     except Exception as e:
-        raise RuntimeError(f"No se pudo abrir el Sheet de Taller: {e}") from e
-    rango = f"'{TALLER_SHEET}'!A1:Z{MAX_FILAS_TALLER}"
-    params = {"valueRenderOption": "UNFORMATTED_VALUE", "dateTimeRenderOption": "SERIAL_NUMBER"}
+        raise RuntimeError(f"No se pudo abrir el Sheet de Repuesto y Taller ({type(e).__name__}): {e}") from e
     try:
-        respuesta = _con_reintento(lambda: ss.values_get(rango, params=params))
+        respuesta, _ = _leer_pestana_taller(ss)
     except gspread.exceptions.APIError as e:
         raise RuntimeError(_mensaje_taller(e)) from e
     df = _df_desde_valores(respuesta.get("values", []), COLUMNAS_TALLER)
@@ -1235,8 +1259,8 @@ def _cargar_taller_remoto() -> dict:
 
 
 def cargar_taller() -> dict:
-    """Lectura cacheada del Sheet de Taller. El FRACASO no se cachea y nunca sube
-    como excepción: vuelve en "error" para que solo la sección Taller lo muestre."""
+    """Lectura cacheada del Sheet de Repuesto y Taller. El FRACASO no se cachea y nunca sube
+    como excepción: vuelve en "error" para que solo la sección Repuesto y Taller lo muestre."""
     try:
         r = _cargar_taller_remoto()
     except Exception as e:  # noqa: BLE001 - la UI muestra este mensaje; nunca un traceback
@@ -1244,7 +1268,7 @@ def cargar_taller() -> dict:
                 "hora": ahora_rd(), "aviso": "", "error": str(e)}
     aviso = ""
     if len(r["df"]) + 1 >= MAX_FILAS_TALLER:
-        aviso = (f"El Sheet de Taller llegó al tope de {MAX_FILAS_TALLER:,} filas que la app lee. "
+        aviso = (f"El Sheet de Repuesto y Taller llegó al tope de {MAX_FILAS_TALLER:,} filas que la app lee. "
                  "Puede haber renglones más abajo que no se muestran.")
     return {"df": r["df"], "hora": r["hora"], "aviso": aviso, "error": None}
 
@@ -1383,21 +1407,20 @@ def _validar_taller(d: dict, hoy: date):
 
 
 def _taller_en_vivo():
-    """Lee el Sheet de Taller SIN caché. Devuelve (ws, posiciones, filas) con
+    """Lee el Sheet de Repuesto y Taller SIN caché. Devuelve (ws, posiciones, filas) con
     filas = {nº de fila: {columna: valor}}; posiciones = {columna: nº de columna}."""
     ss = get_spreadsheet_taller()
-    rango = f"'{TALLER_SHEET}'!A1:Z{MAX_FILAS_TALLER}"
-    params = {"valueRenderOption": "UNFORMATTED_VALUE", "dateTimeRenderOption": "SERIAL_NUMBER"}
-    valores = _con_reintento(lambda: ss.values_get(rango, params=params)).get("values", [])
+    respuesta, nombre_ws = _leer_pestana_taller(ss)
+    valores = respuesta.get("values", [])
     headers = valores[0] if valores else []
     pos = {c: _columna_indice(headers, c) for c in COLUMNAS_TALLER}
     faltan = [c for c, p in pos.items() if p is None]
     if faltan:
-        raise ValueError("Faltan columnas en el Sheet de Taller: " + ", ".join(faltan))
+        raise ValueError("Faltan columnas en el Sheet de Repuesto y Taller: " + ", ".join(faltan))
     filas = {}
     for i, f in enumerate(valores[1:], start=2):
         filas[i] = {c: (f[p - 1] if p - 1 < len(f) else "") for c, p in pos.items()}
-    return ss.worksheet(TALLER_SHEET), pos, filas
+    return ss.worksheet(nombre_ws), pos, filas
 
 
 def _taller_operar(accion: str, fila, snapshot, construir):
@@ -1406,9 +1429,9 @@ def _taller_operar(accion: str, fila, snapshot, construir):
     rol y que el renglón no haya cambiado, escribe por posición de encabezado y
     registra en la bitácora del Sheet principal."""
     if st.session_state.get("rol") not in ROLES_ESCRITURA_TALLER:
-        return False, "Tu rol no tiene permiso para modificar Taller."
+        return False, "Tu rol no tiene permiso para modificar Repuesto y Taller."
     if not taller_configurado():
-        return False, "El Sheet de Taller no está configurado."
+        return False, "El Sheet de Repuesto y Taller no está configurado."
     with _lock_taller():
         ws, pos, filas = _taller_en_vivo()
         vivo = None
@@ -1417,7 +1440,7 @@ def _taller_operar(accion: str, fila, snapshot, construir):
             if n is None:
                 n = (max(filas) + 1) if filas else 2
             if n > MAX_FILAS_TALLER or n > ws.row_count:
-                return False, ("No hay renglones preparados libres en el Sheet de Taller. "
+                return False, ("No hay renglones preparados libres en el Sheet de Repuesto y Taller. "
                                "Agrega filas al Sheet (copiando las de abajo) y repite.")
         else:
             n = int(fila)
@@ -1431,7 +1454,7 @@ def _taller_operar(accion: str, fila, snapshot, construir):
         peticiones = [{"range": rowcol_to_a1(n, pos[c]), "values": [[v]]} for c, v in cambios.items()]
         _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
     _cargar_taller_remoto.clear()
-    registrar_log(accion, bl=f"Taller fila {n}", categoria="Taller", detalle=detalle)
+    registrar_log(accion, bl=f"Repuesto y Taller fila {n}", categoria="Repuesto y Taller", detalle=detalle)
     return True, f"Hecho (fila {n})."
 
 
@@ -1444,7 +1467,7 @@ def taller_agregar(datos: dict):
     def construir(_):
         error, v = _validar_taller(datos, hoy_rd())
         return error, v, ("nuevo: " + _resumen_taller(v)) if v else ""
-    return _taller_operar("Taller: agregar", None, None, construir)
+    return _taller_operar("Repuesto y Taller: agregar", None, None, construir)
 
 
 @_con_manejo_apierror
@@ -1452,7 +1475,7 @@ def taller_editar(fila: int, snapshot: tuple, datos: dict):
     def construir(vivo):
         error, v = _validar_taller(datos, hoy_rd())
         return error, v, ("antes: " + _resumen_taller(vivo) + " | después: " + _resumen_taller(v)) if v else ""
-    return _taller_operar("Taller: editar", fila, snapshot, construir)
+    return _taller_operar("Repuesto y Taller: editar", fila, snapshot, construir)
 
 
 @_con_manejo_apierror
@@ -1470,7 +1493,7 @@ def taller_marcar_pago(fila: int, snapshot: tuple, fecha):
                 return "La fecha de pago no puede ser futura.", None, ""
         nuevo = "" if fecha is None else (fecha - EPOCH_SHEETS).days
         return None, {COL_T_CORTE: nuevo}, f"{COL_T_CORTE}: {_canon_celda(vivo.get(COL_T_CORTE))} -> {_canon_celda(nuevo)}"
-    return _taller_operar("Taller: pago" if fecha else "Taller: quitar pago", fila, snapshot, construir)
+    return _taller_operar("Repuesto y Taller: pago" if fecha else "Repuesto y Taller: quitar pago", fila, snapshot, construir)
 
 
 @_con_manejo_apierror
@@ -1479,7 +1502,7 @@ def taller_limpiar(fila: int, snapshot: tuple):
     la fórmula de DÍAS). Lo anterior queda en la bitácora."""
     def construir(vivo):
         return None, {c: "" for c in _DATOS_TALLER}, "borrado: " + _resumen_taller(vivo)
-    return _taller_operar("Taller: eliminar", fila, snapshot, construir)
+    return _taller_operar("Repuesto y Taller: eliminar", fila, snapshot, construir)
 
 
 @st.cache_data(ttl=60, show_spinner=False)

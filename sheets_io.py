@@ -1221,8 +1221,12 @@ def _cargar_taller_remoto() -> dict:
         ss = get_spreadsheet_taller()
     except gspread.exceptions.APIError as e:
         raise RuntimeError(_mensaje_taller(e)) from e
+    except gspread.exceptions.SpreadsheetNotFound as e:
+        raise RuntimeError("No se encontró el Sheet de Taller, o no está compartido con la cuenta de "
+                           "servicio de la app. Verifica el ID en TALLER_SHEET_ID y que el Sheet esté "
+                           "compartido como Editor con esa cuenta.") from e
     except Exception as e:
-        raise RuntimeError(f"No se pudo abrir el Sheet de Taller: {e}") from e
+        raise RuntimeError(f"No se pudo abrir el Sheet de Taller ({type(e).__name__}): {e}") from e
     rango = f"'{TALLER_SHEET}'!A1:Z{MAX_FILAS_TALLER}"
     params = {"valueRenderOption": "UNFORMATTED_VALUE", "dateTimeRenderOption": "SERIAL_NUMBER"}
     try:

@@ -101,7 +101,7 @@ st.set_page_config(
 )
 
 
-LARGO_PIN = 4               # dígitos del PIN
+LARGO_PIN = 6               # máximo de dígitos del PIN (los PIN de 4 dígitos ya existentes siguen valiendo)
 
 
 # Vida de sesión por rol. El admin trabaja sentado en la app; el viewer (el
@@ -228,7 +228,7 @@ def login_screen():
             # que en celular es la diferencia entre entrar y quedarse trancado.
             with st.form("form_login", clear_on_submit=True, border=False):
                 pin = st.text_input("PIN", type="password", max_chars=LARGO_PIN,
-                                    placeholder="••••")
+                                    placeholder="•" * LARGO_PIN)
                 entrar = st.form_submit_button("Entrar", type="primary", width="stretch")
 
     if not entrar:

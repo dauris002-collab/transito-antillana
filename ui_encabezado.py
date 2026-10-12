@@ -111,10 +111,10 @@ def _ruta_pagos() -> str:
             f'{_nodo(_MONEDA, c, "Pagado")}{_L}{_punto("#9CA3AF")}</div>')
 
 
-def encabezado_html(titulo: str, ruta: str, anio: int, sello: str) -> str:
-    """ruta: 'transito' o 'pagos'. El sello ya viene armado por quien llama."""
-    bloque_ruta = _ruta_pagos() if ruta == "pagos" else _ruta_transito()
+def encabezado_html(titulo: str, ruta: str, anio: int, sello: str, subtitulo_extra: str = "") -> str:
+    """ruta: 'transito', 'pagos' o 'taller' (sin ruta). El sello ya viene armado por quien llama."""
+    bloque_ruta = "" if ruta == "taller" else (_ruta_pagos() if ruta == "pagos" else _ruta_transito())
     return (f'{_CSS}<div class="eh">{_marca()}{bloque_ruta}'
             f'<div class="eh-titulo">{escape(titulo)}</div>'
-            f'<div class="eh-sub">Logística e Importaciones {anio}</div>'
+            f'<div class="eh-sub">Logística e Importaciones {anio}{escape(subtitulo_extra)}</div>'
             f'<div class="eh-sello"><span class="eh-dot"></span> {escape(sello)}</div></div>')

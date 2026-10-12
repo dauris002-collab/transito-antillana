@@ -83,7 +83,7 @@ from secrets import token_urlsafe
 
 import streamlit as st
 
-from sheets_io import cargar_todo, invalidar_caches, registrar_log
+from sheets_io import cargar_todo, invalidar_caches, registrar_log, taller_configurado
 from ui_componentes import CUSTOM_CSS, VERSION_APP, mostrar_dashboard, selector_horizontal
 from ui_login import LOGIN_CSS, html_portada, html_tarjeta
 from vistas_admin import (
@@ -101,13 +101,13 @@ st.set_page_config(
 )
 
 
-LARGO_PIN = 4               # dígitos del PIN
+LARGO_PIN = 6               # máximo de dígitos del PIN (los PIN de 4 dígitos ya existentes siguen valiendo)
 
 
 # Vida de sesión por rol. El admin trabaja sentado en la app; el viewer (el
 # presidente, gerentes) abre el link desde el celular una vez al día y volver a
 # pedirle el PIN cada rato es la forma más rápida de que deje de usarla.
-VIDA_SESION_MIN = {"admin": 120, "viewer": 720}
+VIDA_SESION_MIN = {"admin": 120, "viewer": 720, "taller": 480}
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +204,7 @@ def _resolver_pin(pin: str):
         for clave, datos in tabla.items():
             if str(pin) == str(clave):
                 rol = str(datos.get("rol", "viewer")).lower()
-                return ("admin" if rol == "admin" else "viewer"), str(datos.get("nombre", "usuario"))
+                return (rol if rol in ("admin", "taller") else "viewer"), str(datos.get("nombre", "usuario"))
     if pin and pin == st.secrets.get("ADMIN_PIN", None):
         return "admin", "Administrador"
     if pin and pin == st.secrets.get("VIEWER_PIN", None):
@@ -228,7 +228,7 @@ def login_screen():
             # que en celular es la diferencia entre entrar y quedarse trancado.
             with st.form("form_login", clear_on_submit=True, border=False):
                 pin = st.text_input("PIN", type="password", max_chars=LARGO_PIN,
-                                    placeholder="••••")
+                                    placeholder="•" * LARGO_PIN)
                 entrar = st.form_submit_button("Entrar", type="primary", width="stretch")
 
     if not entrar:
@@ -269,6 +269,10 @@ def main():
     secciones = (["Dashboard", "Analítica", "Agregar", "Editar", "Carga masiva", "Histórico",
                   "Estatus de Pago", "Herramientas"]
                  if es_admin else ["Dashboard", "Analítica", "Histórico", "Estatus de Pago"])
+    # Taller (Sheet aparte) vive dentro de Estatus de Pago, como opción del filtro
+    # "Origen", y solo si existe el secret TALLER_SHEET_ID. El rol "taller" ve el resto
+    # como viewer (es_admin False) y solo escribe en Taller; el admin también.
+    taller_escribe = (st.session_state.rol in ("admin", "taller")) if taller_configurado() else None
 
     # Navegación con estado propio en vez de st.tabs: además de no ejecutar el
     # cuerpo de todas las secciones en cada rerun, permite saltar por código
@@ -281,7 +285,9 @@ def main():
 
     with st.sidebar:
         st.markdown(f"**{st.session_state.get('usuario', 'Usuario')}**")
-        st.caption("Administrador" if es_admin else "Solo visualización")
+        st.caption("Administrador" if es_admin else
+                   "Taller · edita solo la sección Taller" if st.session_state.rol == "taller"
+                   else "Solo visualización")
         st.write("")
         if st.button("Actualizar datos", width="stretch"):
             invalidar_caches()
@@ -322,7 +328,7 @@ def main():
     elif seccion == "Histórico":
         mostrar_historico(datos, "admin" if es_admin else "viewer")
     elif seccion == "Estatus de Pago":
-        panel_pagos(datos, es_admin)
+        panel_pagos(datos, es_admin, taller_escribe)
     elif seccion == "Herramientas":
         herramientas(datos)
 

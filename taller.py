@@ -31,8 +31,9 @@ import streamlit as st
 from sheets_io import (
     COL_T_CLIENTE, COL_T_CORTE, COL_T_DOP, COL_T_EMPRESA, COL_T_PRIORIDAD,
     COL_T_PROVEEDOR, COL_T_SOLICITUD, COL_T_USD, EMPRESA_ANTILLANA,
-    EMPRESA_MOTOR_IBERICO, EMPRESA_TECNICARIBE, PRIORIDADES_PAGO, a_numero,
-    cargar_taller, hoy_rd, parsear_fecha,
+    EMPRESA_MOTOR_IBERICO, EMPRESA_TECNICARIBE, EMPRESAS_PAGO, PRIORIDADES_PAGO,
+    a_numero, cargar_taller, hoy_rd, parsear_fecha, snapshot_taller, taller_agregar,
+    taller_editar, taller_limpiar, taller_marcar_pago,
 )
 
 # El Sheet puede traer "ANTILLANA" o "Antillana Comercial": ambas valen.
@@ -128,7 +129,113 @@ def _num(x, prefijo: str = "", decimales: int = 0) -> str:
     return "—" if pd.isna(x) else f"{prefijo}{x:,.{decimales}f}"
 
 
-def panel_taller():
+def _ini_monto(x) -> float:
+    return 0.0 if x is None or pd.isna(x) else float(x)
+
+
+def _num_o_none(x):
+    return None if not x else float(x)
+
+
+def _campos(prefijo: str, ini: dict) -> dict:
+    """Campos comunes de agregar/editar (dentro de un st.form)."""
+    emp = ini.get("Empresa")
+    c1, c2 = st.columns(2)
+    empresa = c1.selectbox("Empresa", EMPRESAS_PAGO, key=f"{prefijo}_emp",
+                           index=EMPRESAS_PAGO.index(emp) if emp in EMPRESAS_PAGO else None)
+    proveedor = c2.text_input("Proveedor", value=ini.get("Proveedor", ""), key=f"{prefijo}_prov", max_chars=120)
+    c3, c4 = st.columns(2)
+    opciones = [None] + list(PRIORIDADES_PAGO)
+    p = ini.get("Prioridad")
+    prioridad = c3.selectbox("Prioridad", opciones, key=f"{prefijo}_prio",
+                             index=opciones.index(int(p)) if p is not None and not pd.isna(p) and int(p) in opciones else 0,
+                             format_func=lambda x: "—" if x is None else str(x))
+    cliente = c4.text_input("Cliente", value=ini.get("Cliente", ""), key=f"{prefijo}_cli", max_chars=120)
+    c5, c6, c7 = st.columns(3)
+    solicitud = c5.date_input("Fecha de la solicitud", value=ini.get("Solicitud") or hoy_rd(),
+                              max_value=hoy_rd(), format="DD/MM/YYYY", key=f"{prefijo}_sol")
+    usd = c6.number_input("USD pendiente (solo dólares)", min_value=0.0, step=0.01, format="%.2f",
+                          value=_ini_monto(ini.get("USD")),
+                          key=f"{prefijo}_usd")
+    dop = c7.number_input("DOP pendiente (solo pesos)", min_value=0.0, step=0.01, format="%.2f",
+                          value=_ini_monto(ini.get("DOP")),
+                          key=f"{prefijo}_dop")
+    return {"empresa": empresa, "proveedor": proveedor, "prioridad": prioridad, "cliente": cliente,
+            "solicitud": solicitud, "usd": _num_o_none(usd), "dop": _num_o_none(dop)}
+
+
+def _resultado(ok: bool, msg: str):
+    """Tras escribir: sube la versión (reinicia formularios y selección) y recarga."""
+    if ok:
+        st.session_state["taller_v"] = st.session_state.get("taller_v", 0) + 1
+        st.session_state.pop("taller_snap", None)
+        st.session_state["taller_msg"] = msg
+        st.rerun()
+    else:
+        st.error(msg)
+
+
+def _gestion(datos_raw: pd.DataFrame, df: pd.DataFrame):
+    """Agregar / editar / pagar / vaciar. Solo rol taller o admin (se vuelve a
+    verificar dentro de cada función de escritura)."""
+    v = st.session_state.get("taller_v", 0)
+    if st.session_state.get("taller_msg"):
+        st.success(st.session_state.pop("taller_msg"))
+    st.markdown("#### Gestionar Taller")
+    t_add, t_edit = st.tabs(["Agregar", "Editar / pagar / vaciar"])
+    with t_add:
+        with st.form(f"taller_form_add_{v}"):
+            nuevo = _campos(f"tad_{v}", {})
+            if st.form_submit_button("Agregar", type="primary"):
+                _resultado(*taller_agregar(nuevo))
+    with t_edit:
+        if df.empty:
+            st.info("No hay renglones para editar.")
+            return
+        ordenado = ordenar_taller(df)
+        filas = list(ordenado["Fila"])
+        etiquetas = {r.Fila: f"Fila {r.Fila} · {r.Proveedor} · {r.Empresa}" + (" · Pagado" if r.Pagado else "")
+                     for r in ordenado.itertuples()}
+        n = st.selectbox("Renglón", filas, index=None, format_func=etiquetas.get,
+                         placeholder="Elige un renglón", key=f"taller_sel_{v}")
+        if n is None:
+            st.session_state.pop("taller_snap", None)
+            return
+        sel = st.session_state.get("taller_snap")
+        if not sel or sel["fila"] != n:        # la huella se toma al SELECCIONAR, no al guardar
+            crudo = datos_raw[datos_raw["FilaSheet"] == n]
+            if crudo.empty:
+                st.warning("Ese renglón ya no está. Pulsa Actualizar datos.")
+                return
+            fila_df = df[df["Fila"] == n].iloc[0]
+            sel = {"fila": n, "snap": snapshot_taller(crudo.iloc[0]), "vals": fila_df.to_dict()}
+            st.session_state["taller_snap"] = sel
+        if st.button("Recargar este renglón", key=f"taller_rec_{v}"):
+            st.session_state.pop("taller_snap", None)
+            st.rerun()
+        ini = sel["vals"]
+        st.caption("Datos tal como estaban al seleccionar el renglón. Si alguien lo cambia en el Sheet, "
+                   "guardar se rechaza para no pisar su cambio.")
+        with st.form(f"taller_form_edit_{v}_{n}"):
+            datos = _campos(f"ted_{v}_{n}", ini)
+            if st.form_submit_button("Guardar cambios", type="primary"):
+                datos["corte"] = ini.get("Pago")      # el pago se maneja abajo
+                _resultado(*taller_editar(n, sel["snap"], datos))
+        st.markdown("**Pago**")
+        pc1, pc2, pc3 = st.columns([2, 1, 1])
+        fpago = pc1.date_input("Fecha de pago", value=ini.get("Pago") or hoy_rd(), max_value=hoy_rd(),
+                               format="DD/MM/YYYY", key=f"tpg_{v}_{n}")
+        if pc2.button("Marcar pagado", key=f"tpm_{v}_{n}"):
+            _resultado(*taller_marcar_pago(n, sel["snap"], fpago))
+        if ini.get("Pagado") and pc3.button("Quitar pago", key=f"tpq_{v}_{n}"):
+            _resultado(*taller_marcar_pago(n, sel["snap"], None))
+        st.markdown("**Eliminar**")
+        ok = st.checkbox("Confirmo vaciar este renglón (queda en la bitácora)", key=f"tel_ok_{v}_{n}")
+        if st.button("Vaciar renglón", disabled=not ok, key=f"tel_{v}_{n}"):
+            _resultado(*taller_limpiar(n, sel["snap"]))
+
+
+def panel_taller(puede_escribir: bool = False):
     st.subheader("Taller")
     datos = cargar_taller()
     if datos["error"]:
@@ -139,6 +246,8 @@ def panel_taller():
         st.warning(datos["aviso"])
     if df.empty:
         st.info("El Sheet de Taller todavía no tiene filas con datos.")
+        if puede_escribir:
+            _gestion(datos["df"], df)
         return
 
     c_emp, c_est = st.columns(2)
@@ -180,4 +289,8 @@ def panel_taller():
                 st.write(a)
             if len(avisos) > 50:
                 st.write(f"… y {len(avisos) - 50} más.")
-    st.caption(f"Sheet de Taller leído a las {datos['hora'].strftime('%H:%M:%S')}. Solo lectura.")
+    st.caption(f"Sheet de Taller leído a las {datos['hora'].strftime('%H:%M:%S')}."
+               + ("" if puede_escribir else " Solo lectura."))
+    if puede_escribir:
+        st.divider()
+        _gestion(datos["df"], df)

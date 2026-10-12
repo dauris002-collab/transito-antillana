@@ -1296,6 +1296,192 @@ def registrar_log(accion: str, bl: str = "", categoria: str = "", detalle: str =
         pass
 
 
+# --- Taller: escrituras (rol taller y admin) ---------------------------------
+ROLES_ESCRITURA_TALLER = ("admin", "taller")
+_DATOS_TALLER = [COL_T_EMPRESA, COL_T_PROVEEDOR, COL_T_PRIORIDAD, COL_T_CLIENTE,
+                 COL_T_SOLICITUD, COL_T_CORTE, COL_T_USD, COL_T_DOP]   # todo menos DÍAS (fórmula)
+_ETIQUETA_EMPRESA_SHEET = {EMPRESA_ANTILLANA: "ANTILLANA", EMPRESA_TECNICARIBE: "TECNICARIBE",
+                           EMPRESA_MOTOR_IBERICO: "MOTOR IBÉRICO"}
+
+
+@st.cache_resource
+def _lock_taller():
+    """Candado de proceso: serializa leer-verificar-escribir entre sesiones."""
+    return threading.Lock()
+
+
+def _canon_celda(v) -> str:
+    if hasattr(v, "item"):
+        v = v.item()
+    if v is None or isinstance(v, bool):
+        return "" if v is None else str(v)
+    if isinstance(v, (int, float)):
+        return format(float(v), ".10g")
+    return str(v).strip()
+
+
+def snapshot_taller(fila) -> tuple:
+    """Huella de los 8 campos editables de un renglón (Series/dict con los nombres
+    del Sheet). La UI la toma al SELECCIONAR el renglón; la escritura la compara con
+    lo que hay en vivo y se niega si alguien lo cambió en medio."""
+    return tuple(_canon_celda(fila.get(c, "")) for c in _DATOS_TALLER)
+
+
+def _validar_taller(d: dict, hoy: date):
+    """Devuelve (mensaje_de_error, valores_para_escribir). La API de Sheets se salta
+    las validaciones del Sheet, así que la app valida por su cuenta."""
+    empresa = _ETIQUETA_EMPRESA_SHEET.get(d.get("empresa"))
+    if not empresa:
+        return "Elige la empresa.", None
+    prov = " ".join(str(d.get("proveedor") or "").split())
+    if not prov:
+        return "El proveedor es obligatorio.", None
+    if len(prov) > 120:
+        return "El proveedor es demasiado largo (máximo 120 caracteres).", None
+    cli = " ".join(str(d.get("cliente") or "").split())
+    if len(cli) > 120:
+        return "El cliente es demasiado largo (máximo 120 caracteres).", None
+    for t in (prov, cli):
+        if t and t[0] in "=+-@":
+            return "El texto no puede empezar con = + - @.", None
+    prio = d.get("prioridad")
+    if prio is not None and prio not in PRIORIDADES_PAGO:
+        return "La prioridad debe ser 1, 2, 3 o 4 (o quedar vacía).", None
+    sol, corte = d.get("solicitud"), d.get("corte")
+    if not isinstance(sol, date):
+        return "La fecha de la solicitud es obligatoria.", None
+    if sol > hoy:
+        return "La fecha de la solicitud no puede ser futura.", None
+    if corte is not None:
+        if not isinstance(corte, date):
+            return "La fecha de pago no es válida.", None
+        if corte < sol:
+            return "La fecha de pago no puede ser anterior a la solicitud.", None
+        if corte > hoy:
+            return "La fecha de pago no puede ser futura.", None
+    montos = []
+    for etq, v in (("USD", d.get("usd")), ("DOP", d.get("dop"))):
+        if v is None or v == "":
+            montos.append("")
+            continue
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            return f"El monto {etq} no es un número.", None
+        if n != n or n in (float("inf"), float("-inf")) or n < 0:
+            return f"El monto {etq} debe ser un número mayor o igual a 0.", None
+        montos.append(round(n, 2))
+    if not any(m not in ("", 0) for m in montos):
+        return "Indica al menos un monto mayor que 0 (USD o DOP).", None
+    return None, {
+        COL_T_EMPRESA: empresa, COL_T_PROVEEDOR: prov,
+        COL_T_PRIORIDAD: "" if prio is None else int(prio), COL_T_CLIENTE: cli,
+        COL_T_SOLICITUD: (sol - EPOCH_SHEETS).days,
+        COL_T_CORTE: "" if corte is None else (corte - EPOCH_SHEETS).days,
+        COL_T_USD: montos[0], COL_T_DOP: montos[1],
+    }
+
+
+def _taller_en_vivo():
+    """Lee el Sheet de Taller SIN caché. Devuelve (ws, posiciones, filas) con
+    filas = {nº de fila: {columna: valor}}; posiciones = {columna: nº de columna}."""
+    ss = get_spreadsheet_taller()
+    rango = f"'{TALLER_SHEET}'!A1:Z{MAX_FILAS_TALLER}"
+    params = {"valueRenderOption": "UNFORMATTED_VALUE", "dateTimeRenderOption": "SERIAL_NUMBER"}
+    valores = _con_reintento(lambda: ss.values_get(rango, params=params)).get("values", [])
+    headers = valores[0] if valores else []
+    pos = {c: _columna_indice(headers, c) for c in COLUMNAS_TALLER}
+    faltan = [c for c, p in pos.items() if p is None]
+    if faltan:
+        raise ValueError("Faltan columnas en el Sheet de Taller: " + ", ".join(faltan))
+    filas = {}
+    for i, f in enumerate(valores[1:], start=2):
+        filas[i] = {c: (f[p - 1] if p - 1 < len(f) else "") for c, p in pos.items()}
+    return ss.worksheet(TALLER_SHEET), pos, filas
+
+
+def _taller_operar(accion: str, fila, snapshot, construir):
+    """Núcleo común de las escrituras. construir(vivo) -> (error, {columna: valor}, detalle)
+    (vivo = renglón actual, o None al agregar). Bajo candado: lee en vivo, verifica
+    rol y que el renglón no haya cambiado, escribe por posición de encabezado y
+    registra en la bitácora del Sheet principal."""
+    if st.session_state.get("rol") not in ROLES_ESCRITURA_TALLER:
+        return False, "Tu rol no tiene permiso para modificar Taller."
+    if not taller_configurado():
+        return False, "El Sheet de Taller no está configurado."
+    with _lock_taller():
+        ws, pos, filas = _taller_en_vivo()
+        vivo = None
+        if fila is None:                        # agregar: primer renglón preparado y en blanco
+            n = next((i for i in sorted(filas) if not any(_canon_celda(filas[i][c]) for c in _DATOS_TALLER)), None)
+            if n is None:
+                n = (max(filas) + 1) if filas else 2
+            if n > MAX_FILAS_TALLER or n > ws.row_count:
+                return False, ("No hay renglones preparados libres en el Sheet de Taller. "
+                               "Agrega filas al Sheet (copiando las de abajo) y repite.")
+        else:
+            n = int(fila)
+            vivo = filas.get(n)
+            if n < 2 or vivo is None or snapshot_taller(vivo) != tuple(snapshot):
+                return False, ("Ese renglón cambió en el Sheet mientras lo tenías abierto "
+                               "(o ya no existe). Pulsa Actualizar y vuelve a seleccionarlo.")
+        error, cambios, detalle = construir(vivo)
+        if error:
+            return False, error
+        peticiones = [{"range": rowcol_to_a1(n, pos[c]), "values": [[v]]} for c, v in cambios.items()]
+        _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    _cargar_taller_remoto.clear()
+    registrar_log(accion, bl=f"Taller fila {n}", categoria="Taller", detalle=detalle)
+    return True, f"Hecho (fila {n})."
+
+
+def _resumen_taller(vals: dict) -> str:
+    return "; ".join(f"{c}={_canon_celda(vals.get(c, ''))}" for c in _DATOS_TALLER)
+
+
+@_con_manejo_apierror
+def taller_agregar(datos: dict):
+    def construir(_):
+        error, v = _validar_taller(datos, hoy_rd())
+        return error, v, ("nuevo: " + _resumen_taller(v)) if v else ""
+    return _taller_operar("Taller: agregar", None, None, construir)
+
+
+@_con_manejo_apierror
+def taller_editar(fila: int, snapshot: tuple, datos: dict):
+    def construir(vivo):
+        error, v = _validar_taller(datos, hoy_rd())
+        return error, v, ("antes: " + _resumen_taller(vivo) + " | después: " + _resumen_taller(v)) if v else ""
+    return _taller_operar("Taller: editar", fila, snapshot, construir)
+
+
+@_con_manejo_apierror
+def taller_marcar_pago(fila: int, snapshot: tuple, fecha):
+    """fecha = fecha de pago (queda Pagado) o None (vuelve a Pendiente)."""
+    def construir(vivo):
+        sol = parsear_fecha(vivo.get(COL_T_SOLICITUD))
+        hoy = hoy_rd()
+        if fecha is not None:
+            if sol is None:
+                return "El renglón no tiene fecha de solicitud válida.", None, ""
+            if fecha < sol:
+                return "La fecha de pago no puede ser anterior a la solicitud.", None, ""
+            if fecha > hoy:
+                return "La fecha de pago no puede ser futura.", None, ""
+        nuevo = "" if fecha is None else (fecha - EPOCH_SHEETS).days
+        return None, {COL_T_CORTE: nuevo}, f"{COL_T_CORTE}: {_canon_celda(vivo.get(COL_T_CORTE))} -> {_canon_celda(nuevo)}"
+    return _taller_operar("Taller: pago" if fecha else "Taller: quitar pago", fila, snapshot, construir)
+
+
+@_con_manejo_apierror
+def taller_limpiar(fila: int, snapshot: tuple):
+    """'Eliminar' = vaciar los 8 campos del renglón (no se desplazan filas ni se toca
+    la fórmula de DÍAS). Lo anterior queda en la bitácora."""
+    def construir(vivo):
+        return None, {c: "" for c in _DATOS_TALLER}, "borrado: " + _resumen_taller(vivo)
+    return _taller_operar("Taller: eliminar", fila, snapshot, construir)
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def _leer_log(maximo: int = 300) -> pd.DataFrame:
     ws = get_worksheet(LOG_SHEET)

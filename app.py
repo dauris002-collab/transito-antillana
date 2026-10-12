@@ -107,7 +107,7 @@ LARGO_PIN = 6               # máximo de dígitos del PIN (los PIN de 4 dígitos
 # Vida de sesión por rol. El admin trabaja sentado en la app; el viewer (el
 # presidente, gerentes) abre el link desde el celular una vez al día y volver a
 # pedirle el PIN cada rato es la forma más rápida de que deje de usarla.
-VIDA_SESION_MIN = {"admin": 120, "viewer": 720}
+VIDA_SESION_MIN = {"admin": 120, "viewer": 720, "taller": 480}
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +204,7 @@ def _resolver_pin(pin: str):
         for clave, datos in tabla.items():
             if str(pin) == str(clave):
                 rol = str(datos.get("rol", "viewer")).lower()
-                return ("admin" if rol == "admin" else "viewer"), str(datos.get("nombre", "usuario"))
+                return (rol if rol in ("admin", "taller") else "viewer"), str(datos.get("nombre", "usuario"))
     if pin and pin == st.secrets.get("ADMIN_PIN", None):
         return "admin", "Administrador"
     if pin and pin == st.secrets.get("VIEWER_PIN", None):
@@ -269,9 +269,11 @@ def main():
     secciones = (["Dashboard", "Analítica", "Agregar", "Editar", "Carga masiva", "Histórico",
                   "Estatus de Pago", "Herramientas"]
                  if es_admin else ["Dashboard", "Analítica", "Histórico", "Estatus de Pago"])
-    # Taller (Sheet aparte): solo aparece si existe el secret TALLER_SHEET_ID. En este
-    # primer paso solo la ve el administrador; se abre a los demás roles después.
-    if es_admin and taller_configurado():
+    # Taller (Sheet aparte): aparece si existe el secret TALLER_SHEET_ID. El rol "taller"
+    # ve el resto como viewer (es_admin False) y solo escribe en esta sección; el admin
+    # también escribe aquí.
+    puede_escribir_taller = st.session_state.rol in ("admin", "taller")
+    if taller_configurado():
         secciones = secciones + ["Taller"]
 
     # Navegación con estado propio en vez de st.tabs: además de no ejecutar el
@@ -285,7 +287,9 @@ def main():
 
     with st.sidebar:
         st.markdown(f"**{st.session_state.get('usuario', 'Usuario')}**")
-        st.caption("Administrador" if es_admin else "Solo visualización")
+        st.caption("Administrador" if es_admin else
+                   "Taller · edita solo la sección Taller" if st.session_state.rol == "taller"
+                   else "Solo visualización")
         st.write("")
         if st.button("Actualizar datos", width="stretch"):
             invalidar_caches()
@@ -337,7 +341,7 @@ def main():
         except Exception as e:  # noqa: BLE001
             st.error(f"La sección Taller no pudo cargarse: {e}")
         else:
-            panel_taller()
+            panel_taller(puede_escribir_taller)
 
 
 if __name__ == "__main__":

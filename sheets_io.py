@@ -1211,7 +1211,12 @@ def _mensaje_taller(e) -> str:
     return f"Google Sheets no respondió al leer Taller ({e})."
 
 
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+# Más larga que CACHE_TTL a propósito: toda escritura de la app limpia esta caché (así que
+# solo se retrasa lo que alguien teclee directo en el Sheet) y "Actualizar" también la limpia.
+TTL_TALLER = 120
+
+
+@st.cache_data(ttl=TTL_TALLER, show_spinner=False)
 def _cargar_taller_remoto() -> dict:
     """UNA llamada a la API. No atrapa errores: st.cache_data solo guarda retornos
     exitosos, así que un fallo no queda cacheado y el siguiente rerun reintenta.

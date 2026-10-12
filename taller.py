@@ -333,7 +333,8 @@ def panel_taller(puede_escribir: bool, selector_origen):
     """Vista de Taller dentro de Estatus de Pagos. selector_origen() dibuja el filtro
     'Origen' (lo provee pagos.py) en la primera columna de la fila de filtros."""
     st.markdown(_CSS, unsafe_allow_html=True)
-    datos = cargar_taller()
+    with st.spinner("Leyendo Taller…"):
+        datos = cargar_taller()
     _encabezado(datos["hora"] if datos["hora"] else ahora_rd())
     df, avisos = enriquecer_taller(datos["df"], hoy_rd()) if not datos["error"] else (pd.DataFrame(), [])
     c0, c1, c2, c3 = st.columns(4)

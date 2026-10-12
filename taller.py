@@ -2,7 +2,7 @@
 taller.py - Sección Taller, paso 1: vínculo de SOLO LECTURA con el Sheet aparte
 ================================================================================
 
-Muestra lo que hay en el Sheet de Taller (secret TALLER_SHEET_ID), leído con su
+Muestra lo que hay en el Sheet de Repuesto y Taller (secret TALLER_SHEET_ID), leído con su
 propia llamada y su propia caché (sheets_io.cargar_taller): un fallo de Taller no
 toca Tránsito ni Pagos. Esta versión sirve para comprobar el vínculo y los datos;
 las tarjetas, las fichas y los formularios llegan en pasos siguientes.
@@ -183,7 +183,7 @@ def _gestion(datos_raw: pd.DataFrame, df: pd.DataFrame):
     v = st.session_state.get("taller_v", 0)
     if st.session_state.get("taller_msg"):
         st.success(st.session_state.pop("taller_msg"))
-    st.markdown("#### Gestionar Taller")
+    st.markdown("#### Gestionar Repuesto y Taller")
     t_add, t_edit = st.tabs(["Agregar", "Editar / pagar / vaciar"])
     with t_add:
         with st.form(f"taller_form_add_{v}"):
@@ -324,8 +324,8 @@ def _tarjetas(pagados: pd.DataFrame, pend: pd.DataFrame) -> str:
 
 
 def _encabezado(hora) -> None:
-    sello = f"Sheet de Taller leído a las {hora.strftime('%I:%M %p').lstrip('0').lower()} (hora RD)"
-    st.markdown(encabezado_html("Estatus de Pagos", "taller", hoy_rd().year, sello, " · Taller"),
+    sello = f"Sheet de Repuesto y Taller leído a las {hora.strftime('%I:%M %p').lstrip('0').lower()} (hora RD)"
+    st.markdown(encabezado_html("Estatus de Pagos", "taller", hoy_rd().year, sello, " · Repuesto y Taller"),
                 unsafe_allow_html=True)
 
 
@@ -333,7 +333,7 @@ def panel_taller(puede_escribir: bool, selector_origen):
     """Vista de Taller dentro de Estatus de Pagos. selector_origen() dibuja el filtro
     'Origen' (lo provee pagos.py) en la primera columna de la fila de filtros."""
     st.markdown(_CSS, unsafe_allow_html=True)
-    with st.spinner("Leyendo Taller…"):
+    with st.spinner("Leyendo Repuesto y Taller…"):
         datos = cargar_taller()
     _encabezado(datos["hora"] if datos["hora"] else ahora_rd())
     df, avisos = enriquecer_taller(datos["df"], hoy_rd()) if not datos["error"] else (pd.DataFrame(), [])
@@ -346,7 +346,7 @@ def panel_taller(puede_escribir: bool, selector_origen):
     if datos["aviso"]:
         st.warning(datos["aviso"])
     if df.empty:
-        st.info("El Sheet de Taller todavía no tiene filas con datos.")
+        st.info("El Sheet de Repuesto y Taller todavía no tiene filas con datos.")
         if puede_escribir:
             _gestion(datos["df"], df)
         return

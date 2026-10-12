@@ -29,7 +29,7 @@ from sheets_io import (
     COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA, COL_PAGO_LLEGADA, COL_PAGOREAL_DOP,
     COL_PAGOREAL_USD, COL_PRIORIDAD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO,
     ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE, MESES_ES_CORTO, MONEDA_CONCEPTO,
-    PRIORIDADES_PAGO,
+    PRIORIDADES_PAGO, NOMBRE_TALLER,
     _norm, a_numero, aplicar_selectores_pagos, fecha_llegada_fila, fijar_prioridad_pago,
     formato_eta,
     guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago,
@@ -651,18 +651,18 @@ def _plan_captura(enriquecido: pd.DataFrame):
 
 
 def _selector_origen():
-    """Filtro 'Origen' (Embarques / Taller). Solo existe si Taller está configurado."""
-    st.selectbox("Origen", ["Embarques", "Taller"], key="pago_origen")
+    """Filtro 'Origen' (Embarques / Repuesto y Taller). Solo existe si Taller está configurado."""
+    st.selectbox("Origen", ["Embarques", NOMBRE_TALLER], key="pago_origen")
 
 
 def _mostrar_taller(escribe: bool) -> bool:
-    """Dibuja la vista de Taller. Devuelve False si no pudo cargarse (se vuelve a
-    Embarques): un fallo de Taller nunca debe tumbar Pagos de embarques."""
+    """Dibuja la vista de Repuesto y Taller. Devuelve False si no pudo cargarse (se vuelve a
+    Embarques): un fallo de Repuesto y Taller nunca debe tumbar Pagos de embarques."""
     try:
         from taller import panel_taller
     except Exception as e:  # noqa: BLE001
         st.session_state["pago_origen"] = "Embarques"   # el widget aún no existe en esta pasada
-        st.error(f"La vista de Taller no pudo cargarse: {e}")
+        st.error(f"La vista de Repuesto y Taller no pudo cargarse: {e}")
         return False
     dibujado = []
 
@@ -675,7 +675,7 @@ def _mostrar_taller(escribe: bool) -> bool:
     except Exception as e:  # noqa: BLE001
         if not dibujado:
             _selector_origen()
-        st.error(f"Error en la vista de Taller: {e}")
+        st.error(f"Error en la vista de Repuesto y Taller: {e}")
     return True
 
 
@@ -1121,7 +1121,7 @@ def _encabezado_pagos(sello_info: dict):
 def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
     """taller_escribe: None = Taller no disponible (sin filtro Origen); True/False =
     disponible, y si el rol puede escribir en él."""
-    if taller_escribe is not None and st.session_state.get("pago_origen") == "Taller":
+    if taller_escribe is not None and st.session_state.get("pago_origen") == NOMBRE_TALLER:
         if _mostrar_taller(bool(taller_escribe)):
             return
     activos = datos.get("activos", pd.DataFrame())

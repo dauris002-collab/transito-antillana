@@ -22,6 +22,8 @@ Reglas (decididas el 12 oct 2026):
 
 from __future__ import annotations
 
+import re
+from datetime import date
 import unicodedata
 from numbers import Real
 
@@ -45,6 +47,45 @@ _EMPRESAS = {
 }
 _COLUMNAS = ["Fila", "Empresa", "Proveedor", "Prioridad", "Cliente", "Solicitud",
              "Pago", "Pagado", "Dias", "USD", "DOP"]
+
+
+_DIAS_SEMANA = r"(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|lun|mar|mi[eé]|jue|vie|s[aá]b|dom)"
+
+
+def _fecha_celda(v):
+    """Fecha de una celda de Repuesto y Taller, con más tolerancia que parsear_fecha
+    (que sigue igual para Embarques y Pagos). Además de lo que ya entiende, acepta
+    hora al final ('14/10/2026 10:30 PM'), día de la semana ('miércoles 14 de octubre
+    de 2026'), separado por espacios ('14 10 2026'), pegado ('14102026', '14oct2026')
+    y mes en texto sin año ('14-oct', se asume el año en curso). Si nada sirve,
+    devuelve None y la fila se avisa en pantalla en vez de quedar mal en silencio."""
+    f = parsear_fecha(v)
+    if f is not None or not isinstance(v, str):
+        return f
+    t = v.strip().lower()
+    t = re.sub(r"[\s,;]*\d{1,2}:\d{2}(:\d{2})?(\.\d+)?\s*(a\.?\s?m\.?|p\.?\s?m\.?)?\s*$", "", t)   # hora al final
+    t = re.sub(r"^\s*" + _DIAS_SEMANA + r"\.?[\s,]*", "", t)                                   # día de la semana
+    t = t.strip()
+    f = parsear_fecha(t)
+    if f is not None:
+        return f
+    m = re.fullmatch(r"(\d{1,2})[\s./-]+(\d{1,2})[\s./-]+(\d{2,4})", t)                          # 14 10 2026
+    if not m:
+        m = re.fullmatch(r"(\d{2})(\d{2})(\d{4})", t)                                             # 14102026
+    if m:
+        d, mo, a = int(m[1]), int(m[2]), int(m[3])
+        a += 2000 if a < 100 else 0
+        try:
+            return date(a, mo, d)
+        except ValueError:
+            return None
+    m = re.fullmatch(r"(\d{1,2})\s*([a-záéíóú]{3,})\.?\s*(\d{2,4})", t)                          # 14oct2026
+    if m:
+        return parsear_fecha(f"{m[1]} {m[2]} {m[3]}")
+    m = re.fullmatch(r"(\d{1,2})[\s./-]*([a-záéíóú]{3,})\.?", t)                                   # 14-oct
+    if m:
+        return parsear_fecha(f"{m[1]} {m[2]} {hoy_rd().year}")
+    return None
 
 
 def _plano(v):
@@ -90,8 +131,8 @@ def enriquecer_taller(df: pd.DataFrame, hoy):
         if not prov and not cli and usd is None and dop is None:
             continue  # fila preparada y todavía en blanco
         n = int(r["FilaSheet"])
-        sol = parsear_fecha(_plano(r.get(COL_T_SOLICITUD)))
-        pago = parsear_fecha(_plano(r.get(COL_T_CORTE)))
+        sol_crudo, pago_crudo = _plano(r.get(COL_T_SOLICITUD)), _plano(r.get(COL_T_CORTE))
+        sol, pago = _fecha_celda(sol_crudo), _fecha_celda(pago_crudo)
         emp_txt, prio_txt = _texto(r.get(COL_T_EMPRESA)), _texto(r.get(COL_T_PRIORIDAD))
         emp, prio = _EMPRESAS.get(_clave_empresa(emp_txt), ""), _prioridad(prio_txt)
         if emp_txt and not emp:
@@ -99,7 +140,10 @@ def enriquecer_taller(df: pd.DataFrame, hoy):
         if prio_txt and prio is None:
             avisos.append(f"Fila {n}: prioridad '{prio_txt}' no válida (usa 1 a 4).")
         if sol is None:
-            avisos.append(f"Fila {n}: sin fecha de solicitud; no se cuentan días.")
+            avisos.append(f"Fila {n}: " + (f"fecha de solicitud '{_texto(sol_crudo)}' no válida; no se cuentan días."
+                                           if _texto(sol_crudo) else "sin fecha de solicitud; no se cuentan días."))
+        if pago is None and _texto(pago_crudo):
+            avisos.append(f"Fila {n}: fecha de pago '{_texto(pago_crudo)}' no válida; se toma como pendiente.")
         elif pago and pago < sol:
             avisos.append(f"Fila {n}: la fecha de corte es anterior a la solicitud.")
         if usd is None and dop is None:

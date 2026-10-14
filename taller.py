@@ -395,14 +395,9 @@ def _pildora_span(n) -> str:
 
 def _tarjeta_pagado(r) -> str:
     """Un renglón PAGADO con todo lo que tiene, con la estructura de las tarjetas de
-    Pagos de tránsito: cabecera, detalle, chip descripción: monto y fila de totales."""
+    Pagos de tránsito: cabecera (empresa - suplidor, prioridad, estatus), detalle y
+    fila de totales."""
     hay_usd, hay_dop = not pd.isna(r.USD) and bool(r.USD), not pd.isna(r.DOP) and bool(r.DOP)
-    desc = _esc(str(r.Descripcion)).strip() if r.Descripcion else ""
-    chips = []
-    if hay_usd:
-        chips.append(f'<span class="tl-chip" style="background:#2563EB;">{(desc or "PAGO").upper()}: {_usd(r.USD)}</span>')
-    if hay_dop:
-        chips.append(f'<span class="tl-chip" style="background:#0F9D7A;">{(desc or "PAGO").upper()}: {_dop(r.DOP)}</span>')
     totales = []
     if hay_usd:
         totales.append(f'<div><span class="tl-etq">Monto pagado US$</span><span class="tl-val">{_usd(r.USD)}</span></div>')
@@ -414,18 +409,17 @@ def _tarjeta_pagado(r) -> str:
     totales.append(f'<div><span class="tl-etq">Fecha de pago</span><span class="tl-val f">{_fd(r.Pago)}</span></div>')
     dias = "—" if pd.isna(r.Dias) else str(int(r.Dias))
     totales.append(f'<div><span class="tl-etq">Días de pago</span><span class="tl-val">{dias}</span></div>')
-    partes = [f"Cliente: {_esc(str(r.Cliente))}" if r.Cliente else "",
+    partes = [f"Descripción: {_esc(str(r.Descripcion))}" if r.Descripcion else "",
+              f"Cliente: {_esc(str(r.Cliente))}" if r.Cliente else "",
               f"Departamento: {_esc(str(r.Departamento))}" if r.Departamento else "",
               f"Local / Fábrica: {_esc(str(r.Local))}" if r.Local else ""]
     meta = " · ".join(x for x in partes if x)
     return ('<div class="tl-card">'
-            f'<div class="tl-cabeza"><span class="tl-prov">{_esc(str(r.Proveedor))}'
-            f'<span class="tl-emp">{_esc(str(r.Empresa))}</span> {_pildora_span(r.Prioridad)}</span>'
+            f'<div class="tl-cabeza"><span class="tl-prov"><span class="tl-emp" style="margin:0 8px 0 0;">{_esc(str(r.Empresa))}</span>'
+            f'- {_esc(str(r.Proveedor))} {_pildora_span(r.Prioridad)}</span>'
             '<span class="tl-estado" style="background:#2E7D32;">Pagado</span></div>'
             + (f'<div class="tl-meta">{meta}</div>' if meta else "")
-            + f'<div class="tl-chips">{"".join(chips)}</div>'
-            + f'<div class="tl-totales">{"".join(totales)}</div>'
-            + f'<div class="tl-pie">Pagado el {_fd(r.Pago)}</div></div>')
+            + f'<div class="tl-totales" style="margin-top:14px;">{"".join(totales)}</div></div>')
 
 
 def _lista_pagados(df: pd.DataFrame) -> str:

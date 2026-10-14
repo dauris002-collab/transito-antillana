@@ -34,7 +34,7 @@ from sheets_io import (
     COL_T_CLIENTE, COL_T_CORTE, COL_T_DOP, COL_T_EMPRESA, COL_T_PRIORIDAD,
     COL_T_PROVEEDOR, COL_T_SOLICITUD, COL_T_USD, EMPRESA_ANTILLANA,
     EMPRESA_MOTOR_IBERICO, EMPRESA_TECNICARIBE, EMPRESAS_PAGO, MESES_ES_CORTO,
-    PRIORIDADES_PAGO, a_numero, ahora_rd, cargar_taller, hoy_rd, parsear_fecha,
+    PRIORIDADES_PAGO, _norm_encabezado, a_numero, ahora_rd, cargar_taller, hoy_rd, parsear_fecha,
     snapshot_taller, taller_agregar, taller_editar, taller_limpiar, taller_marcar_pago,
 )
 from html import escape as _esc
@@ -46,7 +46,7 @@ _EMPRESAS = {
     "tecnicaribe": EMPRESA_TECNICARIBE, "motor iberico": EMPRESA_MOTOR_IBERICO,
 }
 _COLUMNAS = ["Fila", "Empresa", "Proveedor", "Prioridad", "Cliente", "Solicitud",
-             "Pago", "Pagado", "Dias", "USD", "DOP"]
+             "Pago", "Pagado", "Dias", "USD", "DOP", "Descripcion"]
 
 
 _DIAS_SEMANA = r"(?:lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|lun|mar|mi[eé]|jue|vie|s[aá]b|dom)"
@@ -125,6 +125,7 @@ def _prioridad(texto):
 def enriquecer_taller(df: pd.DataFrame, hoy):
     """Devuelve (DataFrame limpio, avisos sobre los datos del Sheet)."""
     filas, avisos = [], []
+    col_desc = next((c for c in df.columns if _norm_encabezado(c) == "descripcion"), None)
     for _, r in df.iterrows():
         prov, cli = _texto(r.get(COL_T_PROVEEDOR)), _texto(r.get(COL_T_CLIENTE))
         usd, dop = _monto(r.get(COL_T_USD)), _monto(r.get(COL_T_DOP))
@@ -152,7 +153,8 @@ def enriquecer_taller(df: pd.DataFrame, hoy):
         filas.append({"Fila": n, "Empresa": emp or "Sin empresa",
                       "Proveedor": prov or "(sin proveedor)", "Prioridad": prio,
                       "Cliente": cli, "Solicitud": sol, "Pago": pago,
-                      "Pagado": pago is not None, "Dias": dias, "USD": usd, "DOP": dop})
+                      "Pagado": pago is not None, "Dias": dias, "USD": usd, "DOP": dop,
+                      "Descripcion": _texto(r.get(col_desc)) if col_desc else ""})
     out = pd.DataFrame(filas, columns=_COLUMNAS)
     for c in ("Prioridad", "Dias", "USD", "DOP"):
         out[c] = pd.to_numeric(out[c], errors="coerce")
@@ -284,15 +286,25 @@ def _gestion(datos_raw: pd.DataFrame, df: pd.DataFrame):
 # --- Vista (mismo estilo que Estatus de Pagos de embarques) -----------------
 _CSS = (
     "<style>"
-    ".tl-wrap { overflow-x:auto; margin:6px 0 16px; }"
-    ".tl-tabla { width:100%; border-collapse:separate; border-spacing:0; background:#fff;"
-    " border:1px solid #E5E7EB; border-radius:12px; overflow:hidden; box-shadow:0 1px 4px rgba(17,24,39,0.06); }"
-    ".tl-tabla th { background:#111827; color:#fff; font-size:0.72rem; font-weight:700; text-transform:uppercase;"
-    " letter-spacing:0.05em; padding:11px 14px; text-align:center; white-space:nowrap; }"
-    ".tl-tabla td { padding:9px 14px; text-align:center; font-size:0.88rem; color:#111827;"
-    " border-top:1px solid #F3F4F6; white-space:nowrap; }"
-    ".tl-tabla tbody tr:nth-child(even) { background:#F9FAFB; }"
-    ".tl-tabla td.d { font-weight:800; } .tl-tabla td.v { color:#9CA3AF; }"
+    ".tl-card { border:1px solid #E5E7EB; border-radius:12px; padding:16px 20px; margin-bottom:14px;"
+    " background:#fff; box-shadow:0 1px 4px rgba(17,24,39,0.06); }"
+    ".tl-cabeza { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; }"
+    ".tl-prov { font-weight:700; font-size:1.02rem; color:#111827; }"
+    ".tl-emp { display:inline-block; background:#EEF2FF; color:#3730A3; font-size:0.72rem; font-weight:700;"
+    " padding:1px 10px; border-radius:999px; margin-left:10px; }"
+    ".tl-estado { display:inline-block; font-size:0.75rem; font-weight:700; color:#fff; padding:2px 12px;"
+    " border-radius:999px; }"
+    ".tl-meta { color:#6B7280; font-size:0.85rem; margin-top:2px; }"
+    ".tl-chips { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:14px 0; }"
+    ".tl-chip { padding:6px 15px; border-radius:999px; color:#fff; font-size:0.83rem; font-weight:700;"
+    " overflow-wrap:anywhere; }"
+    ".tl-totales { display:flex; flex-wrap:wrap; justify-content:center; align-items:baseline; gap:28px; }"
+    ".tl-etq { font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#6B7280; display:block;"
+    " text-align:center; }"
+    ".tl-val { font-size:1.2rem; font-weight:800; color:#111827; display:block; text-align:center; }"
+    ".tl-val.f { font-size:0.95rem; }"
+    ".tl-pie { text-align:center; color:#9CA3AF; font-size:0.78rem; margin-top:10px; }"
+    "@media (max-width:640px) { .tl-totales { gap:14px 18px; } }"
     ".tl-prio { display:inline-block; font-size:0.72rem; font-weight:800; letter-spacing:0.03em; padding:1px 10px;"
     " border-radius:999px; border:2px solid; background:#fff; white-space:nowrap; }"
     ".tl-prio b { font-size:0.95rem; }"
@@ -323,37 +335,49 @@ def _dop(x) -> str:
 
 def _pildora(n) -> str:
     if pd.isna(n):
-        return '<td class="v">—</td>'
+        return ""
     n = int(n)
     c = _COLOR_PRIO.get(n, "#6B7280")
-    return f'<td><span class="tl-prio" style="border-color:{c}; color:{c};">PRIORIDAD&nbsp;<b>{n}</b></span></td>'
+    return f'<span class="tl-prio" style="border-color:{c}; color:{c};">PRIORIDAD&nbsp;<b>{n}</b></span>'
 
 
-def _celda(x, clase: str = "") -> str:
-    vacio = x is None or x == "" or (isinstance(x, float) and pd.isna(x))
-    return '<td class="v">—</td>' if vacio else f'<td class="{clase}">{_esc(str(x))}</td>'
+def _tarjeta(r, pagado: bool) -> str:
+    """Un renglón de Repuesto y Taller con la misma estructura que las tarjetas de
+    Pagos de tránsito: cabecera (suplidor, empresa, prioridad, estatus), línea de
+    detalle, chip con la descripción y el monto, y fila de totales."""
+    hay_usd, hay_dop = not pd.isna(r.USD) and bool(r.USD), not pd.isna(r.DOP) and bool(r.DOP)
+    desc = _esc(str(r.Descripcion)).strip() if r.Descripcion else ""
+    chips = []
+    if hay_usd:
+        chips.append(f'<span class="tl-chip" style="background:#2563EB;">{(desc or "PAGO").upper()}: {_usd(r.USD)}</span>')
+    if hay_dop:
+        chips.append(f'<span class="tl-chip" style="background:#0F9D7A;">{(desc or "PAGO").upper()}: {_dop(r.DOP)}</span>')
+    etq = "Monto pagado" if pagado else "Monto pendiente"
+    totales = []
+    if hay_usd:
+        totales.append(f'<div><span class="tl-etq">{etq} US$</span><span class="tl-val">{_usd(r.USD)}</span></div>')
+    if hay_dop:
+        totales.append(f'<div><span class="tl-etq">{etq} RD$</span><span class="tl-val">{_dop(r.DOP)}</span></div>')
+    if not totales:
+        totales.append(f'<div><span class="tl-etq">{etq}</span><span class="tl-val">—</span></div>')
+    totales.append(f'<div><span class="tl-etq">Fecha de solicitud</span><span class="tl-val f">{_fd(r.Solicitud)}</span></div>')
+    dias = "—" if pd.isna(r.Dias) else str(int(r.Dias))
+    totales.append(f'<div><span class="tl-etq">{"Días de pago" if pagado else "Días sin pagar"}</span>'
+                   f'<span class="tl-val">{dias}</span></div>')
+    meta = f"Cliente: {_esc(str(r.Cliente))}" if r.Cliente else ""
+    pie = f'<div class="tl-pie">Pagado el {_fd(r.Pago)}</div>' if pagado and r.Pago is not None else ""
+    estado, color = ("Pagado", "#2E7D32") if pagado else ("Pendiente", "#B45309")
+    return ('<div class="tl-card">'
+            f'<div class="tl-cabeza"><span class="tl-prov">{_esc(str(r.Proveedor))}'
+            f'<span class="tl-emp">{_esc(str(r.Empresa))}</span> {_pildora(r.Prioridad)}</span>'
+            f'<span class="tl-estado" style="background:{color};">{estado}</span></div>'
+            + (f'<div class="tl-meta">{meta}</div>' if meta else "")
+            + f'<div class="tl-chips">{"".join(chips)}</div>'
+            + f'<div class="tl-totales">{"".join(totales)}</div>{pie}</div>')
 
 
-def _tabla(df: pd.DataFrame, pagados: bool) -> str:
-    if pagados:
-        cab = ["Empresa", "Proveedor", "Prioridad", "Cliente", "Solicitud", "Fecha de pago",
-               "Días de pago", "USD pagado", "DOP pagado"]
-    else:
-        cab = ["Empresa", "Proveedor", "Prioridad", "Cliente", "Solicitud", "Días sin pagar",
-               "USD pendiente", "DOP pendiente"]
-    filas = []
-    for r in df.itertuples():
-        dias = "" if pd.isna(r.Dias) else int(r.Dias)
-        celdas = [_celda(r.Empresa), _celda(r.Proveedor), _pildora(r.Prioridad), _celda(r.Cliente),
-                  _celda(_fd(r.Solicitud) if r.Solicitud is not None else "")]
-        if pagados:
-            celdas.append(_celda(_fd(r.Pago) if r.Pago is not None else ""))
-        celdas += [_celda(dias, "d"), _celda(_usd(r.USD) if _usd(r.USD) != "—" else ""),
-                   _celda(_dop(r.DOP) if _dop(r.DOP) != "—" else "")]
-        filas.append("<tr>" + "".join(celdas) + "</tr>")
-    return ('<div class="tl-wrap"><table class="tl-tabla"><thead><tr>'
-            + "".join(f"<th>{c}</th>" for c in cab) + "</tr></thead><tbody>" + "".join(filas)
-            + "</tbody></table></div>")
+def _lista(df: pd.DataFrame, pagados: bool) -> str:
+    return "".join(_tarjeta(r, pagados) for r in df.itertuples())
 
 
 def _tarjetas(pagados: pd.DataFrame, pend: pd.DataFrame) -> str:
@@ -446,13 +470,13 @@ def panel_taller(puede_escribir: bool, selector_origen):
         if pend.empty:
             st.caption("No hay pendientes con esta selección.")
         else:
-            st.markdown(_tabla(ordenar_taller(pend), False), unsafe_allow_html=True)
+            st.markdown(_lista(ordenar_taller(pend), False), unsafe_allow_html=True)
     if estatus in ("Todos", "Pagado"):
         st.markdown("**Pagados**")
         if pagados.empty:
             st.caption("No hay pagos registrados con esta selección.")
         else:
-            st.markdown(_tabla(pagados.sort_values("Pago", ascending=False), True), unsafe_allow_html=True)
+            st.markdown(_lista(pagados.sort_values("Pago", ascending=False), True), unsafe_allow_html=True)
 
     if avisos:
         with st.expander(f"Datos por revisar en el Sheet ({len(avisos)})"):

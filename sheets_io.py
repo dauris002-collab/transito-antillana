@@ -1258,7 +1258,18 @@ def _leer_pestana_taller(ss) -> tuple:
             ultimo = e
             if getattr(getattr(e, "response", None), "status_code", None) != 400:
                 raise
-    raise ultimo
+    # Ningún nombre conocido existe. Si el Sheet tiene UNA sola pestaña, es esa (el Sheet
+    # es exclusivo de Repuesto y Taller). Si tiene varias, se dice cuáles hay.
+    try:
+        titulos = [w.title for w in _con_reintento(lambda: ss.worksheets())]
+    except Exception:  # noqa: BLE001 - se prefiere el error original
+        raise ultimo
+    if len(titulos) == 1:
+        nombre = titulos[0]
+        rango = "'" + nombre.replace("'", "''") + f"'!A1:Z{MAX_FILAS_TALLER}"
+        return _con_reintento(lambda: ss.values_get(rango, params=params)), nombre
+    raise RuntimeError(f"No hay una pestaña llamada '{NOMBRE_TALLER}' en el Sheet. Pestañas encontradas: "
+                       + ", ".join(f"'{t}'" for t in titulos) + f". Renombra la correcta a '{NOMBRE_TALLER}'.")
 
 
 @st.cache_data(ttl=TTL_TALLER, show_spinner=False)

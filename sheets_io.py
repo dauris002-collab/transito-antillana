@@ -1217,6 +1217,34 @@ def _mensaje_taller(e) -> str:
 TTL_TALLER = 120
 
 
+# Encabezados alternativos aceptados en la pestaña (formato de Repuesto, oct 2026).
+# La app trabaja con los nombres canónicos de arriba; el Sheet puede usar cualquiera.
+ALIAS_ENCABEZADOS_TALLER = {
+    COL_T_PROVEEDOR: ("SUPLIDOR",),
+    COL_T_PRIORIDAD: ("PRIORIDAD DE PAGO",),
+    COL_T_SOLICITUD: ("FECHA DE SOLICITUD", "FECHA"),
+    COL_T_CORTE: ("FECHA DE PAGO",),
+    COL_T_USD: ("PENDIENTE US", "PENDIENTE US$", "MONTO $US", "MONTO US$", "MONTO USD"),
+    COL_T_DOP: ("PENDIENTE RD$", "PENDIENTE $RD", "PENDIENTE RD", "MONTO $RD", "MONTO RD$", "MONTO DOP"),
+}
+
+
+def _canonizar_encabezados_taller(headers: list) -> list:
+    """Devuelve los encabezados con los alias reemplazados por el nombre canónico.
+    Si ya existe la columna canónica, el alias no se toca (no se duplica)."""
+    headers = [str(h) for h in headers]
+    presentes = {_norm_encabezado(h) for h in headers}
+    for canon, alias in ALIAS_ENCABEZADOS_TALLER.items():
+        if _norm_encabezado(canon) in presentes:
+            continue
+        for i, h in enumerate(headers):
+            if _norm_encabezado(h) in {_norm_encabezado(a) for a in alias}:
+                headers[i] = canon
+                presentes.add(_norm_encabezado(canon))
+                break
+    return headers
+
+
 def _leer_pestana_taller(ss) -> tuple:
     """values_get de la pestaña de Repuesto y Taller. Prueba el nombre nuevo y, si Google
     dice que ese rango no existe (400), el antiguo 'Taller'. Devuelve (respuesta, nombre)."""
@@ -1253,7 +1281,10 @@ def _cargar_taller_remoto() -> dict:
         respuesta, _ = _leer_pestana_taller(ss)
     except gspread.exceptions.APIError as e:
         raise RuntimeError(_mensaje_taller(e)) from e
-    df = _df_desde_valores(respuesta.get("values", []), COLUMNAS_TALLER)
+    valores = respuesta.get("values", [])
+    if valores and valores[0]:
+        valores = [_canonizar_encabezados_taller(valores[0])] + valores[1:]
+    df = _df_desde_valores(valores, COLUMNAS_TALLER)
     df["FilaSheet"] = range(2, len(df) + 2)   # fila real = índice + 2 (encabezado + base 1)
     return {"df": df, "hora": ahora_rd()}
 
@@ -1412,7 +1443,7 @@ def _taller_en_vivo():
     ss = get_spreadsheet_taller()
     respuesta, nombre_ws = _leer_pestana_taller(ss)
     valores = respuesta.get("values", [])
-    headers = valores[0] if valores else []
+    headers = _canonizar_encabezados_taller(valores[0]) if valores else []
     pos = {c: _columna_indice(headers, c) for c in COLUMNAS_TALLER}
     faltan = [c for c, p in pos.items() if p is None]
     if faltan:

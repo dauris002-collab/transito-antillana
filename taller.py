@@ -373,6 +373,30 @@ def _encabezado(hora) -> None:
                 unsafe_allow_html=True)
 
 
+def _diagnostico(crudo: pd.DataFrame) -> None:
+    """Qué leyó la app del Sheet: cuántas celdas con dato hay por columna reconocida y
+    qué encabezados no reconoció. Solo lo ven admin y Repuesto y Taller; sirve para
+    separar 'el Sheet no tiene el dato' de 'la app no lo está leyendo'."""
+    reconocidas = [COL_T_EMPRESA, COL_T_PROVEEDOR, COL_T_PRIORIDAD, COL_T_CLIENTE,
+                   COL_T_SOLICITUD, "DÍAS SIN PAGAR", COL_T_CORTE, COL_T_USD, COL_T_DOP]
+    with st.expander("Diagnóstico de lectura"):
+        filas = []
+        for c in reconocidas:
+            n = 0 if c not in crudo.columns else int(sum(1 for v in crudo[c] if _texto(v) != ""))
+            filas.append({"Columna que usa la app": c, "Celdas con dato": n})
+        st.dataframe(pd.DataFrame(filas), hide_index=True)
+        otras = [c for c in crudo.columns if c not in reconocidas and c != "FilaSheet"]
+        st.caption("Encabezados del Sheet que la app no usa (se ignoran): " + (", ".join(map(str, otras)) or "ninguno"))
+        con_pago = crudo[[_texto(v) != "" for v in crudo[COL_T_CORTE]]] if COL_T_CORTE in crudo.columns else crudo.iloc[0:0]
+        if con_pago.empty:
+            st.caption("No hay ninguna celda con dato en la columna de fecha de pago (FECHA DE PAGO / FECHA DE CORTE).")
+        else:
+            st.caption("Valores crudos leídos en fecha de pago (fila del Sheet → valor):")
+            for _, r in con_pago.head(10).iterrows():
+                v = _plano(r[COL_T_CORTE])
+                st.write(f"Fila {int(r['FilaSheet'])} → {v!r} → " + (str(_fecha_celda(v)) if _fecha_celda(v) else "no se entiende como fecha"))
+
+
 def panel_taller(puede_escribir: bool, selector_origen):
     """Vista de Taller dentro de Estatus de Pagos. selector_origen() dibuja el filtro
     'Origen' (lo provee pagos.py) en la primera columna de la fila de filtros."""
@@ -437,5 +461,6 @@ def panel_taller(puede_escribir: bool, selector_origen):
             if len(avisos) > 50:
                 st.write(f"… y {len(avisos) - 50} más.")
     if puede_escribir:
+        _diagnostico(datos["df"])
         st.divider()
         _gestion(datos["df"], df)

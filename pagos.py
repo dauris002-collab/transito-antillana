@@ -29,7 +29,7 @@ from sheets_io import (
     COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA, COL_PAGO_LLEGADA, COL_PAGOREAL_DOP,
     COL_PAGOREAL_USD, COL_PRIORIDAD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO,
     ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE, MESES_ES_CORTO, MONEDA_CONCEPTO,
-    PRIORIDADES_PAGO, NOMBRE_TALLER,
+    PRIORIDADES_PAGO, NOMBRE_TALLER, invalidar_taller,
     _norm, a_numero, aplicar_selectores_pagos, fecha_llegada_fila, fijar_prioridad_pago,
     formato_eta,
     guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago,
@@ -650,9 +650,28 @@ def _plan_captura(enriquecido: pd.DataFrame):
             st.info("El plan está vacío: apaga la vista de captura y agrega expedientes.")
 
 
+_ORIGENES = ["Embarques", NOMBRE_TALLER]
+
+
+def _origen_actual() -> str:
+    """Origen elegido. 'pago_origen' es el widget; Streamlit lo borra cuando una corrida
+    termina en st.rerun() antes de dibujarlo (botones ↻ Actualizar), por eso se guarda
+    también en 'pago_origen_ult', que no es un widget y sobrevive."""
+    return st.session_state.get("pago_origen") or st.session_state.get("pago_origen_ult") or _ORIGENES[0]
+
+
+def _al_cambiar_origen():
+    """Elegir Repuesto y Taller en el filtro vuelve a leer su Sheet (sin esperar la caché)."""
+    if st.session_state.get("pago_origen") == NOMBRE_TALLER:
+        invalidar_taller()
+
+
 def _selector_origen():
     """Filtro 'Origen' (Embarques / Repuesto y Taller). Solo existe si Taller está configurado."""
-    st.selectbox("Origen", ["Embarques", NOMBRE_TALLER], key="pago_origen")
+    ult = st.session_state.get("pago_origen_ult")
+    st.selectbox("Origen", _ORIGENES, index=_ORIGENES.index(ult) if ult in _ORIGENES else 0,
+                 key="pago_origen", on_change=_al_cambiar_origen)
+    st.session_state["pago_origen_ult"] = st.session_state["pago_origen"]
 
 
 def _mostrar_taller(escribe: bool) -> bool:
@@ -1121,7 +1140,7 @@ def _encabezado_pagos(sello_info: dict):
 def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
     """taller_escribe: None = Taller no disponible (sin filtro Origen); True/False =
     disponible, y si el rol puede escribir en él."""
-    if taller_escribe is not None and st.session_state.get("pago_origen") == NOMBRE_TALLER:
+    if taller_escribe is not None and _origen_actual() == NOMBRE_TALLER:
         if _mostrar_taller(bool(taller_escribe)):
             return
     activos = datos.get("activos", pd.DataFrame())

@@ -300,7 +300,7 @@ _CSS = (
     " border-top:1px solid #F3F4F6; white-space:nowrap; }"
     ".tl-tabla tbody tr:nth-child(even) { background:#F9FAFB; }"
     ".tl-tabla td.d { font-weight:800; } .tl-tabla td.v { color:#9CA3AF; }"
-    ".tl-tabla td.rojo { font-weight:800; color:#B91C1C; background:#FEE2E2; }"
+    ".tl-tabla td.rojo { font-weight:800; color:#B91C1C; }"
     ".tl-card { border:1px solid #E5E7EB; border-radius:12px; padding:16px 20px; margin-bottom:14px;"
     " background:#fff; box-shadow:0 1px 4px rgba(17,24,39,0.06); }"
     ".tl-cabeza { display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:8px; }"

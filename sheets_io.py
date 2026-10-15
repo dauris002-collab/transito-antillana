@@ -1157,6 +1157,11 @@ def invalidar_caches():
     _cargar_taller_remoto.clear()
 
 
+def invalidar_taller():
+    """Solo la lectura de Repuesto y Taller: la siguiente vista del Sheet va a Google."""
+    _cargar_taller_remoto.clear()
+
+
 # --- Taller (Sheet aparte) --------------------------------------------------
 # Sheet independiente del principal, con su propio secret TALLER_SHEET_ID. Se lee
 # con su propia llamada y su propia caché a propósito: un fallo de Taller (permisos,

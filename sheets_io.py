@@ -1321,6 +1321,64 @@ def cargar_taller() -> dict:
 
 
 # --- Escrituras -------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# HISTÓRICO SIGA (solo lectura) -- pestaña SIGA_Tiempos de un Sheet APARTE
+# ---------------------------------------------------------------------------
+# Los datos de las liquidaciones SIGA no viven en el repo (es público): están en un Sheet
+# privado compartido con la misma cuenta de servicio de la app, identificado por el secret
+# SIGA_SHEET_ID. Sin ese secret, la vista "Tiempos SIGA" de Analítica simplemente no aparece.
+# Una fila por declaración, SIN montos ni números de declaración ni de BL.
+PESTANA_SIGA = "SIGA_Tiempos"
+COLUMNAS_SIGA = ["Empresa", "Anio", "Mes", "Dia", "Puerto", "Sector", "Dias", "Origen", "Agencia"]
+MAX_FILAS_SIGA = 20000
+TTL_SIGA = 3600     # el histórico cambia una vez al mes como mucho
+
+
+def siga_configurado() -> bool:
+    """True si existe el secret SIGA_SHEET_ID."""
+    try:
+        return bool(str(st.secrets.get("SIGA_SHEET_ID", "") or "").strip())
+    except Exception:
+        return False
+
+
+@st.cache_resource
+def get_spreadsheet_siga():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    creds = Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"], scopes=scopes
+    )
+    client = gspread.authorize(creds)
+    return client.open_by_key(str(st.secrets["SIGA_SHEET_ID"]).strip())
+
+
+@st.cache_data(ttl=TTL_SIGA, show_spinner=False)
+def _cargar_siga_remoto() -> list:
+    """UNA llamada a la API. No atrapa errores: st.cache_data solo guarda retornos exitosos.
+    Valores SIN formato: los números llegan como números, sin depender de la región del Sheet."""
+    ss = get_spreadsheet_siga()
+    rango = f"'{PESTANA_SIGA}'!A1:J{MAX_FILAS_SIGA}"
+    params = {"valueRenderOption": "UNFORMATTED_VALUE"}
+    return _con_reintento(lambda: ss.values_get(rango, params=params)).get("values", [])
+
+
+def cargar_siga() -> dict:
+    """Lectura cacheada del histórico SIGA. El fracaso no se cachea ni sube como excepción:
+    vuelve en "error" para que solo esa vista lo muestre."""
+    try:
+        return {"valores": _cargar_siga_remoto(), "error": None}
+    except gspread.exceptions.SpreadsheetNotFound:
+        msg = ("No se encontró el Sheet del histórico SIGA, o no está compartido con la cuenta de servicio "
+               "de la app. Verifica SIGA_SHEET_ID y que el Sheet esté compartido (basta como Lector).")
+    except gspread.exceptions.APIError as e:
+        codigo = _codigo_api(e)
+        msg = (f"Google respondió {codigo} al leer la pestaña '{PESTANA_SIGA}'. "
+               + ("¿Existe esa pestaña con ese nombre exacto?" if codigo == 400 else "Reintenta en un minuto."))
+    except Exception as e:  # noqa: BLE001 - la UI muestra el mensaje; nunca un traceback
+        msg = f"No se pudo leer el histórico SIGA ({type(e).__name__})."
+    return {"valores": [], "error": msg}
+
+
 def _con_manejo_apierror(func):
     """Convierte un APIError de gspread (cuota, permisos) en (False, mensaje)
     legible en vez de tumbar la página con un traceback."""

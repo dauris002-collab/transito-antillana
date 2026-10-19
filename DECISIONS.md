@@ -139,5 +139,13 @@ Borrador generado el 2026-10-01.
 - **Desvío de #8:** Taller usa columnas USD y DOP separadas en vez de una moneda por concepto.
 - **Reconsiderar si:** Finanzas exige confirmar el pago, o Taller pasa de ~500 renglones (la plantilla trae 499 preparados).
 
+## 23. Analítica: vista «Tiempos SIGA 2015–2026» con datos en un Sheet aparte
+- **Decisión:** Analítica gana un selector (Operación actual / Tiempos SIGA). La segunda vista es un tablero HTML en un iframe (`assets/tablero_tiempos.html`) que filtra por empresa, puerto y año en el navegador, sin volver al servidor. Los datos (una fila por declaración SIGA «Despacho Aprobado», sin montos ni números de declaración o BL) viven en la pestaña `SIGA_Tiempos` de un Sheet privado (secret `SIGA_SHEET_ID`, misma cuenta de servicio, basta Lector). Sin el secret la vista no aparece y todo queda como antes.
+- **Por qué:** el repo es público y no debe llevar datos del negocio; un iframe del lado del cliente evita que cada clic recalcule en el servidor; el Sheet aparte no toca la lectura de Tránsito ni Pagos.
+- **Qué mide y qué NO:** días entre Fecha de Llegada y Fecha de Declaración de la liquidación. NO es la estancia en puerto. La estancia real (llegada a puerto → almacén) sale de los embarques archivados en la app (`_ciclo_real`) y se muestra aparte en el mismo tablero, con su n.
+- **Seguridad:** el iframe comparte origen con la app; por eso ningún texto del Sheet entra al HTML: empresa, puerto, sector, origen y agencia se convierten a índices de listas fijas (`analitica_siga.py`), y lo desconocido cae en «Otros» o «Sin dato».
+- **Costo aceptado:** el Sheet se alimenta a mano (se pega el CSV nuevo cuando se carguen más liquidaciones); la caché es de 1 h; el campo Agencia viene vacío en cerca de la mitad de las declaraciones de 2025–2026 y aparece como «Sin dato» (pendiente de aclarar si es de SIGA o de la extracción).
+- **Reconsiderar si:** se quiere actualizar el Sheet automáticamente, o la estancia real llega a tener datos suficientes para sustituir la medida llegada → declaración.
+
 ## Limitación, no decisión
 - **Repo público:** quedó público por un problema de permisos con repos privados que no se resolvió [CHAT]. No contiene credenciales. Es una limitación, no una elección.

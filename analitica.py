@@ -60,8 +60,9 @@ from sheets_io import (
     CACHE_TTL, COL_BL, COL_DESC, COL_ETA, COL_FECHA_ALMACEN, COL_FECHA_DECLARACION,
     COL_FECHA_LLEGADA_PUERTO, COL_FECHA_SALIDA, COL_PAIS, COL_VIA,
     MESES_ES_CORTO, NO_ESPECIFICADO, VIA_AEREA, VIA_MARITIMA,
-    hoy_rd, parsear_fecha, unificar_paises,
+    hoy_rd, parsear_fecha, siga_configurado, unificar_paises,
 )
+from analitica_siga import panel_tiempos_siga
 from logica import ETAPAS_PUERTO, es_aereo
 from ui_componentes import _enriquecer_cacheado, esc
 
@@ -970,8 +971,24 @@ def _chips_filtros(anios_sel: list, paises_menu: list, cats_menu: list,
             + "".join(chips) + "</div>")
 
 
+VISTA_OPERACION = "Operación actual"
+VISTA_SIGA = "Tiempos SIGA 2015–2026"
+
+
 @st.fragment
 def panel_analitica(datos: dict):
+    """Punto de entrada de la sección Analítica. Con el secret SIGA_SHEET_ID ofrece dos vistas; sin él
+    queda solo la de siempre. El selector vive dentro del fragmento: cambiar de vista no relanza la app."""
+    if siga_configurado():
+        vista = st.segmented_control("Vista", [VISTA_OPERACION, VISTA_SIGA], default=VISTA_OPERACION,
+                                     key="an_vista", label_visibility="collapsed")
+        if vista == VISTA_SIGA:
+            panel_tiempos_siga(_ciclo_real(_ciclo_historico(datos.get("historico"))))
+            return
+    _panel_operacion(datos)
+
+
+def _panel_operacion(datos: dict):
     st.subheader("📊 Analítica de importaciones")
     st.caption("Se arma sola con lo que ya está en tránsito y en el histórico. Los filtros de arriba y el clic "
               "sobre las barras de País o las porciones de Categoría actualizan todo el panel.")

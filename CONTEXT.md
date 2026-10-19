@@ -16,7 +16,7 @@ Despliegue: Streamlit Community Cloud, gratis, rama `main` [D]. No hay README.
 sheets_io.py     constantes de columnas/pestañas, acceso a Sheets, caché, reintentos, bitácora. No importa módulos propios.
   ← logica.py        reglas de negocio puras, sin Streamlit.
   ← ui_componentes.py  HTML/CSS, dashboard, ficha del embarque.
-  ← vistas_admin.py · pagos.py · analitica.py
+  ← vistas_admin.py · pagos.py · analitica.py (+ analitica_siga.py, que analitica.py importa)
   ← app.py           login, sesión, navegación.
 ```
 
@@ -49,7 +49,7 @@ Columnas: la fuente de verdad son las constantes de `sheets_io.py` (`REQUIRED_CO
 ## Acceso [L]
 
 - Login por PIN de 4 dígitos. Roles `admin` (8 secciones) y `viewer` (Dashboard, Analítica, Histórico, Estatus de Pago).
-- Secrets esperados (solo nombres): `gcp_service_account`, `SHEET_ID`, tabla `pins` (por PIN: nombre y rol; respaldo: `ADMIN_PIN` / `VIEWER_PIN`), `sla` (opcional: `llegada_a_puerto`, `recepcion_y_declaracion`, `retraso`).
+- Secrets esperados (solo nombres): `gcp_service_account`, `SHEET_ID`, `SIGA_SHEET_ID` (opcional: activa la vista «Tiempos SIGA» de Analítica, ver DECISIONS #23), tabla `pins` (por PIN: nombre y rol; respaldo: `ADMIN_PIN` / `VIEWER_PIN`), `sla` (opcional: `llegada_a_puerto`, `recepcion_y_declaracion`, `retraso`).
 - Sesión: token en la URL cuyo contenido vive en el servidor, atado a una huella del navegador. Vida 120 min (admin) / 720 min (viewer), con ventana deslizante.
 - Sin bloqueo por intentos fallidos, solo 1 s de espera por intento (ver DECISIONS.md).
 

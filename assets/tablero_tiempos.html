@@ -1,0 +1,149 @@
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tiempos de llegada a declaración</title>
+<style>:root{color-scheme:light;--ink:#1c2430;--mut:#667385;--line:#e4e7ec;--card:#fff;--g:#eef0f3}
+*{box-sizing:border-box}html,body{margin:0;overflow-x:hidden}
+body{font:13px/1.35 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--ink);background:var(--bg)}
+#stage{width:1600px;height:900px;position:absolute;left:0;top:0;transform-origin:0 0;background:var(--bg)}
+svg{display:block;width:100%;height:100%;overflow:visible}svg text{font-family:inherit;fill:var(--mut);font-size:11px}svg .v{fill:var(--ink);font-weight:600}
+[data-f],[data-s]{cursor:pointer}[data-f]:hover{opacity:.82}
+.c{background:var(--card);border:1px solid var(--line);border-radius:var(--rad,12px);padding:10px 14px;display:flex;flex-direction:column;min-height:0;min-width:0}
+.c h2{margin:0;font-size:13.5px;display:flex;align-items:center;gap:8px}.c .s{color:var(--mut);font-size:11.5px;margin:1px 0 4px}.c .b{flex:1;min-height:0;position:relative}
+.ic{display:inline-flex;width:22px;height:22px;border-radius:50%;background:var(--acc2,#1d3a5f);color:#fff;font-size:11px;align-items:center;justify-content:center;flex:none}
+.k{background:var(--card);border:1px solid var(--line);border-radius:var(--rad,12px);padding:8px 14px;display:flex;flex-direction:column;justify-content:center;text-align:center}.k b{font-size:23px;line-height:1.1}.k span{color:var(--mut);font-size:11.5px;margin-top:2px}.k em{font-style:normal;color:var(--mut);font-size:11px}
+.k.r2{flex-direction:row;gap:12px;align-items:center;justify-content:center;text-align:left}.k.r2 div b,.k.r2 div span,.k.r2 div em{display:block}
+table{border-collapse:collapse;width:100%}th,td{padding:5px 7px;border-bottom:1px solid var(--line);text-align:left;font-size:12px}th{color:var(--mut);font-weight:600}td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.row{display:flex;gap:4px;align-items:center;flex-wrap:nowrap}.row>b{font-size:10px;font-weight:600;margin-right:3px;text-transform:uppercase;letter-spacing:.05em;color:var(--chl,#9fb2c6)}
+.ch{padding:3px 7px;border-radius:999px;background:var(--chb,#24476b);color:var(--chc,#dbe6f1);cursor:pointer;font-size:11.5px;white-space:nowrap}.ch:hover{filter:brightness(1.15)}.ch.on{background:var(--cha,#c9981a);color:var(--chac,#10263c);font-weight:700}.ch.clr{background:transparent;border:1px solid currentColor}
+.tip{position:absolute;pointer-events:none;background:#10263c;color:#fff;border-radius:6px;padding:4px 8px;font-size:11.5px;z-index:9;display:none;white-space:nowrap}
+.rk{display:flex;flex-direction:column;gap:3px}.rk div.r{display:grid;grid-template-columns:var(--rkl,128px) 1fr 62px 40px;gap:8px;align-items:center;height:26px}.rk .l{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.rk .t{height:10px;background:var(--g);border-radius:5px;position:relative}.rk .t i{position:absolute;left:0;top:0;bottom:0;border-radius:5px;background:var(--rkc,#9aa4b1)}
+.rk .m{font-weight:700;text-align:center;border-radius:6px;padding:2px 0;font-variant-numeric:tabular-nums}.rk .n{color:var(--mut);font-size:11px;text-align:right}
+.nt{background:#fdf6e3;border:1px solid #ecd9a0;color:#6b5207;border-radius:8px;padding:6px 10px;font-size:11.5px;margin-top:6px}
+
+:root{--bg:#eef0f6;--rad:14px;--cor:#ef476f;--teal:#1b98a6;--dk:#2b2d42;--chb:#3d4062;--chc:#e6e8f5;--chl:#a9adc9;--cha:#ef476f;--chac:#fff;--acc2:#2b2d42;--line:#e3e5ee}
+#mn{position:absolute;inset:0;padding:14px 18px;display:flex;flex-direction:column;gap:10px}
+.bn{background:var(--dk);border-radius:var(--rad);padding:12px 20px;display:flex;align-items:center;gap:24px;height:92px;flex:none;color:#fff}.bn h1{margin:0;font-size:23px;color:#fff;white-space:nowrap}.bn p{margin:3px 0 0;color:#b9bcd6;font-size:12px;max-width:470px;line-height:1.3}
+.bn .w{margin-left:auto;display:flex;flex-direction:column;gap:6px;align-items:flex-end}.row2{display:flex;gap:12px}.bn .ch.clr{color:#b9bcd6}
+.kr{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;height:84px;flex:none}
+.kb{background:#fff;border-radius:var(--rad);border:1px solid var(--line);padding:10px 16px;display:flex;align-items:center;gap:14px;box-shadow:0 2px 6px rgba(43,45,66,.06)}.kb .bg{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:20px;flex:none}.kb b{font-size:28px;line-height:1;display:block}.kb span{color:var(--mut);font-size:11.5px;display:block;margin-top:2px}.kb em{font-style:normal;color:var(--mut);font-size:11px}
+.gr{flex:1;min-height:0;display:grid;grid-template-columns:1.05fr 1.2fr 1fr;gap:10px}.col{display:grid;gap:10px;min-height:0}
+.c{box-shadow:0 2px 6px rgba(43,45,66,.06)}.c h2{font-size:14px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px}
+</style></head><body><div id="stage"><main id="mn">
+<div class="bn"><div><h1>Tiempos de llegada a declaración</h1><p id="sub">Días entre la fecha de llegada y la fecha de declaración (liquidaciones SIGA). No equivale a la estancia en puerto: esa se ve abajo a la derecha, con los embarques archivados en la app.</p></div><div class="w"><div class="row2" id="r1"></div><div class="row2" id="r2"></div></div></div>
+<div class="kr" id="k"></div>
+<div class="gr">
+ <div class="col" style="grid-template-rows:1.25fr 1fr"><div class="c"><h2><span class="ic" style="background:#ef476f">▲</span>Orígenes: dónde tarda más y dónde menos</h2><div class="s">Promedio de días (tope 30) · n = embarques, mín. 12.</div><div class="b rk" id="c1"></div></div><div class="c"><h2><span class="ic" style="background:#1b98a6">☰</span>Quién declara</h2><div class="s">Promedio de días según el campo Agencia de la declaración. Rojo: el más lento. Verde: el más rápido.</div><div class="b rk" id="c2"></div></div></div>
+ <div class="col" style="grid-template-rows:1fr 1.15fr"><div class="c"><h2><span class="ic">◔</span>Rango de tiempos por puerto</h2><div class="s">Punto: mediana. Caja: de P25 a P75. Línea: de P10 a P90.</div><div class="b" id="c3"></div></div><div class="c"><h2><span class="ic">▦</span>Rango de tiempos por sector</h2><div class="s">Mismo código. Sectores con al menos 12 embarques.</div><div class="b" id="c4"></div></div></div>
+ <div class="col" style="grid-template-rows:1fr 1fr 1.05fr"><div class="c"><h2><span class="ic">◷</span>Según el día que llega</h2><div class="s">Promedio de días según el día de la semana en que llega.</div><div class="b" id="c5"></div></div><div class="c"><h2><span class="ic" style="background:#ef476f">!</span>Tardan más de 10 días</h2><div class="s">% de los embarques de cada año.</div><div class="b" id="c6"></div></div><div class="c"><h2><span class="ic" style="background:#1b98a6">⚓</span>Tiempo real hasta almacén</h2><div class="s">Embarques archivados en la app: llegada a puerto → almacén (fecha real).</div><div class="b" id="c7" style="overflow:auto"></div></div></div>
+</div></main><div class="tip" id="tip"></div></div>
+<script>const D=/*DATA*/;
+const MES=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'],DS=['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+const YRS=[];for(let y=2015;y<=2026;y++)YRS.push(y);
+const PC=['#2b5fa8','#b8741a','#2e9a86','#8b5fb4','#9aa4b1'],SLATE='#9aa4b1',$=id=>document.getElementById(id);
+const OC=['#2b5fa8','#b8741a','#2e9a86','#8b5fb4'];/* EE.UU.,China,México,Brasil → orden fijo por entidad */
+const OCOL={0:'#2b5fa8',2:'#b8741a',3:'#2e9a86',1:'#8b5fb4'};
+const SCOL={0:'#2b5fa8',1:'#b8741a',2:'#2e9a86',4:'#8b5fb4',3:SLATE,5:SLATE,8:SLATE,6:SLATE,7:SLATE};
+const T2S={0:0,1:0,15:0,16:0,23:0,2:1,3:1,4:1,5:1,17:1,6:2,7:2,8:2,9:2,10:2,11:2,12:2,13:2,14:2,18:3,19:4,20:4,21:4,22:4,26:5,27:5,28:5,25:6,30:6,29:8};
+const N=v=>Math.round(v).toLocaleString('en-US'),P1=v=>(Math.round(v*10)/10).toLocaleString('en-US',{minimumFractionDigits:1}),fd=s=>s.split('-').reverse().join('/');
+const med=a=>{if(!a.length)return null;a=[...a].sort((x,y)=>x-y);const n=a.length;return n%2?a[(n-1)/2]:(a[n/2-1]+a[n/2])/2},pc=(a,q)=>{if(!a.length)return null;a=[...a].sort((x,y)=>x-y);return a[Math.min(a.length-1,Math.floor(q*a.length))]};
+const R=D.R.map(r=>{const dt=new Date(r[1]+'T12:00:00');return{e:r[0],d:r[1],y:+r[1].slice(0,4),m:+r[1].slice(5,7),dd:+r[1].slice(8,10),p:r[2],s:r[3],t:Math.max(0,r[4]),ant:r[4]<0,o:r[5],a:r[6],nl:r[7],wd:(dt.getDay()+6)%7,doy:Math.round((dt-new Date(dt.getFullYear(),0,1,12))/864e5)}});
+const U=D.U.map(u=>({r:R[u[0]],t:u[1],q:u[2],s:T2S[u[1]]??8}));
+let F={emp:0,year:'',port:-1,sec:-1,mon:0,orig:-1,metric:'e'},DEF=null,PG=0;
+function ok(r,ig=''){return(ig.includes('emp')||F.emp<0||r.e===F.emp)&&(ig.includes('year')||!F.year||r.y===+F.year)&&(ig.includes('port')||F.port<0||r.p===F.port)&&(ig.includes('sec')||F.sec<0||r.s===F.sec)&&(ig.includes('mon')||!F.mon||r.m===F.mon)&&(ig.includes('orig')||F.orig<0||r.o===F.orig)}
+const rows=ig=>R.filter(r=>ok(r,ig||'')),urows=ig=>U.filter(u=>ok(u.r,ig||''));
+const cnt=(a,f)=>{const o={};a.forEach(x=>{const k=f(x);o[k]=(o[k]||0)+1});return o};
+/* ---------- svg ---------- */
+function put(id,fn){const el=$(id);if(!el)return;const w=el.clientWidth||400,h=el.clientHeight||200;el.innerHTML='<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none">'+fn(w,h)+'</svg>'}
+const tipAttr=t=>' data-t="'+String(t).replace(/"/g,'&quot;')+'"';
+function mix(a,b,t){const h=x=>[1,3,5].map(i=>parseInt(x.slice(i,i+2),16)),A=h(a),B=h(b);return'rgb('+A.map((v,i)=>Math.round(v+(B[i]-v)*t)).join(',')+')'}
+function vbars(items,w,h,o={}){const L=o.left??30,B=o.bottom??18,T=o.top??12,mx=Math.max(1,...items.map(i=>i.v),...(o.line||[]).map(v=>v||0)),bw=(w-L)/items.length;let s='';
+ for(let k=0;k<=3;k++){const y=T+(h-B-T)*(1-k/3);s+='<line x1="'+L+'" x2="'+w+'" y1="'+y+'" y2="'+y+'" stroke="#eceff3"/><text x="'+(L-6)+'" y="'+(y+3)+'" text-anchor="end">'+(o.fmt?o.fmt(mx*k/3):N(mx*k/3))+'</text>'}
+ items.forEach((i,k)=>{const bh=(h-B-T)*i.v/mx,x=L+k*bw+bw*(o.gap??.14);s+='<rect x="'+x+'" y="'+(h-B-bh)+'" width="'+bw*(1-2*(o.gap??.14))+'" height="'+Math.max(bh,i.v?1:0)+'" rx="'+(o.rx??2)+'" fill="'+(i.c||o.c||'#1d3a5f')+'"'+(i.f?' data-f="'+i.f+'"':'')+tipAttr(i.t||i.l+': '+N(i.v))+'/>';
+  if(o.vals&&i.v)s+='<text class="v" x="'+(x+bw*(1-2*(o.gap??.14))/2)+'" y="'+(h-B-bh-4)+'" text-anchor="middle">'+(o.fmt?o.fmt(i.v):N(i.v))+'</text>';
+  if(!o.every||k%o.every===0)s+='<text x="'+(x+bw*(1-2*(o.gap??.14))/2)+'" y="'+(h-4)+'" text-anchor="middle">'+i.l+'</text>'});
+ if(o.line){let d='';o.line.forEach((v,k)=>{if(v==null)return;d+=(d?'L':'M')+(L+k*bw+bw/2)+','+(h-B-(h-B-T)*v/mx)});s+='<path d="'+d+'" fill="none" stroke="'+(o.lc||'#c9981a')+'" stroke-width="2.4" stroke-linejoin="round"/>'}return s}
+function hbars(items,w,h,o={}){const L=o.left??120,gap=o.gap??6,bh=Math.min(o.bh||26,(h-gap*(items.length-1))/Math.max(items.length,1)),mx=Math.max(1,...items.map(i=>i.v)),Rr=o.right??54;let s='';
+ items.forEach((i,k)=>{const y=k*(bh+gap),bw=Math.max(i.v?2:0,(w-L-Rr)*i.v/mx),dim=o.sel!=null&&o.sel>=0&&i.k!==o.sel;
+  s+='<text x="'+(L-8)+'" y="'+(y+bh/2+4)+'" text-anchor="end" style="fill:'+(dim?'#9aa4b1':'#1c2430')+'">'+i.l+'</text><rect x="'+L+'" y="'+y+'" width="'+bw+'" height="'+bh+'" rx="3" fill="'+(i.c||o.c||'#1d3a5f')+'" opacity="'+(dim?.3:1)+'"'+(o.f?' data-f="'+o.f+':'+i.k+'"':'')+tipAttr(i.t||i.l+': '+N(i.v))+'/><text class="v" x="'+(L+bw+6)+'" y="'+(y+bh/2+4)+'">'+(o.fmt?o.fmt(i.v,i):N(i.v))+'</text>'});return s}
+function line(series,labels,w,h,o={}){const L=o.left??30,B=18,T=o.top??12,all=series.flatMap(s=>s.pts).filter(v=>v!=null),mx=Math.max(o.max||0,...all,1),mn=o.min??0,n=labels.length,sx=k=>L+(w-L-10)*(n>1?k/(n-1):.5),sy=v=>T+(h-B-T)*(1-(v-mn)/(mx-mn||1));let s='';
+ for(let k=0;k<=3;k++){const v=mn+(mx-mn)*k/3,y=sy(v);s+='<line x1="'+L+'" x2="'+w+'" y1="'+y+'" y2="'+y+'" stroke="#eceff3"/><text x="'+(L-6)+'" y="'+(y+3)+'" text-anchor="end">'+(o.fmt?o.fmt(v):P1(v))+'</text>'}
+ labels.forEach((l,k)=>{if(!o.every||k%o.every===0)s+='<text x="'+sx(k)+'" y="'+(h-4)+'" text-anchor="middle">'+l+'</text>'});
+ series.forEach(se=>{let d='',a='';se.pts.forEach((v,k)=>{if(v==null)return;d+=(d?'L':'M')+sx(k)+','+sy(v)});
+  if(se.area&&d)s+='<path d="'+d+'L'+sx(n-1)+','+sy(mn)+'L'+sx(0)+','+sy(mn)+'Z" fill="'+se.c+'" opacity=".12"/>';
+  s+='<path d="'+d+'" fill="none" stroke="'+se.c+'" stroke-width="'+(se.w||2.4)+'" '+(se.dash?'stroke-dasharray="5 4"':'')+' stroke-linejoin="round"/>';
+  if(!se.nodots)se.pts.forEach((v,k)=>{if(v!=null)s+='<circle cx="'+sx(k)+'" cy="'+sy(v)+'" r="'+(se.r||3.2)+'" fill="#fff" stroke="'+se.c+'" stroke-width="2"'+tipAttr(se.n+' · '+labels[k]+': '+(o.fmt?o.fmt(v):P1(v)))+'/>'})});return s}
+function heat(rl,cl,val,w,h,o={}){const L=o.left??96,T=o.top??22,cw=(w-L)/cl.length,rh=Math.min(o.rh??30,(h-T)/rl.length),mx=Math.max(1e-9,...val.flat().filter(v=>v!=null));let s='';
+ cl.forEach((c,j)=>s+='<text x="'+(L+j*cw+cw/2)+'" y="'+(T-7)+'" text-anchor="middle">'+c+'</text>');
+ rl.forEach((r,i)=>{s+='<text x="'+(L-8)+'" y="'+(T+i*rh+rh/2+4)+'" text-anchor="end" style="fill:#1c2430">'+r+'</text>';
+  cl.forEach((c,j)=>{const v=val[i][j],t=v==null?0:Math.min(1,v/(o.max||mx)),col=v==null?'#f4f5f7':mix(o.lo||'#eef2f7',o.hi||'#10263c',Math.pow(t,.75));
+   s+='<rect x="'+(L+j*cw+1)+'" y="'+(T+i*rh+1)+'" width="'+(cw-2)+'" height="'+(rh-2)+'" rx="'+(o.rx??3)+'" fill="'+col+'"'+tipAttr(r+' · '+c+': '+(v==null?'sin datos':(o.fmt?o.fmt(v,i,j):N(v))))+(o.f?' data-f="'+o.f(i,j)+'"':'')+'/>';
+   if(v!=null&&o.nums!==false)s+='<text x="'+(L+j*cw+cw/2)+'" y="'+(T+i*rh+rh/2+4)+'" text-anchor="middle" style="fill:'+(t>.5?'#fff':'#1c2430')+';font-size:'+(o.fs||10.5)+'px">'+(o.fmt?o.fmt(v,i,j):N(v))+'</text>'})});return s}
+function donut(items,w,h,ctr,sub,o={}){const tot=items.reduce((a,b)=>a+b.v,0)||1,R0=Math.min(h/2-4,w*(o.rw||.33)),cx=o.cx??(R0+8),cy=h/2,ri=R0*(o.ri||.62);let a0=-Math.PI/2,s='';const pt=(r,a)=>[cx+r*Math.cos(a),cy+r*Math.sin(a)];
+ items.forEach(i=>{const a1=a0+Math.PI*2*Math.min(.9999,i.v/tot);if(i.v>0){const big=a1-a0>Math.PI?1:0,A=pt(R0,a0),B=pt(R0,a1),Cc=pt(ri,a1),Dd=pt(ri,a0),dim=o.sel>=0&&i.k!==o.sel;s+='<path d="M'+A+'A'+R0+','+R0+' 0 '+big+' 1 '+B+'L'+Cc+'A'+ri+','+ri+' 0 '+big+' 0 '+Dd+'Z" fill="'+i.c+'" opacity="'+(dim?.3:1)+'" stroke="#fff" stroke-width="2"'+(o.f?' data-f="'+o.f+':'+i.k+'"':'')+tipAttr(i.l+': '+N(i.v)+' ('+Math.round(i.v/tot*100)+'%)')+'/>'}a0+=Math.PI*2*i.v/tot});
+ s+='<text x="'+cx+'" y="'+(cy+2)+'" text-anchor="middle" style="font-size:24px;font-weight:700;fill:#1c2430">'+ctr+'</text><text x="'+cx+'" y="'+(cy+19)+'" text-anchor="middle">'+sub+'</text>';
+ if(o.legend!==false){const lx=cx+R0+30,rh=Math.min(46,(h-10)/items.length);items.forEach((i,k)=>{const y=cy-items.length*rh/2+k*rh+rh/2,dim=o.sel>=0&&i.k!==o.sel;s+='<g'+(o.f?' data-f="'+o.f+':'+i.k+'"':'')+' opacity="'+(dim?.35:1)+'"><rect x="'+lx+'" y="'+(y-14)+'" width="12" height="12" rx="3" fill="'+i.c+'"/><text class="v" x="'+(lx+19)+'" y="'+(y-4)+'" style="font-size:12.5px">'+i.l+'</text><text x="'+(lx+19)+'" y="'+(y+12)+'" style="font-size:11.5px">'+N(i.v)+' · '+Math.round(i.v/tot*100)+'%</text></g>'})}return s}
+function stacked(cats,series,w,h,o={}){const L=o.left??34,B=18,T=o.top??28,tot=cats.map((c,i)=>series.reduce((a,s)=>a+s.vals[i],0)),mx=o.pct?1:Math.max(1,...tot),bw=(w-L)/cats.length;let s='';
+ series.forEach((se,q)=>s+='<rect x="'+(L+q*(o.lw||110))+'" y="2" width="9" height="9" fill="'+se.c+'"/><text x="'+(L+q*(o.lw||110)+13)+'" y="10">'+se.n+'</text>');
+ [0,.5,1].forEach(v=>{const y=T+(h-B-T)*(1-v);s+='<line x1="'+L+'" x2="'+w+'" y1="'+y+'" y2="'+y+'" stroke="#eceff3"/><text x="'+(L-6)+'" y="'+(y+3)+'" text-anchor="end">'+(o.pct?Math.round(v*100)+'%':N(mx*v))+'</text>'});
+ cats.forEach((c,i)=>{let acc=0;const tt=tot[i]||1;series.forEach(se=>{const v=se.vals[i],f=o.pct?v/tt:v/mx,bh=(h-B-T)*f;s+='<rect x="'+(L+i*bw+bw*.14)+'" y="'+(h-B-acc-bh)+'" width="'+bw*.72+'" height="'+Math.max(0,bh-(o.sep??1))+'" fill="'+se.c+'"'+(se.f?' data-f="'+se.f+'"':'')+tipAttr(c+' · '+se.n+': '+N(v)+(o.pct?' ('+Math.round(v/tt*100)+'%)':''))+'/>';if(o.lab&&bh>16)s+='<text x="'+(L+i*bw+bw/2)+'" y="'+(h-B-acc-bh/2+4)+'" text-anchor="middle" style="fill:#fff;font-size:10px">'+Math.round(o.pct?v/tt*100:v)+'</text>';acc+=bh});
+  s+='<text x="'+(L+i*bw+bw/2)+'" y="'+(h-4)+'" text-anchor="middle">'+c+'</text>';if(o.tot)s+='<text class="v" x="'+(L+i*bw+bw/2)+'" y="'+(h-B-acc-4)+'" text-anchor="middle">'+N(tot[i])+'</text>'});return s}
+function spark(vals,w,h,c,o={}){const mx=Math.max(1,...vals),n=vals.length,sx=k=>2+(w-6)*k/(n-1),sy=v=>h-3-(h-8)*v/mx;let d='';vals.forEach((v,k)=>d+=(k?'L':'M')+sx(k)+','+sy(v));
+ return'<svg viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" style="width:'+w+'px;height:'+h+'px"><path d="'+d+'L'+sx(n-1)+','+h+'L'+sx(0)+','+h+'Z" fill="'+c+'" opacity=".14"/><path d="'+d+'" fill="none" stroke="'+c+'" stroke-width="2" stroke-linejoin="round"/><circle cx="'+sx(n-1)+'" cy="'+sy(vals[n-1])+'" r="3" fill="'+c+'"/></svg>'}
+function rangebars(items,w,h,o={}){const L=o.left??110,Rr=14,T=22,mx=Math.max(1,...items.map(i=>i.p90)),gap=Math.min(46,(h-T)/Math.max(items.length,1)),sx=v=>L+(w-L-Rr)*v/mx;let s='';
+ const st=mx>20?5:mx>10?2:1;for(let v=0;v<=mx;v+=st)s+='<line x1="'+sx(v)+'" x2="'+sx(v)+'" y1="'+(T-6)+'" y2="'+(T+gap*items.length)+'" stroke="#eceff3"/><text x="'+sx(v)+'" y="'+(T-9)+'" text-anchor="middle">'+v+' d</text>';
+ items.forEach((i,k)=>{const y=T+k*gap+gap/2,c=i.c||'#1d3a5f';s+='<text x="'+(L-8)+'" y="'+(y+4)+'" text-anchor="end" style="fill:#1c2430">'+i.l+'</text><line x1="'+sx(i.p10)+'" x2="'+sx(i.p90)+'" y1="'+y+'" y2="'+y+'" stroke="'+c+'" stroke-width="2" opacity=".55"/><rect x="'+sx(i.p25)+'" y="'+(y-8)+'" width="'+Math.max(3,sx(i.p75)-sx(i.p25))+'" height="16" rx="3" fill="'+c+'" opacity=".35"'+tipAttr(i.l+' · n='+i.n+' · P10 '+i.p10+' · P25 '+i.p25+' · mediana '+i.p50+' · P75 '+i.p75+' · P90 '+i.p90+' d')+'/><circle cx="'+sx(i.p50)+'" cy="'+y+'" r="6" fill="'+c+'" stroke="#fff" stroke-width="2"/><text class="v" x="'+(sx(i.p90)+8)+'" y="'+(y+4)+'">'+i.p50+' d</text>'});return s}
+function squarify(items,x,y,w,h){const out=[],tot=items.reduce((a,b)=>a+b.v,0);if(!tot)return out;const sc=w*h/tot;let rest=items.filter(i=>i.v>0).sort((a,b)=>b.v-a.v);
+ while(rest.length){const side=Math.min(w,h);let row=[];const worst=r=>{const ar=r.map(i=>i.v*sc),s=ar.reduce((a,b)=>a+b,0),mx=Math.max(...ar),mn=Math.min(...ar);return Math.max(side*side*mx/(s*s),s*s/(side*side*mn))};
+  while(rest.length){const c=row.concat([rest[0]]);if(row.length&&worst(c)>worst(row))break;row=c;rest.shift()}
+  const s=row.reduce((a,b)=>a+b.v*sc,0);
+  if(w>=h){const rw=s/h;let yy=y;row.forEach(i=>{const hh=i.v*sc/rw;out.push({...i,x,y:yy,w:rw,h:hh});yy+=hh});x+=rw;w-=rw}
+  else{const rh=s/w;let xx=x;row.forEach(i=>{const ww=i.v*sc/rh;out.push({...i,x:xx,y,w:ww,h:rh});xx+=ww});y+=rh;h-=rh}}return out}
+function sankey(cols,links,w,h,o={}){/* cols:[[{k,l,c,v,f}]]; links:[{a:[col,k],b:[col,k],v,c}] */
+ const gap=o.gap??7,nw=o.nw??14,PL=o.pl??120,PR=o.pr??140,xs=cols.map((c,i)=>PL+(w-PL-PR-nw)*i/(cols.length-1));
+ const ky=Math.min(...cols.map(c=>(h-(c.length-1)*gap)/Math.max(1,c.reduce((a,b)=>a+b.v,0)))),pos={};
+ cols.forEach((c,ci)=>{let y=0;const tot=c.reduce((a,b)=>a+b.v*ky,0)+(c.length-1)*gap;y=(h-tot)/2;c.forEach(n=>{pos[ci+':'+n.k]={x:xs[ci],y,h:n.v*ky,oy:0,iy:0};y+=n.v*ky+gap})});
+ let s='';const ord=(l)=>{};
+ const ls=[...links].sort((p,q)=>{const pa=pos[p.a.join(':')],qa=pos[q.a.join(':')],pb=pos[p.b.join(':')],qb=pos[q.b.join(':')];return(pb.y-qb.y)||(pa.y-qa.y)});
+ ls.forEach(l=>{const A=pos[l.a.join(':')],B=pos[l.b.join(':')],th=l.v*ky,x0=A.x+nw,x1=B.x,y0=A.y+A.oy,y1=B.y+B.iy,xm=(x0+x1)/2;A.oy+=th;B.iy+=th;
+  s+='<path d="M'+x0+','+y0+'C'+xm+','+y0+' '+xm+','+y1+' '+x1+','+y1+'L'+x1+','+(y1+th)+'C'+xm+','+(y1+th)+' '+xm+','+(y0+th)+' '+x0+','+(y0+th)+'Z" fill="'+l.c+'" opacity="'+(l.dim?.12:.42)+'"'+tipAttr(l.t||'')+'/>'});
+ cols.forEach((c,ci)=>c.forEach(n=>{const p=pos[ci+':'+n.k],last=ci===cols.length-1,first=ci===0;
+  s+='<rect x="'+p.x+'" y="'+p.y+'" width="'+nw+'" height="'+Math.max(2,p.h)+'" rx="3" fill="'+n.c+'"'+(n.f?' data-f="'+n.f+'"':'')+tipAttr(n.l+': '+N(n.v))+'/>';
+  const tx=first?p.x-8:last?p.x+nw+8:p.x+nw+8,an=first?'end':'start';if(p.h>9||o.allLabels)s+='<text class="v" x="'+tx+'" y="'+(p.y+p.h/2+4)+'" text-anchor="'+an+'" style="paint-order:stroke;stroke:#fff;stroke-width:3px">'+n.l+' <tspan style="fill:#667385;font-weight:400">'+N(n.v)+'</tspan></text>'}));return s}
+/* ---------- UI ---------- */
+const K=(a,b,c)=>'<div class="k"><b>'+a+'</b><span>'+b+'</span>'+(c?'<em>'+c+'</em>':'')+'</div>';
+const KR=(p,a,b,c,col)=>'<div class="k r2"><svg viewBox="0 0 52 52" style="width:54px;height:54px;flex:none"><circle cx="26" cy="26" r="20" fill="none" stroke="#e4e7ec" stroke-width="7"/><circle cx="26" cy="26" r="20" fill="none" stroke="'+(col||'#c9981a')+'" stroke-width="7" stroke-linecap="round" stroke-dasharray="'+(Math.max(0,Math.min(100,p))*1.2566)+' 125.66" transform="rotate(-90 26 26)"/></svg><div><b>'+a+'</b><span>'+b+'</span>'+(c?'<em>'+c+'</em>':'')+'</div></div>';
+const C=(id,t,s,st='',ic)=>'<div class="c" style="'+st+'"><h2>'+(ic?'<span class="ic">'+ic+'</span>':'')+t+'</h2><div class="s">'+s+'</div><div class="b" id="'+id+'"></div></div>';
+function chips(el,groups,clr){$(el).innerHTML=groups.map(g=>'<div class="row"><b>'+g.lab+'</b>'+g.opts.map(a=>'<span class="ch'+(String(a[0])===String(F[g.key])?' on':'')+'" data-s="'+g.key+':'+a[0]+'">'+a[1]+'</span>').join('')+'</div>').join('')+(clr===false?'':'<span class="ch clr" data-s="clr:0">Limpiar</span>')}
+const EMPO=[[-1,'Todas'],...D.emp.map((e,i)=>[i,e.replace(' Dominicana','')])],PORTO=[[-1,'Todos'],...[0,1,2,3].map(k=>[k,D.port[k]])],YEARO=[['','Todos'],...YRS.map(y=>[y,y])];
+document.addEventListener('click',e=>{const c=e.target.closest('[data-s]');if(c){const [k,v]=c.dataset.s.split(':');if(k==='clr')F={...F,...DEF};else F[k]=(k==='year'||k==='metric')?v:+v;draw();return}
+ const t=e.target.closest('[data-f]');if(t){const [k,v]=t.dataset.f.split(':'),m={p:'port',s:'sec',o:'orig'}[k];F[m]=F[m]===+v?-1:+v;draw()}});
+const tip=$('tip');document.addEventListener('mousemove',e=>{const t=e.target.closest('[data-t]');if(!t){tip.style.display='none';return}const sc=window.__sc||1,st=$('stage').getBoundingClientRect();tip.textContent=t.dataset.t;tip.style.display='block';tip.style.left=((e.clientX-st.left)/sc+12)+'px';tip.style.top=((e.clientY-st.top)/sc+12)+'px'});
+function fit(){const s=innerWidth/1600;window.__sc=s;document.body.style.height=(900*s)+'px';$('stage').style.transform='scale('+s+')'}addEventListener('resize',fit);
+const NAV=[['Tablero_1_Ruta.html','Ruta','⇢'],['Tablero_2_Calendario.html','Calendario','▦'],['Tablero_3_Tiempos.html','Tiempos','◷'],['Tablero_4_Equipos.html','Equipos','▤'],['Tablero_5_Grupo.html','Grupo','◈']];
+function navHTML(act,bg,on){return NAV.map((n,i)=>'<a href="'+n[0]+'" style="text-decoration:none;display:flex;flex-direction:column;align-items:center;gap:4px;padding:12px 0;color:'+(i===act?on:'#9fb2c6')+';background:'+(i===act?'rgba(255,255,255,.08)':'transparent')+';border-left:3px solid '+(i===act?on:'transparent')+'"><span style="font-size:21px;line-height:1">'+n[2]+'</span><span style="font-size:11px">'+n[1]+'</span></a>').join('')}
+
+DEF={emp:0,year:'',port:-1,sec:-1,mon:0,orig:-1};F={...DEF};
+const COR='#ef476f',TEAL='#1b98a6',avg=a=>a.length?a.reduce((s,v)=>s+Math.min(30,v),0)/a.length:null;
+function rk(el,items,minN){const it=items.filter(x=>x.n>=minN).sort((a,b)=>b.m-a.m||b.n-a.n).slice(0,8),hiI=0,loI=it.length-1;if(!it.length){$(el).innerHTML='<div style="color:#667385;padding:10px">Sin datos suficientes con este filtro.</div>';return}
+ const mx=Math.max(...it.map(x=>x.m),1),hi=it[0].m,lo=it[it.length-1].m;$(el).innerHTML=it.map((x,ix)=>{const bg=it.length>1&&ix===hiI?COR:it.length>1&&ix===loI?TEAL:'#eef0f6',fg=bg==='#eef0f6'?'#1c2430':'#fff';return'<div class="r"><span class="l">'+x.l+'</span><div class="t"><i style="width:'+Math.max(4,x.m/mx*100)+'%;background:'+(bg==='#eef0f6'?'#b6bbd3':bg)+'"></i></div><span class="m" style="background:'+bg+';color:'+fg+'">'+P1(x.m)+' d</span><span class="n">'+N(x.n)+'</span></div>'}).join('')}
+function draw(){
+ chips('r1',[{lab:'Empresa',key:'emp',opts:EMPO},{lab:'Puerto',key:'port',opts:PORTO}]);chips('r2',[{lab:'Año',key:'year',opts:YEARO}],false);
+ const rs=rows(),t=rs.map(r=>r.t),n=rs.length,le3=n?rs.filter(r=>r.t<=3).length/n*100:0,gt10=n?rs.filter(r=>r.t>10).length/n*100:0;
+ const bg=(c,g)=>'<div class="bg" style="background:'+c+'">'+g+'</div>';
+ const ring=(p,c,l,s)=>'<div class="kb"><svg viewBox="0 0 52 52" style="width:56px;height:56px;flex:none"><circle cx="26" cy="26" r="20" fill="none" stroke="#e3e5ee" stroke-width="7"/><circle cx="26" cy="26" r="20" fill="none" stroke="'+c+'" stroke-width="7" stroke-linecap="round" stroke-dasharray="'+p*1.2566+' 125.66" transform="rotate(-90 26 26)"/></svg><div><b>'+Math.round(p)+'%</b><span>'+l+'</span><em>'+s+'</em></div></div>';
+ $('k').innerHTML='<div class="kb">'+bg('#2b2d42','◷')+'<div><b>'+(n?med(t)+' días':'—')+'</b><span>Mediana llegada → declaración</span><em>'+N(n)+' embarques</em></div></div>'+ring(le3,TEAL,'Declarados en 3 días o menos',N(rs.filter(r=>r.t<=3).length)+' embarques')+ring(gt10,COR,'Tardan más de 10 días',N(rs.filter(r=>r.t>10).length)+' embarques')+'<div class="kb">'+bg(COR,'!')+'<div><b>'+(n?pc(t,.9)+' días':'—')+'</b><span>P90: 9 de cada 10 se declaran antes</span><em>'+(n?'máximo '+Math.max(...t)+' días':'')+'</em></div></div>';
+ const ro=rows('orig'),og=cnt(ro,r=>r.o);rk('c1',Object.keys(og).map(k=>({l:D.orig[k],n:og[k],m:avg(ro.filter(r=>r.o==k).map(r=>r.t))})),12);
+ const ra=rows(),ag=cnt(ra,r=>r.a);rk('c2',Object.keys(ag).map(k=>({l:D.ag[k],n:ag[k],m:avg(ra.filter(r=>r.a==k).map(r=>r.t))})),12);
+ const stat=(l,a,c)=>({l,n:a.length,c,p10:pc(a,.1),p25:pc(a,.25),p50:med(a),p75:pc(a,.75),p90:pc(a,.9)});
+ const rp=rows('port'),it=[0,1,2,3].map(k=>stat(D.port[k],rp.filter(r=>r.p===k).map(r=>r.t),PC[k])).filter(x=>x.n>=12);
+ put('c3',(w,h)=>rangebars(it,w,h,{left:112}));
+ const rsec=rows('sec'),sc=cnt(rsec,r=>r.s),it2=Object.keys(sc).filter(k=>sc[k]>=12).sort((a,b)=>sc[b]-sc[a]).map(k=>stat(D.sec[k],rsec.filter(r=>r.s==k).map(r=>r.t),SCOL[k]));
+ put('c4',(w,h)=>rangebars(it2,w,h,{left:136}));
+ const wm=DS.map((d,i)=>avg(rs.filter(r=>r.wd===i).map(r=>r.t))),vv=wm.filter(v=>v!=null),mxw=Math.max(...vv),mnw=Math.min(...vv);
+ put('c5',(w,h)=>vbars(wm.map((v,i)=>({l:DS[i],v:v||0,c:v===mxw?COR:v===mnw?TEAL:'#b6bbd3',t:DS[i]+': promedio '+P1(v)+' d'})),w,h,{vals:1,left:24,rx:4,gap:.12,fmt:v=>P1(v)}));
+ const ry=rows('year'),gy=YRS.map(y=>{const a=ry.filter(r=>r.y===y);return a.length>5?a.filter(r=>r.t>10).length/a.length*100:0});
+ put('c6',(w,h)=>vbars(gy.map((v,i)=>({l:String(YRS[i]).slice(2),v,c:COR,t:YRS[i]+': '+P1(v)+'%'})),w,h,{vals:1,left:26,rx:3,gap:.12,fmt:v=>P1(v).replace('.0','')+'%'}));
+ const rec=D.REC.filter(x=>F.emp<0||x.emp===F.emp||x.emp===-1),cats={};rec.forEach(x=>{const d=x.d;(cats[x.cat||'Sin categoría']=cats[x.cat||'Sin categoría']||[]).push(d)});
+ $('c7').innerHTML='<table><thead><tr><th>Categoría</th><th class="n">n</th><th class="n">Mediana</th><th class="n">Mín–Máx</th></tr></thead><tbody>'+Object.entries(cats).sort((a,b)=>b[1].length-a[1].length).map(([c,v])=>'<tr><td>'+c+'</td><td class="n">'+v.length+'</td><td class="n"><b>'+med(v)+' d</b></td><td class="n">'+Math.min(...v)+'–'+Math.max(...v)+'</td></tr>').join('')+'</tbody></table>';
+}
+const MX=R.reduce((a,x)=>x.d>a?x.d:a,'');$('sub').textContent+=' Datos SIGA hasta '+fd(MX)+'.';fit();draw();
+</script></body></html>

@@ -1034,18 +1034,28 @@ def _archivar(fila, clave: str, etiqueta: str = "Marcar como recibido", df=None)
         return
 
     falta_declaracion = ETAPAS_PUERTO[1] in faltan
+    venta_cif = st.checkbox(
+        "Venta CIF", key=f"cif_{clave}",
+        help="Se vendió CIF: solo se registra la declaración y se archiva; lo que sigue "
+             "(entrada a almacén) le corresponde al comprador.")
     with st.form(f"form_faltan_{clave}"):
         if falta_declaracion:
             st.warning("Falta registrar la recepción y declaración. Pon la fecha real en que ocurrió y "
                        "el embarque se archiva completo, con su trazabilidad.")
             fecha_dec = st.date_input(f"{ICONO_ETAPA['Recepción y declaración']} Recepción y declaración",
                                       value=hoy_rd(), format="DD/MM/YYYY", key=f"falta_dec_{clave}")
+        elif venta_cif:
+            st.caption("Venta CIF: ya está la declaración; se archiva sin fecha de almacén.")
+            fecha_dec = None
         else:
             st.caption("Pon la fecha REAL en que la mercancía entró al almacén (si fue hoy, déjala "
                        "como está). Es la fecha con la que se miden los ciclos en la analítica.")
             fecha_dec = None
-        fecha_almacen = st.date_input(f"{ICONO_ALMACEN} {ETAPA_ALMACEN}", value=hoy_rd(),
-                                      format="DD/MM/YYYY", key=f"almacen_{clave}")
+        if venta_cif:
+            fecha_almacen = None
+        else:
+            fecha_almacen = st.date_input(f"{ICONO_ALMACEN} {ETAPA_ALMACEN}", value=hoy_rd(),
+                                          format="DD/MM/YYYY", key=f"almacen_{clave}")
         c1, c2 = st.columns(2)
         confirmar = c1.form_submit_button("Guardar y archivar", type="primary", width="stretch")
         cancelar = c2.form_submit_button("Cancelar", width="stretch")
@@ -1055,12 +1065,13 @@ def _archivar(fila, clave: str, etiqueta: str = "Marcar como recibido", df=None)
         rerun_fragmento()
     if confirmar:
         ok, mensaje = marcar_como_recibido(bl, categoria, fila_sugerida=n_fila,
-                                           fecha_declaracion=fecha_dec, fecha_almacen=fecha_almacen)
+                                           fecha_declaracion=fecha_dec, fecha_almacen=fecha_almacen,
+                                           venta_cif=venta_cif)
         if ok:
             st.session_state.pop(pendiente_key, None)
             registrar_log("Recibido" + (" (declaración completada)" if fecha_dec else ""),
                           bl, categoria,
-                          f"almacén={fecha_almacen.isoformat()}"
+                          ("Venta CIF" if venta_cif else f"almacén={fecha_almacen.isoformat()}")
                           + (f" · declaración={fecha_dec.isoformat()}" if fecha_dec else ""))
             invalidar_caches()
             st.rerun()

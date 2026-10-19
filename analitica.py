@@ -271,7 +271,10 @@ def _ciclo_historico(historico: pd.DataFrame) -> pd.DataFrame:
         salida = parsear_fecha(r.get(COL_FECHA_SALIDA, ""))
         dias_transito = (llegada - salida).days if salida and salida <= llegada else None
         almacen_real = parsear_fecha(r.get(COL_FECHA_ALMACEN, ""))
-        almacen_aprox_val = None if almacen_real else parsear_fecha(r.get("Fecha_Recibido", ""))
+        # Venta CIF: no hubo entrada a almacén propio; el respaldo con
+        # Fecha_Recibido (= declaración) fabricaría un trámite de 0 días.
+        es_cif = str(r.get("Tipo_Recepcion", "") or "").strip() == "Venta CIF"
+        almacen_aprox_val = None if (almacen_real or es_cif) else parsear_fecha(r.get("Fecha_Recibido", ""))
         almacen = almacen_real or almacen_aprox_val
         almacen_es_aprox = almacen_real is None and almacen_aprox_val is not None
         dias_tramite = (almacen - declaracion).days if almacen and almacen >= declaracion else None

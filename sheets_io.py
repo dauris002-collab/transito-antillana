@@ -131,6 +131,8 @@ COL_FECHA_DECLARACION = "Fecha_Declaracion"          # recepción y declaración
 # Entrada a almacén. Tampoco es una etapa del tablero activo: es el sello del
 # momento de archivar, y por eso vive únicamente en "Recibido (Mes)".
 COL_FECHA_ALMACEN = "Fecha_Almacen"
+COL_TIPO_RECEPCION = "Tipo_Recepcion"      # vacío = recepción normal en almacén propio
+VENTA_CIF = "Venta CIF"                    # se vendió CIF: el comprador se encarga de lo que sigue a la declaración
 
 
 # Columnas opcionales libres: si existen en el Sheet, la app las usa; si no, ni
@@ -231,7 +233,7 @@ COLUMNAS_RECIBIDO = [
     COL_BL, COL_DESC, COL_CANT, COL_PAIS, COL_ETA,
     "Fecha_Recibido", "Categoria_Origen", "Registrado_Por", COL_ACTUALIZACION,
     COL_ACTUALIZADO_POR, COL_FECHA_LLEGADA_PUERTO, COL_VIA, *COLUMNAS_FLUJO, COL_FECHA_ALMACEN,
-    *OPCIONALES_CATEGORIA,
+    *OPCIONALES_CATEGORIA, COL_TIPO_RECEPCION,
 ]
 
 
@@ -1888,7 +1890,7 @@ def eliminar_embarque(bl: str, categoria: str, fila_sugerida=None):
 
 @_con_manejo_apierror
 def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
-                         fecha_declaracion=None, fecha_almacen=None):
+                         fecha_declaracion=None, fecha_almacen=None, venta_cif=False):
     """Archiva el embarque en 'Recibido (Mes)' y lo saca del tablero activo.
 
     Candado: exige llegada confirmada y fecha de declaración. Si falta la
@@ -1919,12 +1921,15 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
     if not declaracion:
         return False, "FALTAN_ETAPAS::" + "Recepción y declaración"
 
-    almacen = parsear_fecha(fecha_almacen) or hoy_rd()
+    # Venta CIF: solo se exige hasta la declaración; no hay entrada a almacén
+    # propio (lo demás lo hace el comprador) y el mes del histórico es el de
+    # la declaración.
+    almacen = None if venta_cif else (parsear_fecha(fecha_almacen) or hoy_rd())
     problema = _validar_orden_flujo(llegada, declaracion, almacen)
     if problema:
         return False, problema
 
-    base = llegada if BASE_FECHA_RECIBIDO == "llegada" else almacen
+    base = llegada if BASE_FECHA_RECIBIDO == "llegada" else (declaracion if venta_cif else almacen)
     fecha_recibido = base or llegada
     if fecha_recibido is None:
         return False, (f"El BL '{bl}' no tiene un ETA interpretable ('{eta_crudo or 'vacío'}'), "
@@ -1949,7 +1954,8 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
         COL_ACTUALIZACION: marca_ahora(),
         COL_ACTUALIZADO_POR: usuario_actual(),
         COL_FECHA_DECLARACION: declaracion.isoformat(),
-        COL_FECHA_ALMACEN: almacen.isoformat(),
+        COL_FECHA_ALMACEN: almacen.isoformat() if almacen else "",
+        COL_TIPO_RECEPCION: VENTA_CIF if venta_cif else "",
     }
     if llegada:
         registro[COL_FECHA_LLEGADA_PUERTO] = llegada.isoformat()
@@ -2065,6 +2071,9 @@ def corregir_fechas_recibido(bl: str, fila_sugerida=None, llegada=None, declarac
 
     f_llegada = llegada or _vigente(COL_FECHA_LLEGADA_PUERTO) or _vigente(COL_ETA)
     f_decl = declaracion or _vigente(COL_FECHA_DECLARACION)
+    es_cif = str(actual.get(_norm_encabezado(COL_TIPO_RECEPCION), "")).strip() == VENTA_CIF
+    if es_cif:
+        almacen = None   # una venta CIF no tiene almacén propio
     f_alm = almacen or _vigente(COL_FECHA_ALMACEN)
 
     hoy = hoy_rd()
@@ -2086,8 +2095,13 @@ def corregir_fechas_recibido(bl: str, fila_sugerida=None, llegada=None, declarac
         cambios[COL_FECHA_ALMACEN] = almacen.isoformat()
     if not cambios:
         return True, "Sin cambios."
-    base = f_llegada if BASE_FECHA_RECIBIDO == "llegada" else f_alm
-    if base and (llegada if BASE_FECHA_RECIBIDO == "llegada" else almacen):
+    if es_cif:
+        base, cambio_base = f_decl, declaracion
+    elif BASE_FECHA_RECIBIDO == "llegada":
+        base, cambio_base = f_llegada, llegada
+    else:
+        base, cambio_base = f_alm, almacen
+    if base and cambio_base:
         cambios["Fecha_Recibido"] = base.isoformat()
 
     cambios[COL_ACTUALIZACION] = marca_ahora()

@@ -597,6 +597,7 @@ def _tabla_detalle(df: pd.DataFrame) -> pd.DataFrame:
         "Días puerto→almacén": df.get("CicloPuertoAlmacen", ""),
         "Días llegada→declaración": df.get("CicloLlegadaDeclaracion", ""),
         "Días salida→almacén": df.get("CicloTotal", ""),
+        "Tipo": df["Tipo_Recepcion"].replace("", "—") if "Tipo_Recepcion" in df.columns else "—",
         "Registrado por": df.get("Registrado_Por", ""),
     })
     return salida.reset_index(drop=True)
@@ -782,8 +783,13 @@ def mostrar_historico(datos: dict, rol: str):
                                           format="DD/MM/YYYY", key=f"fr_llegada_{sufijo}")
             nueva_decl = st.date_input("Recepción y declaración", value=f_decl,
                                        format="DD/MM/YYYY", key=f"fr_decl_{sufijo}")
-            nuevo_alm = st.date_input("Recibido en almacén", value=f_alm,
-                                      format="DD/MM/YYYY", key=f"fr_alm_{sufijo}")
+            es_cif_f = str(fila_f.get("Tipo_Recepcion", "") or "").strip() == "Venta CIF"
+            if es_cif_f:
+                st.caption("Venta CIF: no tiene fecha de almacén; el mes del histórico es el de la declaración.")
+                nuevo_alm = None
+            else:
+                nuevo_alm = st.date_input("Recibido en almacén", value=f_alm,
+                                          format="DD/MM/YYYY", key=f"fr_alm_{sufijo}")
             guardar_f = st.form_submit_button("Guardar fechas", type="primary")
         if guardar_f:
             def _cambio(nueva, vieja):

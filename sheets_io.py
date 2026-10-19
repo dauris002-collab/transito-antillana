@@ -2031,6 +2031,74 @@ def quitar_de_recibido(bl: str, categoria_manual: str = None, fila_sugerida=None
 
 
 @_con_manejo_apierror
+def corregir_fechas_recibido(bl: str, fila_sugerida=None, llegada=None, declaracion=None,
+                             almacen=None, sello_esperado=None):
+    """Corrige, en 'Recibido (Mes)', las fechas de un embarque ya archivado:
+    llegada a puerto, recepción y declaración y entrada a almacén. Una fecha en
+    None se deja como está (esta función corrige, nunca borra).
+
+    Mismas reglas que al archivar: orden llegada <= declaración <= almacén y
+    ninguna en el futuro (son hechos ya ocurridos). La llegada se escribe en
+    Fecha_Llegada_Puerto y en ETA (al archivar valen lo mismo), así Pagos la
+    sigue por la sincronización de Llegada que ya existe. Fecha_Recibido (la
+    que decide el mes del histórico) se recalcula con la misma base que usa
+    marcar_como_recibido."""
+    ws = get_worksheet(RECIBIDO_SHEET)
+    if ws is None:
+        return False, f"No existe la pestaña '{RECIBIDO_SHEET}'."
+    fila, error = _localizar_fila(ws, bl, fila_sugerida)
+    if error:
+        return False, error
+
+    headers = _asegurar_columnas(ws, [COL_ETA, "Fecha_Recibido", COL_FECHA_LLEGADA_PUERTO,
+                                      COL_FECHA_DECLARACION, COL_FECHA_ALMACEN,
+                                      COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
+    actual = {_norm_encabezado(k): v for k, v in _leer_fila(ws, fila, headers).items()}
+
+    conflicto = _conflicto_sello(actual, sello_esperado, "registro")
+    if conflicto:
+        return False, conflicto
+
+    def _vigente(columna):
+        return parsear_fecha(actual.get(_norm_encabezado(columna), ""))
+
+    f_llegada = llegada or _vigente(COL_FECHA_LLEGADA_PUERTO) or _vigente(COL_ETA)
+    f_decl = declaracion or _vigente(COL_FECHA_DECLARACION)
+    f_alm = almacen or _vigente(COL_FECHA_ALMACEN)
+
+    hoy = hoy_rd()
+    for nombre, f in (("Llegada a puerto", f_llegada), ("Recepción y declaración", f_decl),
+                      (ETAPA_ALMACEN, f_alm)):
+        if f and f > hoy:
+            return False, f"La fecha de '{nombre}' ({formato_eta(f)}) es futura: un embarque recibido ya ocurrió."
+    problema = _validar_orden_flujo(f_llegada, f_decl, f_alm)
+    if problema:
+        return False, problema
+
+    cambios = {}
+    if llegada:
+        cambios[COL_FECHA_LLEGADA_PUERTO] = llegada.isoformat()
+        cambios[COL_ETA] = llegada.isoformat()
+    if declaracion:
+        cambios[COL_FECHA_DECLARACION] = declaracion.isoformat()
+    if almacen:
+        cambios[COL_FECHA_ALMACEN] = almacen.isoformat()
+    if not cambios:
+        return True, "Sin cambios."
+    base = f_llegada if BASE_FECHA_RECIBIDO == "llegada" else f_alm
+    if base and (llegada if BASE_FECHA_RECIBIDO == "llegada" else almacen):
+        cambios["Fecha_Recibido"] = base.isoformat()
+
+    cambios[COL_ACTUALIZACION] = marca_ahora()
+    cambios[COL_ACTUALIZADO_POR] = usuario_actual()
+    peticiones = [{"range": rowcol_to_a1(fila, indices[_norm_encabezado(c)]), "values": [[v]]}
+                  for c, v in cambios.items()]
+    _con_reintento(lambda: ws.batch_update(peticiones, value_input_option="RAW"))
+    return True, ""
+
+
+@_con_manejo_apierror
 def normalizar_etas(cambios: list):
     """cambios = [(categoria, fila_sheet, valor_esperado, iso)]. Reescribe los ETA
     en ISO agrupando por pestaña: una llamada por pestaña, no una por celda.

@@ -27,7 +27,7 @@ from sheets_io import (
     _norm, _slug_css, avanzar_estado_puerto, columnas_extra, confirmar_llegada,
     eliminar_embarque, es_llego_si, es_numero, fijar_fecha_declaracion, formato_dinero,
     formato_eta, hoy_rd, invalidar_caches, marcar_como_recibido, marcar_no_llego,
-    registrar_log, sla_etapas,
+    registrar_log, sla_etapas, actualizar_embarque, parsear_fecha,
 )
 from logica import (
     CATEGORIAS_CON_OC_EE, EMPRESA_SIN_ASIGNAR, ETIQUETA_POR_CONFIRMAR, EST_PROXIMO,
@@ -1191,6 +1191,26 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
                         st.caption("Agrega la fecha de declaración, ya sea corrigiendo la celda "
                                   f"'Fecha_Declaracion' en la pestaña '{categoria}' del Sheet, o "
                                   "actualizando los datos y repitiendo la acción aquí en la aplicación.")
+                st.divider()
+                st.caption("Si la carga llegó otro día, corrige aquí la fecha real de llegada a puerto "
+                          "(es el ETA del embarque, ya confirmado). No puede ser futura ni posterior "
+                          "a la declaración.")
+                llegada_vigente = parsear_fecha(fila.get(COL_ETA, ""))
+                nueva_llegada = st.date_input("Fecha real de llegada a puerto", value=llegada_vigente,
+                                              format="DD/MM/YYYY", key=f"fll_{clave}")
+                if st.button("Guardar fecha de llegada", key=f"fll_btn_{clave}", width="stretch",
+                             disabled=nueva_llegada is None or nueva_llegada == llegada_vigente):
+                    ok, mensaje = actualizar_embarque(bl, categoria, {COL_ETA: nueva_llegada.isoformat()},
+                                                      fila_sugerida=fila.get("FilaSheet"),
+                                                      sello_esperado=str(fila.get(COL_ACTUALIZACION, "") or "").strip())
+                    if ok:
+                        registrar_log("Llegada a puerto corregida", bl, categoria,
+                                     f"{llegada_vigente.isoformat() if llegada_vigente else 'vacío'} → "
+                                     f"{nueva_llegada.isoformat()}")
+                        invalidar_caches()
+                        st.rerun()
+                    else:
+                        st.error(mensaje)
                 st.divider()
                 st.caption("'Deshacer llegada' va más atrás todavía: además de borrar la "
                           "declaración, marca '¿Llegó?' en NO — para cuando la llegada misma se "

@@ -9,6 +9,7 @@ Streamlit e importa de sheets_io.py, logica.py y ui_componentes.py.
 from __future__ import annotations
 
 import io
+from datetime import date
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -22,7 +23,7 @@ from sheets_io import (
     REQUIRED_COLUMNS, VIA_AEREA, VIA_MARITIMA,
     _con_reintento, _leer_log, _norm, _refrescar_estructura, _validar_orden_flujo,
     actualizar_embarque, ahora_rd, append_row, append_rows_bulk, es_llego_si,
-    es_numero, get_spreadsheet, hoy_rd, invalidar_caches, normalizar_etas,
+    corregir_fechas_recibido, es_numero, get_spreadsheet, hoy_rd, invalidar_caches, normalizar_etas,
     parsear_fecha, quitar_de_recibido, registrar_log, sincronizar_pagos_con_transito,
     sla_etapas, validar_eta_confirmado,
 )
@@ -761,6 +762,47 @@ def mostrar_historico(datos: dict, rol: str):
                 registrar_log("Reversa de recibido", bl, categoria)
                 invalidar_caches()
                 st.rerun()
+            else:
+                st.error(mensaje)
+
+    with st.expander("Corregir fechas de un recibido", expanded=False):
+        st.caption("Para cuando la llegada, la declaración o la entrada a almacén se registraron con "
+                   "otra fecha. Si cambias la de almacén, el embarque puede pasar de mes en el histórico.")
+        opciones_f = _etiquetas_desambiguadas(filtrado, con_categoria=False, largo_desc=40)
+        elegido_f = st.selectbox("Embarque", opciones_f, key="sel_fechas_recibido")
+        fila_f = filtrado.iloc[opciones_f.index(elegido_f)]
+        bl_f = str(fila_f[COL_BL]).strip()
+        sufijo = f"{bl_f}_{fila_f.get('FilaSheet', '')}"
+
+        def _fecha_o_none(v):
+            return v if isinstance(v, date) and not pd.isna(v) else None
+        f_puerto, f_decl, f_alm = (_fecha_o_none(fila_f.get(k)) for k in ("F_Puerto", "F_Declaracion", "F_Almacen"))
+        with st.form(f"form_fechas_recibido_{sufijo}"):
+            nueva_llegada = st.date_input("Llegada a puerto", value=f_puerto,
+                                          format="DD/MM/YYYY", key=f"fr_llegada_{sufijo}")
+            nueva_decl = st.date_input("Recepción y declaración", value=f_decl,
+                                       format="DD/MM/YYYY", key=f"fr_decl_{sufijo}")
+            nuevo_alm = st.date_input("Recibido en almacén", value=f_alm,
+                                      format="DD/MM/YYYY", key=f"fr_alm_{sufijo}")
+            guardar_f = st.form_submit_button("Guardar fechas", type="primary")
+        if guardar_f:
+            def _cambio(nueva, vieja):
+                return nueva if (nueva and nueva != vieja) else None
+            c_llegada = _cambio(nueva_llegada, f_puerto)
+            c_decl = _cambio(nueva_decl, f_decl)
+            c_alm = _cambio(nuevo_alm, f_alm)
+            ok, mensaje = corregir_fechas_recibido(
+                bl_f, fila_sugerida=fila_f.get("FilaSheet"), llegada=c_llegada,
+                declaracion=c_decl, almacen=c_alm,
+                sello_esperado=str(fila_f.get(COL_ACTUALIZACION, "") or "").strip())
+            if ok and not mensaje:
+                detalle = "; ".join(f"{n} {f.isoformat()}" for n, f in
+                                    (("llegada", c_llegada), ("declaración", c_decl), ("almacén", c_alm)) if f)
+                registrar_log("Fechas de recibido corregidas", bl_f, str(fila_f.get("Categoria_Origen", "")), detalle)
+                invalidar_caches()
+                st.rerun()
+            elif ok:
+                st.info(mensaje)
             else:
                 st.error(mensaje)
 

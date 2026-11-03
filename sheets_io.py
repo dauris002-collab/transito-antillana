@@ -250,8 +250,13 @@ PAGOS_SHEET = "Pagos"
 # Lista cerrada de conceptos. Moneda FIJA por columna: así el monto se guarda
 # como número puro (sin "dolares"/"pesos" pegado al texto) y no hay que parsear
 # texto libre para saber en qué moneda está cada celda.
-CONCEPTOS_PAGO = ["ADUANAS", "DPH", "DPW", "TRANSPORTE", "HIT", "FDA", "VECONINTER", "ALMACENAJE",
-                  "PORTCOLLECT", "FLETE", "GESTION ADUANAL", "CARGOS LOCALES", "SAN SOUCI"]
+#
+# El ORDEN de esta lista es el orden de las columnas del Sheet de Pagos (v5.4,
+# pedido expreso del 3 nov 2026): es el que ven las tarjetas, el formulario de
+# conceptos y la pestaña si se crea de cero. Los colores de cada concepto NO
+# dependen de este orden (ver COLOR_CONCEPTO en pagos.py).
+CONCEPTOS_PAGO = ["ADUANAS", "DPH", "DPW", "HIT", "TRANSPORTE", "FLETE", "GESTION ADUANAL",
+                  "CARGOS LOCALES", "ALMACENAJE", "SAN SOUCI", "PORTCOLLECT", "VECONINTER", "FDA"]
 
 
 MONEDA_CONCEPTO = {
@@ -306,6 +311,15 @@ COL_PAGOREAL_USD = "PagoRealizado_USD"
 COL_PAGOREAL_DOP = "PagoRealizado_DOP"
 
 
+# Cotejo de pagos PARCIALES (v5.4): los conceptos de este expediente que ya se
+# pagaron, separados por coma ("ADUANAS, FLETE"). Lo marca Logística a mano en
+# el Sheet (desplegable de selección múltiple con CONCEPTOS_PAGO). Un concepto
+# cotejado NO se suma al total pendiente, pero su monto sigue en su columna:
+# el costo final de un expediente pagado (TotalActual + extra) no cambia. Vacío
+# = nada cotejado, igual que antes de existir la columna.
+COL_CONCEPTOS_PAGADOS = "Conceptos_Pagados"
+
+
 # Descripción y Cantidad reusan las mismas columnas canónicas de tránsito
 # (mismo significado, mismo nombre). Llegada es propia de Pagos: guarda la
 # fecha ya resuelta (confirmada si existe, ETA si no) para no repetir la
@@ -334,8 +348,8 @@ EMPRESAS_PAGO = [EMPRESA_ANTILLANA, EMPRESA_TECNICARIBE, EMPRESA_MOTOR_IBERICO]
 
 COLUMNAS_PAGOS = [
     COL_EMPRESA, COL_BL, COL_DESC, COL_CANT, COL_PAGO_LLEGADA, *CONCEPTOS_PAGO, COL_ESTADO_PAGO,
-    COL_PRIORIDAD, COL_FECHA_SIN_MORA, COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
-    COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
+    COL_FECHA_SIN_MORA, COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
+    COL_CONCEPTOS_PAGADOS, COL_PRIORIDAD, COL_ACTUALIZACION, COL_ACTUALIZADO_POR,
 ]
 
 

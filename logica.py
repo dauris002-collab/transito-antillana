@@ -10,12 +10,14 @@ de Secrets) pero nunca al revés.
 from __future__ import annotations
 
 import html
+import re
 from datetime import date, datetime
 
 import pandas as pd
 
 from sheets_io import (
-    COL_BL, COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_EMPRESA, COL_EMPRESA_EMBARQUE, COL_ETA,
+    COL_BL, COL_CLIENTE_STOCK, COL_CONCEPTOS_PAGADOS, COL_DESC, COL_EE, COL_EMPRESA,
+    COL_EMPRESA_EMBARQUE, COL_ETA,
     COL_FECHA_DECLARACION, COL_FECHA_LLEGADA_PUERTO, COL_FECHA_PAGO_REAL,
     COL_FECHA_SALIDA, COL_FECHA_SIN_MORA, COL_LLEGO, COL_MODELO, COL_OC,
     COL_PAGO_LLEGADA, COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS, COL_ESTADO_PAGO,
@@ -644,11 +646,16 @@ def contar_recibidas_mes(historico: pd.DataFrame) -> int:
 # ---------------------------------------------------------------------------
 # ESTATUS DE PAGO
 # ---------------------------------------------------------------------------
-def totales_conceptos(fila) -> dict | None:
+def totales_conceptos(fila, excluir=()) -> dict | None:
     """Suma los conceptos llenos de una fila de Pagos, separados por moneda.
     Vacío no es cero: un concepto que no aplica a este expediente no debe
     inflar ni desinflar el total de la moneda contraria. Devuelve None si la
-    fila no tiene ningún concepto con monto todavía."""
+    fila no tiene ningún concepto con monto todavía.
+
+    `excluir` (v5.4): conceptos que NO se suman porque ya se pagaron (ver
+    conceptos_cotejados). Cuentan como 'con monto', así que si se excluyen
+    todos el resultado es {USD: 0, DOP: 0} y no None. Con el valor por defecto
+    el comportamiento es idéntico al de antes."""
     totales = {"USD": 0.0, "DOP": 0.0}
     hay_datos = False
     for concepto in CONCEPTOS_PAGO:
@@ -656,8 +663,39 @@ def totales_conceptos(fila) -> dict | None:
         if monto is None:
             continue
         hay_datos = True
+        if concepto in excluir:
+            continue
         totales[MONEDA_CONCEPTO[concepto]] += monto
     return totales if hay_datos else None
+
+
+_SEPARADORES_CONCEPTOS = re.compile(r"[,;/|\n]+")
+
+
+def conceptos_cotejados(fila) -> tuple:
+    """(pagados, desconocidos) de la celda Conceptos_Pagados de una fila de Pagos.
+    `pagados` = nombres canónicos de CONCEPTOS_PAGO, en el orden de esa lista y
+    sin repetir; se aceptan coma, punto y coma, barra o salto de línea como
+    separador y no importan mayúsculas, acentos ni espacios de más
+    ('Gestión aduanal' = 'GESTION ADUANAL'). `desconocidos` = textos que no
+    corresponden a ningún concepto: NO se ignoran en silencio, se devuelven
+    para avisar al administrador. Un concepto no reconocido sigue contando como
+    pendiente: el error cae del lado de mostrar de MÁS por pagar, no de menos."""
+    crudo = fila.get(COL_CONCEPTOS_PAGADOS, "")
+    if crudo is None or (not isinstance(crudo, str) and pd.isna(crudo)):
+        return [], []
+    canon = {_norm(c): c for c in CONCEPTOS_PAGO}
+    marcados, desconocidos = set(), []
+    for trozo in _SEPARADORES_CONCEPTOS.split(str(crudo)):
+        texto = trozo.strip()
+        if not texto:
+            continue
+        concepto = canon.get(_norm(texto))
+        if concepto is None:
+            desconocidos.append(texto)
+        else:
+            marcados.add(concepto)
+    return [c for c in CONCEPTOS_PAGO if c in marcados], desconocidos
 
 
 def monto_extra(fila) -> dict:
@@ -767,7 +805,8 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     calculadas = ["BLSinTransito", "TieneMontos", "TotalActual", "DiasSinPagar", "LlegadaEfectiva",
                   "EmpresaEfectiva", "EstadoEfectivo", "MontoExtra",
                   "TotalPagado", "DiasMora", "DiasHastaPago", "FechaSinMoraParsed", "FechaPagoRealParsed",
-                  "PrioridadPago"]
+                  "PrioridadPago", "ConceptosPagados", "ConceptosNoReconocidos", "TotalPendiente",
+                  "TodoCotejado"]
     if df.empty:
         for c in calculadas:
             df[c] = []
@@ -825,6 +864,25 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     totales_actuales = [totales_conceptos(r) for _, r in df.iterrows()]
     df["TotalActual"] = totales_actuales
     df["TieneMontos"] = [t is not None for t in totales_actuales]
+
+    # Cotejo de pagos parciales (v5.4). TotalActual NO cambia —es el total de
+    # TODOS los conceptos y de él sale el costo final de lo ya pagado—; lo que
+    # se debe todavía es TotalPendiente = TotalActual sin los conceptos
+    # cotejados. Con la columna vacía o ausente, TotalPendiente == TotalActual.
+    cotejos = [conceptos_cotejados(r) for _, r in df.iterrows()]
+    df["ConceptosPagados"] = [c[0] for c in cotejos]
+    df["ConceptosNoReconocidos"] = [c[1] for c in cotejos]
+    pendientes_por_concepto = [totales_conceptos(r, excluir=set(c[0]))
+                               for (_, r), c in zip(df.iterrows(), cotejos)]
+    df["TotalPendiente"] = pendientes_por_concepto
+    # Todo cotejado: hay al menos un concepto marcado y no queda nada por pagar.
+    # El expediente sigue Pendiente hasta que tenga Fecha_PagoRealizado (el
+    # cierre lo decide la fecha, no el cotejo), pero ya no debe aparecer como
+    # deuda: sale de la tabla de antigüedad, del total por pagar y del plan.
+    df["TodoCotejado"] = [
+        bool(c[0]) and t is not None and not (t["USD"] or t["DOP"])
+        for c, t in zip(cotejos, pendientes_por_concepto)
+    ]
 
     df["FechaSinMoraParsed"] = [parsear_fecha(v) for v in df.get(COL_FECHA_SIN_MORA, [])]
     df["FechaPagoRealParsed"] = [parsear_fecha(v) for v in df.get(COL_FECHA_PAGO_REAL, [])]
@@ -917,9 +975,11 @@ def resumen_pagos(df: pd.DataFrame) -> dict:
     vacio["n_abiertos"] = int((~cerrado_mask).sum())
 
     # "Total por pagar" solo suma lo ABIERTO (Pendiente): un expediente ya
-    # pagado no es algo que "todavía se deba".
+    # pagado no es algo que "todavía se deba". Usa TotalPendiente (sin los
+    # conceptos ya cotejados); si el DataFrame viene de antes de v5.4 y no la
+    # trae, cae a TotalActual como siempre.
     total_por_pagar = {"USD": 0.0, "DOP": 0.0}
-    for total in abiertos.get("TotalActual", []):
+    for total in abiertos.get("TotalPendiente", abiertos.get("TotalActual", [])):
         total = total or {}
         for moneda in ("USD", "DOP"):
             v = total.get(moneda)

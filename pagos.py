@@ -53,7 +53,14 @@ COLOR_MORA_PROMEDIO = "#B45309"
 # allá del largo de PALETA_PAISES (8 colores) se quedaba sin entrada en este
 # diccionario, y buscar su color en _html_expediente() reventaba con KeyError.
 # Con el módulo, el color se repite pero nunca falta.
-COLOR_CONCEPTO = {c: PALETA_PAISES[i % len(PALETA_PAISES)] for i, c in enumerate(CONCEPTOS_PAGO)}
+# El color de cada concepto se fija por NOMBRE con el orden que tenía la lista
+# antes de v5.4, no por su posición actual: reordenar CONCEPTOS_PAGO para que
+# coincida con el Sheet no debe cambiarle el color a ningún concepto. Un
+# concepto nuevo (que no esté aquí) recibe el siguiente color, sin KeyError.
+_ORDEN_COLORES = ["ADUANAS", "DPH", "DPW", "TRANSPORTE", "HIT", "FDA", "VECONINTER", "ALMACENAJE",
+                  "PORTCOLLECT", "FLETE", "GESTION ADUANAL", "CARGOS LOCALES", "SAN SOUCI"]
+COLOR_CONCEPTO = {c: PALETA_PAISES[i % len(PALETA_PAISES)] for i, c in enumerate(
+    _ORDEN_COLORES + [c for c in CONCEPTOS_PAGO if c not in _ORDEN_COLORES])}
 
 
 # Un color por prioridad de pago: 1 es lo más urgente (rojo) y 4 lo que más
@@ -99,9 +106,13 @@ PAGOS_CSS = """
              white-space:nowrap; margin-left:8px; vertical-align:2px; }
 .pago-prio b { font-size:0.95rem; }
 .pago-meta { color:#6B7280; font-size:0.85rem; margin-top:2px; }
-.pago-conceptos { display:flex; flex-wrap:wrap; justify-content:center; gap:8px; margin:14px 0; }
+.pago-conceptos { display:flex; flex-wrap:wrap; justify-content:center; align-items:flex-start; gap:8px; margin:14px 0; }
 .pago-chip { padding:6px 15px; border-radius:999px; color:#fff; font-size:0.83rem; font-weight:700;
              white-space:nowrap; }
+.pago-chip-p { display:inline-flex; flex-direction:column; align-items:center; gap:4px; }
+.pago-p { display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px;
+          border-radius:50%; background:#2E7D32; color:#fff; font-size:0.72rem; font-weight:800;
+          -webkit-print-color-adjust:exact; print-color-adjust:exact; }
 .pago-totales { display:flex; flex-wrap:wrap; justify-content:center; align-items:baseline; gap:28px;
                 margin-top:6px; }
 .pago-total-etq { font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#6B7280;
@@ -317,18 +328,28 @@ def _html_expediente(r) -> str:
     color_estado = "#2E7D32" if pagado else "#B45309"
 
     # Un concepto vacío NO sale — solo los que de verdad tiene el expediente.
+    # Los ya cotejados (Conceptos_Pagados) siguen visibles con su monto y una P
+    # verde debajo; solo se marcan mientras el expediente está Pendiente (uno
+    # Pagado ya lo tiene todo pagado).
+    cotejados = set() if pagado else set(r.get("ConceptosPagados") or [])
     chips = []
     for concepto in CONCEPTOS_PAGO:
         valor = a_numero(r.get(concepto, ""))
         if valor is None:
             continue
         color = COLOR_CONCEPTO[concepto]
-        chips.append(
+        chip = (
             f'<span class="pago-chip" style="background:{color};">'
             f'{esc(concepto)}: {_fmt(valor, MONEDA_CONCEPTO[concepto])}</span>'
         )
+        if concepto in cotejados:
+            chip = f'<span class="pago-chip-p">{chip}<span class="pago-p" title="Pagado">P</span></span>'
+        chips.append(chip)
 
+    # Total ACTUAL (todos los conceptos) para el costo final de lo ya pagado;
+    # lo PENDIENTE (sin los cotejados) para el expediente que sigue abierto.
     total = r.get("TotalActual") or {}
+    total_pendiente = r.get("TotalPendiente") or total
     dias_sin_pagar = r.get("DiasSinPagar")
     if dias_sin_pagar is None or pd.isna(dias_sin_pagar):
         dias_sin_pagar_txt = "—"
@@ -346,7 +367,7 @@ def _html_expediente(r) -> str:
         valor_usd, valor_dop = total_pagado.get("USD") or 0.0, total_pagado.get("DOP") or 0.0
     else:
         etiqueta_usd, etiqueta_dop = "Total a pagar US$", "Total a pagar RD$"
-        valor_usd, valor_dop = total.get("USD") or 0.0, total.get("DOP") or 0.0
+        valor_usd, valor_dop = total_pendiente.get("USD") or 0.0, total_pendiente.get("DOP") or 0.0
 
     pie_cerrado = ""
     fecha_pago = str(r.get(COL_FECHA_PAGO_REAL, "")).strip()
@@ -426,6 +447,10 @@ def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
     if filtro_activo not in ("todos", "abiertos"):
         return
     pendientes = con_montos[con_montos["EstadoEfectivo"] != ESTADO_PAGO_PAGADO]
+    # Un expediente con TODOS sus conceptos cotejados ya no es deuda: sale de
+    # esta lista aunque siga Pendiente hasta que se ponga su fecha de pago.
+    if "TodoCotejado" in pendientes.columns:
+        pendientes = pendientes[~pendientes["TodoCotejado"].astype(bool)]
     if pendientes.empty:
         return
 
@@ -433,7 +458,7 @@ def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
     for _, r in pendientes.iterrows():
         dias = r.get("DiasSinPagar")
         dias = None if dias is None or pd.isna(dias) else int(dias)
-        total = r.get("TotalActual") or {}
+        total = r.get("TotalPendiente") or r.get("TotalActual") or {}
         usd, dop = total.get("USD") or 0.0, total.get("DOP") or 0.0
         llegada = r.get("LlegadaEfectiva")
         filas.append({
@@ -580,6 +605,8 @@ def _plan_captura(enriquecido: pd.DataFrame):
     if enriquecido is None or enriquecido.empty:
         return
     pend = enriquecido[enriquecido["TieneMontos"] & (enriquecido["EstadoEfectivo"] != ESTADO_PAGO_PAGADO)]
+    if "TodoCotejado" in pend.columns:   # con todo cotejado ya no hay nada que pagar en el plan
+        pend = pend[~pend["TodoCotejado"].astype(bool)]
     pend = pend[pend[COL_BL].astype(str).str.strip() != ""]
     if pend.empty and not st.session_state.get("plan_captura"):
         return
@@ -591,7 +618,7 @@ def _plan_captura(enriquecido: pd.DataFrame):
         bl = str(r[COL_BL]).strip()
         if bl in datos:
             continue
-        total = r.get("TotalActual") or {}
+        total = r.get("TotalPendiente") or r.get("TotalActual") or {}
         usd, dop = total.get("USD") or 0.0, total.get("DOP") or 0.0
         llegada, sin_mora = r.get("LlegadaEfectiva"), r.get("FechaSinMoraParsed")
         dias = r.get("DiasSinPagar")
@@ -792,6 +819,20 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False,
     if sin_transito and es_admin:   # aviso de mantenimiento: el viewer no puede actuar sobre él
         st.warning(f"{sin_transito} expediente(s) de Pagos ya no tienen un BL coincidente en tránsito "
                    "(activo ni histórico) — puede que se hayan eliminado o cambiado de BL ahí.")
+
+    # Avisos del cotejo por concepto (v5.4), solo para el administrador: son de
+    # mantenimiento del Sheet y el viewer no puede actuar sobre ellos.
+    if es_admin and "TodoCotejado" in vista.columns:
+        cerrables = vista[vista["TodoCotejado"].astype(bool) & (vista["EstadoEfectivo"] != ESTADO_PAGO_PAGADO)]
+        if not cerrables.empty:
+            st.info(f"{len(cerrables)} expediente(s) con todos sus conceptos cotejados pero sin fecha de pago: "
+                    "siguen Pendientes y ya no suman al total. Pon su Fecha_PagoRealizado para cerrarlos.")
+        no_conc = [(str(bl).strip(), t) for bl, ts in zip(vista[COL_BL], vista["ConceptosNoReconocidos"])
+                   for t in (ts or [])]
+        if no_conc:
+            ejemplos = " · ".join(f"{bl}: {t}" for bl, t in no_conc[:5])
+            st.warning(f"{len(no_conc)} nombre(s) en Conceptos_Pagados no se reconocen y se siguen contando "
+                       f"como pendientes — revisa la ortografía. {ejemplos}")
 
     no_reconocidas = int((~enriquecido["EmpresaEfectiva"].isin(EMPRESAS_PAGO)).sum()) \
         if not enriquecido.empty else 0

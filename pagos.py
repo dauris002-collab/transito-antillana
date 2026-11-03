@@ -38,7 +38,7 @@ from sheets_io import (
 )
 from logica import PALETA_PAISES, enriquecer_pagos, esc, llegadas_desfasadas, resumen_pagos, totales_conceptos
 from ui_componentes import COLOR_TOTAL, rerun_fragmento
-from ui_encabezado import encabezado_html
+from ui_encabezado import encabezado_html, recordar_filtro, restaurar_filtro
 
 
 COLOR_SOBRECOSTO = "#991B1B"
@@ -734,7 +734,9 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False,
     else:
         c1, c2, c3 = st.columns(3)
     with c1:
+        restaurar_filtro("pago_filtro_empresa", ["Todas"] + EMPRESAS_PAGO, "Todas")
         empresa_sel = st.selectbox("Empresa", ["Todas"] + EMPRESAS_PAGO, key="pago_filtro_empresa")
+        recordar_filtro("pago_filtro_empresa")
 
     # Mismo estado que ya manejan los botones de KPI (Pagados/Pendientes),
     # para que este selector y esos botones nunca se contradigan. La clave
@@ -789,10 +791,10 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False,
     # página se congeló, sin ningún aviso de por qué. Se resetea a "Todos"
     # ANTES de crear el widget, nunca después, para que nunca reciba un
     # valor inválido.
-    if st.session_state.get("pago_filtro_mes") not in opciones_mes:
-        st.session_state["pago_filtro_mes"] = "Todos"
+    restaurar_filtro("pago_filtro_mes", opciones_mes, "Todos")
     with c3:
         mes_sel = st.selectbox("Mes (Llegada)", opciones_mes, key="pago_filtro_mes")
+        recordar_filtro("pago_filtro_mes")
 
     if mes_sel != "Todos":
         anio_sel, mes_num_sel = next((a, m) for a, m in meses_disponibles if f"{MESES_ES_CORTO[m]} {a}" == mes_sel)

@@ -38,7 +38,7 @@ from sheets_io import (
     snapshot_taller, taller_agregar, taller_editar, taller_limpiar, taller_marcar_pago,
 )
 from html import escape as _esc
-from ui_encabezado import encabezado_html
+from ui_encabezado import encabezado_html, recordar_filtro, restaurar_filtro
 
 # El Sheet puede traer "ANTILLANA" o "Antillana Comercial": ambas valen.
 _EMPRESAS = {
@@ -490,16 +490,20 @@ def panel_taller(puede_escribir: bool, selector_origen):
         return
 
     with c1:
+        restaurar_filtro("taller_empresa", ["Todas"] + EMPRESAS_PAGO, "Todas")
         empresa = st.selectbox("Empresa", ["Todas"] + EMPRESAS_PAGO, key="taller_empresa")
+        recordar_filtro("taller_empresa")
     vista = df if empresa == "Todas" else df[df["Empresa"] == empresa]
     meses = sorted({(d.year, d.month) for d in vista["Solicitud"] if d is not None and not pd.isna(d)})
     opciones_mes = ["Todos"] + [f"{MESES_ES_CORTO[m]} {a}" for a, m in meses]
-    if st.session_state.get("taller_mes") not in opciones_mes:   # antes de crear el widget
-        st.session_state["taller_mes"] = "Todos"
+    restaurar_filtro("taller_mes", opciones_mes, "Todos")   # antes de crear el widget
+    restaurar_filtro("taller_estatus", list(_ESTATUS), _ESTATUS[0])
     with c2:
         estatus = st.selectbox("Estatus", _ESTATUS, key="taller_estatus")
+        recordar_filtro("taller_estatus")
     with c3:
         mes = st.selectbox("Mes (Solicitud)", opciones_mes, key="taller_mes")
+        recordar_filtro("taller_mes")
     if mes != "Todos":
         a_sel, m_sel = next((a, m) for a, m in meses if f"{MESES_ES_CORTO[m]} {a}" == mes)
         vista = vista[vista["Solicitud"].apply(

@@ -118,3 +118,20 @@ def encabezado_html(titulo: str, ruta: str, anio: int, sello: str, subtitulo_ext
             f'<div class="eh-titulo">{escape(titulo)}</div>'
             f'<div class="eh-sub">Logística e Importaciones {anio}{escape(subtitulo_extra)}</div>'
             f'<div class="eh-sello"><span class="eh-dot"></span> {escape(sello)}</div></div>')
+
+
+def restaurar_filtro(clave: str, opciones: list, defecto="Todos") -> None:
+    """Llamar ANTES de crear el selectbox `clave`. Streamlit borra el estado de un widget
+    cuando una corrida termina en st.rerun() sin dibujarlo (botones ↻ Actualizar), y el
+    filtro volvía a 'Todas'/'Todos'. Se repone desde `clave + "_ult"`, que no es widget y
+    sobrevive. Si el valor ya no está en `opciones`, cae a `defecto` (evita la excepción
+    de selectbox con un valor inexistente)."""
+    if clave not in st.session_state:
+        st.session_state[clave] = st.session_state.get(clave + "_ult", defecto)
+    if st.session_state[clave] not in opciones:
+        st.session_state[clave] = defecto
+
+
+def recordar_filtro(clave: str) -> None:
+    """Llamar DESPUÉS de crear el selectbox `clave`: guarda su valor en `clave + "_ult"`."""
+    st.session_state[clave + "_ult"] = st.session_state[clave]

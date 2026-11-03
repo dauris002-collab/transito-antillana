@@ -57,6 +57,7 @@ COLOR_MORA_PROMEDIO = "#B45309"
 # antes de v5.4, no por su posición actual: reordenar CONCEPTOS_PAGO para que
 # coincida con el Sheet no debe cambiarle el color a ningún concepto. Un
 # concepto nuevo (que no esté aquí) recibe el siguiente color, sin KeyError.
+DIAS_ROJO_PAGOS = 15   # pendiente con 15 días o más sin pagar: el número sale en rojo (v5.6)
 _ORDEN_COLORES = ["ADUANAS", "DPH", "DPW", "TRANSPORTE", "HIT", "FDA", "VECONINTER", "ALMACENAJE",
                   "PORTCOLLECT", "FLETE", "GESTION ADUANAL", "CARGOS LOCALES", "SAN SOUCI"]
 COLOR_CONCEPTO = {c: PALETA_PAISES[i % len(PALETA_PAISES)] for i, c in enumerate(
@@ -130,6 +131,7 @@ PAGOS_CSS = """
                  border-top:1px solid #F3F4F6; white-space:nowrap; }
 .pago-aging tbody tr:nth-child(even) { background:#F9FAFB; }
 .pago-aging td.pago-aging-dias { font-weight:800; }
+.pago-aging td.pago-aging-dias.pago-dias-rojo, .pago-total-val.pago-dias-rojo { color:#B91C1C; }
 .pago-aging td.pago-aging-vacio { color:#9CA3AF; }
 .pago-plan-titulo { font-size:1.05rem; font-weight:800; color:#111827; margin:10px 0 4px; text-align:center; }
 .pago-aging.pago-plan { table-layout:fixed; }
@@ -358,6 +360,9 @@ def _html_expediente(r) -> str:
         if dias_sin_pagar < 0:
             dias_sin_pagar_txt += " (pagado antes de la llegada)"
     fecha_saludable = esc(r.get(COL_FECHA_SIN_MORA, "")) or "sin fijar"
+    # Rojo solo si sigue pendiente: en un expediente pagado son los días finales, no una alerta.
+    clase_dias_rojo = (" pago-dias-rojo" if not pagado and dias_sin_pagar is not None
+                       and not pd.isna(dias_sin_pagar) and dias_sin_pagar >= DIAS_ROJO_PAGOS else "")
 
     if pagado:
         # Ya pagado: lo que importa es el costo FINAL (conceptos + el extra
@@ -397,7 +402,7 @@ def _html_expediente(r) -> str:
         f'<div><span class="pago-total-etq">Fecha saludable</span>'
         f'<span class="pago-total-val" style="font-size:0.95rem;">{fecha_saludable}</span></div>'
         f'<div><span class="pago-total-etq">Días sin pagar</span>'
-        f'<span class="pago-total-val">{dias_sin_pagar_txt}</span></div>'
+        f'<span class="pago-total-val{clase_dias_rojo}">{dias_sin_pagar_txt}</span></div>'
         '</div>'
         f'{pie_cerrado}'
         '</div>'
@@ -484,7 +489,8 @@ def _tabla_antiguedad_pendientes(con_montos: pd.DataFrame, filtro_activo: str):
         + (f"<td>{f['prio']}</td>" if f["prio"] else '<td class="pago-aging-vacio">—</td>')
         + f"<td>{esc(f['desc'])}</td>"
         f"<td>{esc(f['llegada'])}</td>"
-        + (f'<td class="pago-aging-dias">{f["dias"]}</td>' if f["dias"] is not None
+        + (f'<td class="pago-aging-dias{" pago-dias-rojo" if f["dias"] >= DIAS_ROJO_PAGOS else ""}">{f["dias"]}</td>'
+           if f["dias"] is not None
            else '<td class="pago-aging-vacio">—</td>')
         + f"<td>{esc(f['usd'])}</td>"
         f"<td>{esc(f['dop'])}</td>"

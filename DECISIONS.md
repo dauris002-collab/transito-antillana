@@ -149,5 +149,9 @@ Borrador generado el 2026-10-01.
 - **Costo aceptado:** el cotejo no lleva fecha por concepto, así que «Tiempo promedio de pago» y el sobrecosto solo conocen la fecha final de cierre del expediente. Marcar un concepto por error subestima lo que se debe: no hay confirmación de Finanzas ni bitácora de ese cambio (se hace directo en el Sheet).
 - **Reconsiderar si:** hace falta medir la demora de cada concepto (habría que guardar una fecha por concepto).
 
+## 24. Días sin pagar en rojo desde 15 (Pagos de tránsito)
+- **Decisión:** en Pagos de tránsito, un expediente PENDIENTE con 15 días o más sin pagar muestra el número en rojo: en «Pendientes por antigüedad» y en la tarjeta del expediente (`DIAS_ROJO_PAGOS = 15` en pagos.py). Un expediente ya pagado no se marca (son sus días finales, no una alerta). La captura del plan ya mostraba todos los días en rojo (#21) y no cambia. Repuesto y Taller conserva su propio umbral (más de 30, #22). [PE, 3 nov 2026]
+- **Reconsiderar si:** Finanzas pide más de un nivel (p. ej. ámbar a 10 y rojo a 15) o un umbral distinto por empresa.
+
 ## Limitación, no decisión
 - **Repo público:** quedó público por un problema de permisos con repos privados que no se resolvió [CHAT]. No contiene credenciales. Es una limitación, no una elección.

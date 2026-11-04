@@ -36,7 +36,8 @@ from sheets_io import (
     mover_empresa_primera_columna, parsear_fecha, parsear_marca, registrar_log,
     igualar_llegadas_pagos, registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
 )
-from logica import PALETA_PAISES, enriquecer_pagos, esc, llegadas_desfasadas, resumen_pagos, totales_conceptos
+from logica import (PALETA_PAISES, enriquecer_pagos, esc, llegadas_desfasadas, pagos_sin_empresa,
+                    resumen_pagos, totales_conceptos)
 from ui_componentes import COLOR_TOTAL, rerun_fragmento
 from ui_encabezado import encabezado_html, recordar_filtro, restaurar_filtro
 
@@ -1243,6 +1244,18 @@ def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
         form_estado_pago(enriquecido)
     with st.expander("Fijar prioridad de pago (1-4)"):
         form_prioridad_pago(enriquecido)
+    sin_emp = pagos_sin_empresa(df_pagos, activos, historico)
+    with st.expander(f"Revisión: expedientes sin Empresa ({len(sin_emp)})"):
+        if sin_emp.empty:
+            st.caption("Todos los expedientes de Pagos tienen Empresa.")
+        else:
+            st.caption("Solo lectura, no escribe nada. Una Empresa en blanco cuenta como Antillana Comercial. "
+                       "'Cambiar': Tránsito asigna otra empresa. 'Confirmar': es Antillana, solo falta "
+                       "escribirla. 'Revisar': Tránsito no la conoce o el BL ya no está allí. "
+                       "Corrígelo en el Sheet, en la columna Empresa.")
+            st.dataframe(sin_emp, hide_index=True, width="stretch")
+            st.download_button("Descargar lista (CSV)", sin_emp.to_csv(index=False).encode("utf-8-sig"),
+                               file_name="pagos_sin_empresa.csv", mime="text/csv", key="dl_pagos_sin_empresa")
     with st.expander("Activar selectores en Sheets (fechas, Empresa y Prioridad)"):
         st.caption("Solo hace falta correrlo una vez. Agrega el ícono de calendario nativo de Google "
                   "Sheets en las fechas, y una lista desplegable en Empresa y en Prioridad (1-4), "

@@ -786,6 +786,55 @@ def llegadas_desfasadas(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     return cambios
 
 
+def pagos_sin_empresa(df_pagos: pd.DataFrame, activos: pd.DataFrame,
+                      historico: pd.DataFrame) -> pd.DataFrame:
+    """Filas de Pagos con la celda Empresa en blanco (hoy cuentan como Antillana
+    Comercial) junto con la empresa que Tránsito les asignaría. Solo lectura.
+
+    Columnas: BL, Descripción, 'Hoy cuenta como', 'Tránsito asigna', 'Acción':
+      'Cambiar'  -> Tránsito asigna una empresa distinta a la de hoy;
+      'Confirmar' -> Tránsito asigna la misma (basta escribirla en la celda);
+      'Revisar'  -> el BL no está en Tránsito o Tránsito no conoce la empresa."""
+    cols = [COL_BL, COL_DESC, "Hoy cuenta como", "Tránsito asigna", "Acción"]
+    if df_pagos is None or df_pagos.empty or COL_EMPRESA not in df_pagos.columns:
+        return pd.DataFrame(columns=cols)
+
+    def _indice(fuente, col_cat):
+        out = {}
+        if fuente is None or fuente.empty:
+            return out
+        for _, r in fuente.iterrows():
+            clave = _norm(r.get(COL_BL, ""))
+            if clave and clave not in out:
+                out[clave] = empresa_de_embarque(r.get(col_cat, ""), r.get(COL_EMPRESA_EMBARQUE, ""))
+        return out
+
+    en_transito = _indice(historico, "Categoria_Origen")
+    en_transito.update(_indice(activos, "Categoria"))      # el activo manda sobre el archivo
+
+    filas = []
+    for _, r in df_pagos.iterrows():
+        crudo = r.get(COL_EMPRESA, "")
+        if str(crudo if crudo is not None else "").strip().lower() not in ("", "nan"):
+            continue
+        bl = str(r.get(COL_BL, "") or "").strip()
+        if not bl:
+            continue
+        asigna = en_transito.get(_norm(bl))
+        if asigna is None:
+            accion, asigna_txt = "Revisar", "(BL no está en Tránsito)"
+        elif asigna not in EMPRESAS_PAGO:
+            accion, asigna_txt = "Revisar", "(Tránsito no la conoce)"
+        else:
+            accion = "Confirmar" if asigna == EMPRESA_ANTILLANA else "Cambiar"
+            asigna_txt = asigna
+        filas.append({COL_BL: bl, COL_DESC: str(r.get(COL_DESC, "") or "").strip(),
+                      "Hoy cuenta como": EMPRESA_ANTILLANA, "Tránsito asigna": asigna_txt, "Acción": accion})
+    orden = {"Cambiar": 0, "Revisar": 1, "Confirmar": 2}
+    filas.sort(key=lambda f: orden[f["Acción"]])
+    return pd.DataFrame(filas, columns=cols)
+
+
 def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
                      historico: pd.DataFrame) -> pd.DataFrame:
     """Agrega al DataFrame de Pagos lo que no vive directamente en sus celdas:

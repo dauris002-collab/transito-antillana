@@ -144,6 +144,8 @@ def form_alta_manual(datos: dict):
             COL_DESC: datos_nuevos[COL_DESC],
             COL_CANT: datos_nuevos.get(COL_CANT, ""),
             COL_ETA: datos_nuevos[COL_ETA],
+            "Categoria": categoria,
+            COL_EMPRESA_EMBARQUE: datos_nuevos.get(COL_EMPRESA_EMBARQUE, ""),
         }])
         ok_pago, msg_pago = sincronizar_pagos_con_transito(fila_nueva, pd.DataFrame())
         if not ok_pago:

@@ -64,7 +64,9 @@ Borrador generado el 2026-10-01.
 ## 10. Empresa en Pagos
 - **Decisión:** lista cerrada de 3 (`EMPRESAS_PAGO`); la fija Logística a mano. La sincronización con tránsito la deja en blanco a propósito. [CHAT, CÓDIGO]
 - **Por qué:** tránsito solo trackea Antillana; quién debe cada expediente lo decide Logística.
-- **Nota v5.0:** esa premisa ya no es exacta: tránsito ahora conoce la empresa de cada embarque (decisión 18). La sincronización con Pagos sigue SIN copiarla.
+- **Nota v5.0:** esa premisa ya no es exacta: tránsito ahora conoce la empresa de cada embarque (decisión 18).
+- **Cambio v5.5 (4 nov 2026):** la sincronización SÍ copia la empresa que tránsito calcula (`empresa_de_embarque`: fija por categoría, o la de la columna `Empresa` de la fila) al crear la fila en Pagos, tanto desde el alta manual como desde la sincronización del admin y para el histórico (`Categoria_Origen`). Si tránsito no la conoce ("Sin empresa") o no es una de `EMPRESAS_PAGO`, queda en blanco. Solo afecta filas NUEVAS: las existentes no se tocan. Motivo: en Pagos, una Empresa en blanco cuenta como Antillana Comercial, así que un expediente de Tecnicaribe o Motor Ibérico salía mal atribuido hasta que alguien lo corregía. [PE, 4 nov 2026]
+- **Costo aceptado:** una categoría o empresa mal puesta en tránsito se copia a Pagos al crear la fila; después Pagos se edita a mano sin que tránsito la pise.
 - **Reconsiderar si:** [?]
 
 ## 11. Prioridad de pago

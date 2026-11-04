@@ -327,10 +327,10 @@ COL_CONCEPTOS_PAGADOS = "Conceptos_Pagados"
 COL_PAGO_LLEGADA = "Llegada"
 
 
-# Razón social del expediente. La sincronización con tránsito la deja en blanco
-# a propósito (ver DECISIONS.md, punto 10): quién debe cada expediente lo decide
-# Logística a mano. Desde la v5.0 tránsito también conoce la empresa de cada
-# embarque (COL_EMPRESA_EMBARQUE), pero eso NO se copia aquí.
+# Razón social del expediente. Desde la v5.5 la sincronización con tránsito la
+# copia de la empresa que tránsito ya calcula para ese embarque (ver
+# DECISIONS.md, punto 10); si tránsito no la conoce, queda en blanco y Logística
+# la fija a mano. Es editable en Pagos.
 COL_EMPRESA = "Empresa"
 
 
@@ -2552,12 +2552,25 @@ def _lock_sync_pagos():
 
 
 @_con_manejo_apierror
+def _empresa_para_pagos(r, es_hist: bool) -> str:
+    """Empresa canónica que tránsito atribuye a esta fila (fija por categoría, o la
+    escrita en su columna Empresa), para llenar Pagos al sincronizar. '' si tránsito
+    no la conoce ('Sin empresa') o no es una de EMPRESAS_PAGO: mejor en blanco que un
+    texto que Pagos no reconozca."""
+    from logica import empresa_de_embarque   # import tardío: logica importa este módulo
+    categoria = r.get("Categoria_Origen" if es_hist else "Categoria", "")
+    emp = empresa_de_embarque(categoria, r.get(COL_EMPRESA_EMBARQUE, ""))
+    return emp if emp in EMPRESAS_PAGO else ""
+
+
 def sincronizar_pagos_con_transito(activos: pd.DataFrame, historico: pd.DataFrame):
     """Agrega a Pagos, con BL/Descripción/Cantidad/Llegada ya llenos, los
     expedientes de tránsito (activos + histórico) que todavía no tienen fila
     ahí. Pensado para que Logística pueda abrir el Google Sheet directamente y
     encontrar la fila ya lista para escribir los montos, sin tener que crearla
     a mano ni pasar por la app.
+
+    La Empresa de la fila nueva se copia de tránsito (ver _empresa_para_pagos).
 
     No pisa ni borra nada de lo que ya exista en Pagos: un BL que ya tiene
     fila se deja tal cual, aunque su descripción o llegada haya cambiado en
@@ -2588,15 +2601,14 @@ def sincronizar_pagos_con_transito(activos: pd.DataFrame, historico: pd.DataFram
                     llegada = fecha_llegada_fila(r) or parsear_fecha(r.get(COL_ETA, ""))
                 nuevas.append({
                     COL_BL: bl,
+                    COL_EMPRESA: _empresa_para_pagos(r, es_hist),
                     COL_DESC: str(r.get(COL_DESC, "")),
                     COL_CANT: str(r.get(COL_CANT, "")),
                     COL_PAGO_LLEGADA: llegada.isoformat() if llegada else "",
                     COL_ACTUALIZACION: sello,
                     COL_ACTUALIZADO_POR: autor,
                 })
-                # Empresa se deja en blanco a propósito: tránsito no tiene ese
-                # concepto (solo trackea Antillana), y quién debe cada expediente
-                # lo decide Logística a mano, no la sincronización.
+                # Empresa: la de tránsito si la conoce; si no, en blanco (Logística la fija).
                 vistos.add(clave)
 
         if not nuevas:

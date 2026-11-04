@@ -17,7 +17,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from ui_encabezado import encabezado_html
+from ui_encabezado import encabezado_html, recordar_filtro, restaurar_filtro
 
 from sheets_io import (
     CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
@@ -1782,21 +1782,61 @@ def mostrar_dashboard(datos: dict):
         st.session_state.pop(k, None)
 
     if seleccion == VISTA_EN_PROCESO_PUERTO:
-        # Filtro por categoría de tránsito: deja solo lo que ya llegó de esa
-        # categoría, con sus estatus.
-        conteo_cat = en_proceso_df["Categoria"].value_counts().to_dict()
-        cats_puerto = [c for c in CATEGORIAS if c in conteo_cat]
-        cats_puerto += sorted(c for c in conteo_cat if c not in CATEGORIAS)
+        # Filtros de la vista: Categoría y Empresa (discreto, al lado). Las OPCIONES salen
+        # de todo lo que hay en puerto (no cambian al filtrar); los CONTEOS de cada una
+        # cuentan con el otro filtro ya aplicado, como en las pestañas de tránsito.
+        # restaurar/recordar_filtro: ↻ Actualizar hace st.rerun() antes de dibujar estos
+        # selectbox y Streamlit borraría su estado (volvían a "Todas").
+        existentes_cat = set(en_proceso_df["Categoria"])
+        cats_puerto = [c for c in CATEGORIAS if c in existentes_cat]
+        cats_puerto += sorted(c for c in existentes_cat if c not in CATEGORIAS)
         opciones_cat = ["Todas"] + cats_puerto
-        if st.session_state.get("puerto_categoria", "Todas") not in opciones_cat:
-            st.session_state.pop("puerto_categoria", None)
-        cat_sel = st.selectbox(
-            "Categoría", opciones_cat, key="puerto_categoria",
-            format_func=lambda c: (f"Todas · {len(en_proceso_df)}" if c == "Todas"
-                                   else f"{c} · {conteo_cat.get(c, 0)}"),
-        )
-        vista_puerto = (en_proceso_df if cat_sel == "Todas"
-                        else en_proceso_df[en_proceso_df["Categoria"] == cat_sel])
+
+        existentes_emp = set(en_proceso_df["EmpresaTransito"]) if "EmpresaTransito" in en_proceso_df.columns else set()
+        emp_puerto = [e for e in EMPRESAS_PAGO if e in existentes_emp]
+        emp_puerto += sorted(e for e in existentes_emp if e not in EMPRESAS_PAGO and e != EMPRESA_SIN_ASIGNAR)
+        if EMPRESA_SIN_ASIGNAR in existentes_emp:
+            emp_puerto.append(EMPRESA_SIN_ASIGNAR)
+        opciones_emp = ["Todas"] + emp_puerto
+
+        restaurar_filtro("puerto_categoria", opciones_cat, "Todas")
+        restaurar_filtro("puerto_empresa", opciones_emp, "Todas")
+        cat_vigente = st.session_state["puerto_categoria"]
+        emp_vigente = st.session_state["puerto_empresa"]
+
+        def _recorte_puerto(cat, emp):
+            d = en_proceso_df
+            if cat != "Todas":
+                d = d[d["Categoria"] == cat]
+            if emp != "Todas" and "EmpresaTransito" in d.columns:
+                d = d[d["EmpresaTransito"] == emp]
+            return d
+
+        base_cat = _recorte_puerto("Todas", emp_vigente)    # conteos de Categoría: con Empresa aplicada
+        base_emp = _recorte_puerto(cat_vigente, "Todas")    # conteos de Empresa: con Categoría aplicada
+        conteo_cat = base_cat["Categoria"].value_counts().to_dict()
+        conteo_emp = (base_emp["EmpresaTransito"].value_counts().to_dict()
+                      if "EmpresaTransito" in base_emp.columns else {})
+
+        fc, fe = st.columns([3, 1])
+        with fc:
+            cat_sel = st.selectbox(
+                "Categoría", opciones_cat, key="puerto_categoria",
+                format_func=lambda c: (f"Todas · {len(base_cat)}" if c == "Todas"
+                                       else f"{c} · {conteo_cat.get(c, 0)}"),
+            )
+            recordar_filtro("puerto_categoria")
+        with fe:
+            emp_sel = st.selectbox(
+                "Empresa", opciones_emp, key="puerto_empresa",
+                format_func=lambda e: (f"Todas · {len(base_emp)}" if e == "Todas"
+                                       else f"{e} · {conteo_emp.get(e, 0)}"),
+            )
+            recordar_filtro("puerto_empresa")
+        vista_puerto = _recorte_puerto(cat_sel, emp_sel)
+        if vista_puerto.empty:
+            st.info("No hay embarques en puerto/aeropuerto con esa combinación de Categoría y Empresa.")
+            return
         st.markdown(html_chips(vista_puerto["EtapaActual"].value_counts().to_dict()),
                     unsafe_allow_html=True)
         html_atraso_puerto(vista_puerto, contexto=VISTA_EN_PROCESO_PUERTO)

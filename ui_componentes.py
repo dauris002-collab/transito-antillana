@@ -1818,14 +1818,9 @@ def mostrar_dashboard(datos: dict):
         conteo_emp = (base_emp["EmpresaTransito"].value_counts().to_dict()
                       if "EmpresaTransito" in base_emp.columns else {})
 
-        fc, fe = st.columns([3, 1])
-        with fc:
-            cat_sel = st.selectbox(
-                "Categoría", opciones_cat, key="puerto_categoria",
-                format_func=lambda c: (f"Todas · {len(base_cat)}" if c == "Todas"
-                                       else f"{c} · {conteo_cat.get(c, 0)}"),
-            )
-            recordar_filtro("puerto_categoria")
+        # Empresa primero y Categoría al lado, del mismo tamaño y a la izquierda; la
+        # tercera columna queda vacía a propósito para que no se estiren.
+        fe, fc, _resto = st.columns([1, 1, 2])
         with fe:
             emp_sel = st.selectbox(
                 "Empresa", opciones_emp, key="puerto_empresa",
@@ -1833,6 +1828,13 @@ def mostrar_dashboard(datos: dict):
                                        else f"{e} · {conteo_emp.get(e, 0)}"),
             )
             recordar_filtro("puerto_empresa")
+        with fc:
+            cat_sel = st.selectbox(
+                "Categoría", opciones_cat, key="puerto_categoria",
+                format_func=lambda c: (f"Todas · {len(base_cat)}" if c == "Todas"
+                                       else f"{c} · {conteo_cat.get(c, 0)}"),
+            )
+            recordar_filtro("puerto_categoria")
         vista_puerto = _recorte_puerto(cat_sel, emp_sel)
         if vista_puerto.empty:
             st.info("No hay embarques en puerto/aeropuerto con esa combinación de Categoría y Empresa.")

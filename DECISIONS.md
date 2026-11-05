@@ -157,7 +157,7 @@ Borrador generado el 2026-10-01.
 - **Reconsiderar si:** Finanzas pide más de un nivel (p. ej. ámbar a 10 y rojo a 15) o un umbral distinto por empresa.
 
 ## 25. Puerto/Aeropuerto: filtro por Empresa y filtros que sobreviven a ↻ Actualizar (v5.6)
-- **Decisión:** la vista «Puerto/Aeropuerto · Estatus» tiene, junto a Categoría, un selector Empresa (fija por categoría o la de la fila, igual que en tránsito; incluye «Sin empresa»). Los conteos de cada uno cuentan con el otro ya aplicado; las opciones salen de todo lo que hay en puerto. Si la combinación no tiene embarques, se avisa en vez de dejar la vista en blanco. Categoría y Empresa conservan su valor al pulsar ↻ Actualizar (antes Categoría volvía a «Todas»). [PE, 4 nov 2026]
+- **Decisión:** la vista «Puerto/Aeropuerto · Estatus» tiene dos selectores del mismo tamaño, a la izquierda: primero Empresa y al lado Categoría (5 nov: antes Categoría ocupaba todo el ancho). Empresa (fija por categoría o la de la fila, igual que en tránsito; incluye «Sin empresa»). Los conteos de cada uno cuentan con el otro ya aplicado; las opciones salen de todo lo que hay en puerto. Si la combinación no tiene embarques, se avisa en vez de dejar la vista en blanco. Categoría y Empresa conservan su valor al pulsar ↻ Actualizar (antes Categoría volvía a «Todas»). [PE, 4 nov 2026]
 - **Sin cambio:** el botón «Sin declarar · N» filtra la lista de «Detenidos» (muestra hasta 10 y «y N más»), pero en los diagramas de abajo solo REORDENA (los que cumplen primero); es el diseño actual.
 - **Reconsiderar si:** hace falta ver más de 10 en «Detenidos» o filtrar los diagramas en vez de reordenarlos.
 

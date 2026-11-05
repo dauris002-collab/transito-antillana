@@ -1790,7 +1790,10 @@ def mostrar_dashboard(datos: dict):
         # salen de todo lo que hay en puerto; las de Categoría, solo de lo que tiene la
         # Empresa elegida (así nunca ofrece una categoría vacía). Si al cambiar de Empresa
         # la Categoría elegida ya no existe en ella, vuelve a «Todas». Los conteos de cada
-        # selector cuentan con el otro ya aplicado.
+        # selector: Empresa siempre cuenta el total de lo que hay en puerto (así 'Todas · 13'
+        # no se vuelve 'Todas · 1' al elegir una categoría y no parece un error) y Categoría
+        # cuenta dentro de la Empresa elegida. Lo que se ve filtrado lo dicen la línea
+        # «Mostrando N de M» y los botones Todos · N.
         # selectbox_sincronizado: las etiquetas llevan conteos que cambian y, con clave
         # fija, el navegador dejaba el texto viejo ('Todas · 13' con 8 filas); además
         # conserva el valor tras ↻ Actualizar (que hace st.rerun() antes de dibujarlos).
@@ -1819,7 +1822,7 @@ def mostrar_dashboard(datos: dict):
             return d
 
         base_cat = _recorte_puerto("Todas", emp_vigente)    # conteos de Categoría: con Empresa aplicada
-        base_emp = _recorte_puerto(cat_vigente, "Todas")    # conteos de Empresa: con Categoría aplicada
+        base_emp = en_proceso_df                             # conteos de Empresa: SIEMPRE el total (Empresa manda)
         conteo_cat = base_cat["Categoria"].value_counts().to_dict()
         conteo_emp = (base_emp["EmpresaTransito"].value_counts().to_dict()
                       if "EmpresaTransito" in base_emp.columns else {})
@@ -1841,6 +1844,10 @@ def mostrar_dashboard(datos: dict):
         if vista_puerto.empty:
             st.info("No hay embarques en puerto/aeropuerto con esa combinación de Categoría y Empresa.")
             return
+        if emp_sel != "Todas" or cat_sel != "Todas":
+            filtros_txt = " · ".join(t for t in (f"Empresa: {emp_sel}" if emp_sel != "Todas" else "",
+                                                 f"Categoría: {cat_sel}" if cat_sel != "Todas" else "") if t)
+            st.caption(f"Mostrando {len(vista_puerto)} de {len(en_proceso_df)} en puerto/aeropuerto · {filtros_txt}")
         st.markdown(html_chips(vista_puerto["EtapaActual"].value_counts().to_dict()),
                     unsafe_allow_html=True)
         html_atraso_puerto(vista_puerto, contexto=VISTA_EN_PROCESO_PUERTO)

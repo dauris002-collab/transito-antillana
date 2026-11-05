@@ -1785,27 +1785,30 @@ def mostrar_dashboard(datos: dict):
         st.session_state.pop(k, None)
 
     if seleccion == VISTA_EN_PROCESO_PUERTO:
-        # Filtros de la vista: Categoría y Empresa (discreto, al lado). Las OPCIONES salen
-        # de todo lo que hay en puerto (no cambian al filtrar); los CONTEOS de cada una
-        # cuentan con el otro filtro ya aplicado, como en las pestañas de tránsito.
+        # Filtros de la vista: Empresa manda y Categoría la sigue. Las opciones de Empresa
+        # salen de todo lo que hay en puerto; las de Categoría, solo de lo que tiene la
+        # Empresa elegida (así nunca ofrece una categoría vacía). Si al cambiar de Empresa
+        # la Categoría elegida ya no existe en ella, vuelve a «Todas». Los conteos de cada
+        # selector cuentan con el otro ya aplicado.
         # restaurar/recordar_filtro: ↻ Actualizar hace st.rerun() antes de dibujar estos
         # selectbox y Streamlit borraría su estado (volvían a "Todas").
-        existentes_cat = set(en_proceso_df["Categoria"])
-        cats_puerto = [c for c in CATEGORIAS if c in existentes_cat]
-        cats_puerto += sorted(c for c in existentes_cat if c not in CATEGORIAS)
-        opciones_cat = ["Todas"] + cats_puerto
-
         existentes_emp = set(en_proceso_df["EmpresaTransito"]) if "EmpresaTransito" in en_proceso_df.columns else set()
         emp_puerto = [e for e in EMPRESAS_PAGO if e in existentes_emp]
         emp_puerto += sorted(e for e in existentes_emp if e not in EMPRESAS_PAGO and e != EMPRESA_SIN_ASIGNAR)
         if EMPRESA_SIN_ASIGNAR in existentes_emp:
             emp_puerto.append(EMPRESA_SIN_ASIGNAR)
         opciones_emp = ["Todas"] + emp_puerto
-
-        restaurar_filtro("puerto_categoria", opciones_cat, "Todas")
         restaurar_filtro("puerto_empresa", opciones_emp, "Todas")
-        cat_vigente = st.session_state["puerto_categoria"]
         emp_vigente = st.session_state["puerto_empresa"]
+
+        de_la_empresa = (en_proceso_df if emp_vigente == "Todas" or "EmpresaTransito" not in en_proceso_df.columns
+                         else en_proceso_df[en_proceso_df["EmpresaTransito"] == emp_vigente])
+        existentes_cat = set(de_la_empresa["Categoria"])
+        cats_puerto = [c for c in CATEGORIAS if c in existentes_cat]
+        cats_puerto += sorted(c for c in existentes_cat if c not in CATEGORIAS)
+        opciones_cat = ["Todas"] + cats_puerto
+        restaurar_filtro("puerto_categoria", opciones_cat, "Todas")
+        cat_vigente = st.session_state["puerto_categoria"]
 
         def _recorte_puerto(cat, emp):
             d = en_proceso_df

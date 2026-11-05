@@ -17,7 +17,8 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from ui_encabezado import encabezado_html, recordar_filtro, restaurar_filtro
+from ui_encabezado import (encabezado_html, recordar_filtro, restaurar_filtro, selectbox_sincronizado,
+                           valor_previo)
 
 from sheets_io import (
     CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
@@ -1790,16 +1791,16 @@ def mostrar_dashboard(datos: dict):
         # Empresa elegida (así nunca ofrece una categoría vacía). Si al cambiar de Empresa
         # la Categoría elegida ya no existe en ella, vuelve a «Todas». Los conteos de cada
         # selector cuentan con el otro ya aplicado.
-        # restaurar/recordar_filtro: ↻ Actualizar hace st.rerun() antes de dibujar estos
-        # selectbox y Streamlit borraría su estado (volvían a "Todas").
+        # selectbox_sincronizado: las etiquetas llevan conteos que cambian y, con clave
+        # fija, el navegador dejaba el texto viejo ('Todas · 13' con 8 filas); además
+        # conserva el valor tras ↻ Actualizar (que hace st.rerun() antes de dibujarlos).
         existentes_emp = set(en_proceso_df["EmpresaTransito"]) if "EmpresaTransito" in en_proceso_df.columns else set()
         emp_puerto = [e for e in EMPRESAS_PAGO if e in existentes_emp]
         emp_puerto += sorted(e for e in existentes_emp if e not in EMPRESAS_PAGO and e != EMPRESA_SIN_ASIGNAR)
         if EMPRESA_SIN_ASIGNAR in existentes_emp:
             emp_puerto.append(EMPRESA_SIN_ASIGNAR)
         opciones_emp = ["Todas"] + emp_puerto
-        restaurar_filtro("puerto_empresa", opciones_emp, "Todas")
-        emp_vigente = st.session_state["puerto_empresa"]
+        emp_vigente = valor_previo("puerto_empresa", opciones_emp, "Todas")
 
         de_la_empresa = (en_proceso_df if emp_vigente == "Todas" or "EmpresaTransito" not in en_proceso_df.columns
                          else en_proceso_df[en_proceso_df["EmpresaTransito"] == emp_vigente])
@@ -1807,8 +1808,7 @@ def mostrar_dashboard(datos: dict):
         cats_puerto = [c for c in CATEGORIAS if c in existentes_cat]
         cats_puerto += sorted(c for c in existentes_cat if c not in CATEGORIAS)
         opciones_cat = ["Todas"] + cats_puerto
-        restaurar_filtro("puerto_categoria", opciones_cat, "Todas")
-        cat_vigente = st.session_state["puerto_categoria"]
+        cat_vigente = valor_previo("puerto_categoria", opciones_cat, "Todas")
 
         def _recorte_puerto(cat, emp):
             d = en_proceso_df
@@ -1828,19 +1828,15 @@ def mostrar_dashboard(datos: dict):
         # tercera columna queda vacía a propósito para que no se estiren.
         fe, fc, _resto = st.columns([1, 1, 2])
         with fe:
-            emp_sel = st.selectbox(
-                "Empresa", opciones_emp, key="puerto_empresa",
-                format_func=lambda e: (f"Todas · {len(base_emp)}" if e == "Todas"
-                                       else f"{e} · {conteo_emp.get(e, 0)}"),
-            )
-            recordar_filtro("puerto_empresa")
+            emp_sel = selectbox_sincronizado(
+                "Empresa", opciones_emp, "puerto_empresa",
+                lambda e: (f"Todas · {len(base_emp)}" if e == "Todas" else f"{e} · {conteo_emp.get(e, 0)}"),
+                emp_vigente)
         with fc:
-            cat_sel = st.selectbox(
-                "Categoría", opciones_cat, key="puerto_categoria",
-                format_func=lambda c: (f"Todas · {len(base_cat)}" if c == "Todas"
-                                       else f"{c} · {conteo_cat.get(c, 0)}"),
-            )
-            recordar_filtro("puerto_categoria")
+            cat_sel = selectbox_sincronizado(
+                "Categoría", opciones_cat, "puerto_categoria",
+                lambda c: (f"Todas · {len(base_cat)}" if c == "Todas" else f"{c} · {conteo_cat.get(c, 0)}"),
+                cat_vigente)
         vista_puerto = _recorte_puerto(cat_sel, emp_sel)
         if vista_puerto.empty:
             st.info("No hay embarques en puerto/aeropuerto con esa combinación de Categoría y Empresa.")

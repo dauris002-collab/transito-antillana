@@ -24,6 +24,7 @@ de 4 espacios; cada bloque va en una sola cadena.
 from __future__ import annotations
 
 import base64
+import hashlib
 from html import escape
 from pathlib import Path
 
@@ -135,3 +136,35 @@ def restaurar_filtro(clave: str, opciones: list, defecto="Todos") -> None:
 def recordar_filtro(clave: str) -> None:
     """Llamar DESPUÉS de crear el selectbox `clave`: guarda su valor en `clave + "_ult"`."""
     st.session_state[clave + "_ult"] = st.session_state[clave]
+
+
+def valor_previo(clave: str, opciones: list, defecto="Todas"):
+    """Valor vigente de un filtro creado con `selectbox_sincronizado`, leído ANTES de
+    dibujarlo (para calcular lo que depende de él). Toma lo que el usuario dejó en el
+    widget; si el widget ya no existe (↻ Actualizar hace st.rerun() antes de dibujarlo y
+    Streamlit borra su estado) cae a la copia `clave + "_ult"`. Si el valor ya no está
+    en `opciones`, devuelve `defecto`."""
+    clave_widget = st.session_state.get(clave + "_wk")
+    if clave_widget and clave_widget in st.session_state:
+        valor = st.session_state[clave_widget]
+    else:
+        valor = st.session_state.get(clave + "_ult", defecto)
+    return valor if valor in opciones else defecto
+
+
+def selectbox_sincronizado(etiqueta: str, opciones: list, clave: str, formato, valor, **kw):
+    """selectbox cuyas etiquetas llevan números que cambian (p. ej. 'Todas · 8').
+
+    Problema que resuelve: con la clave fija, el navegador conserva el texto que ya
+    mostraba el valor elegido y NO refresca su etiqueta cuando cambia solo el conteo
+    ('Todas · 13' seguía diciendo 13 con 8 filas). Aquí la clave del widget lleva una
+    firma de las etiquetas: si cambian, nace un widget nuevo con `valor` ya elegido y se
+    ve el texto correcto. Además guarda el valor en `clave + "_ult"` (sobrevive a
+    ↻ Actualizar). Usar `valor_previo` para leer el valor antes de dibujar."""
+    firma = hashlib.md5("|".join(str(formato(o)) for o in opciones).encode("utf-8")).hexdigest()[:8]
+    clave_widget = f"{clave}__{firma}"
+    elegido = st.selectbox(etiqueta, opciones, index=opciones.index(valor), key=clave_widget,
+                           format_func=formato, **kw)
+    st.session_state[clave + "_wk"] = clave_widget
+    st.session_state[clave + "_ult"] = elegido
+    return elegido

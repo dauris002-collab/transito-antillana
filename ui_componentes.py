@@ -48,6 +48,7 @@ VERSION_APP = "5.5"
 
 
 VISTA_EN_PROCESO_PUERTO = "Puerto/Aeropuerto · Estatus"
+DIAS_ROJO_PUERTO = 15   # en «Detenidos»: 15 días o más en puerto/aeropuerto salen en rojo (v5.7)
 
 
 TOPE_PROCESO = 8            # embarques con diagrama visible antes de paginar
@@ -163,6 +164,7 @@ html { -webkit-text-size-adjust: 100%; }
         border-radius:5px; padding:1px 6px; }
 .atoc.atsin { color:#92400E; background:rgba(146,64,14,.10); }
 .atdias { color:#4B5563; }
+.atdias.atdias-rojo { color:#B91C1C; font-weight:700; }
 .atmonto { margin-left:auto; font-weight:700; color:#991B1B; white-space:nowrap;
            text-align:right; }
 .atresto { color:#6B7280; font-style:italic; }
@@ -492,7 +494,8 @@ def html_atraso_puerto(df, contexto: str = "") -> None:
         filas.append(
             f'<div class="atfila">'
             f'<span class="atbl">{ref}</span>{oc}'
-            f'<span class="atdias">{d["dias"]} días en {d["lugar"]}</span>'
+            f'<span class="atdias{" atdias-rojo" if d["dias"] >= DIAS_ROJO_PUERTO else ""}">'
+            f'{d["dias"]} días en {d["lugar"]}</span>'
             f'{estado}</div>'
         )
     resto = len(detalle) - 10

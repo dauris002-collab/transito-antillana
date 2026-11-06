@@ -44,7 +44,7 @@ from logica import (
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------------------------
-VERSION_APP = "5.5"
+VERSION_APP = "5.8"
 
 
 VISTA_EN_PROCESO_PUERTO = "Puerto/Aeropuerto · Estatus"
@@ -1534,10 +1534,6 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     # "Retrasado" ya no se ofrece como filtro (v5.0). El estado se sigue
     # calculando y se ve en cada fila; solo salió de este desplegable.
     estados = ["Todos"] + [e for e in STATUS_ORDER if e != EST_RETRASADO]
-    criterios = ["ETA más próximo", "Más días detenido", "ETA más lejano",
-                 "BL", "País", "Descripción"]
-    if valor_total:
-        criterios.append("Valor")
 
     # Las OPCIONES de Mes y Empresa salen de todo lo que hay en esta vista (no
     # cambian al filtrar, para que la opción elegida nunca desaparezca); lo que
@@ -1557,16 +1553,16 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     # se vació tras un refresco, o es un orden/estado que ya no existe) se
     # descarta: si no, el selectbox falla o muestra algo distinto a lo filtrado.
     # (Mes ETA y Empresa no van aquí: su valor se valida con valor_previo, más abajo.)
-    for k, validas in ((f"estado_{tab_key}", estados), (f"orden_{tab_key}", criterios)):
-        if k in st.session_state and st.session_state[k] not in validas:
-            st.session_state.pop(k, None)
+    if st.session_state.get(f"estado_{tab_key}", "Todos") not in estados:
+        st.session_state.pop(f"estado_{tab_key}", None)
 
-    f1, f2, f3 = st.columns([2, 1, 1])
+    f1, f2 = st.columns([2, 1])
     busqueda = f1.text_input("Buscar", key=f"busca_{tab_key}",
                              placeholder="BL, descripción, modelo, OC, cliente…", label_visibility="collapsed")
     pais_sel = f2.selectbox("País", paises, key=f"pais_{tab_key}", label_visibility="collapsed")
-    estado_sel = f3.selectbox("Estado", estados, key=f"estado_{tab_key}", label_visibility="collapsed",
-                              format_func=lambda e: ETIQUETA_POR_CONFIRMAR if e == EST_PUERTO else e)
+    # El Estado ya no tiene desplegable (v5.8): lo fijan las tarjetas-botón de
+    # arriba y vive en session_state; "Limpiar filtros" lo reinicia.
+    estado_sel = st.session_state.get(f"estado_{tab_key}", "Todos")
 
     # Conteos dinámicos: cada número de Mes ETA y de Empresa dice cuántos
     # embarques quedarían AL ELEGIR esa opción, con los DEMÁS filtros ya
@@ -1596,13 +1592,13 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     base_emp = _recortar("empresa")
     conteo_emp = base_emp["EmpresaTransito"].value_counts().to_dict() if "EmpresaTransito" in base_emp.columns else {}
 
-    f4, f5, f6, f7 = st.columns([1, 1, 1, 1])
+    f4, f5, f7 = st.columns([1, 1, 1])
     # selectbox_sincronizado: estas etiquetas llevan conteos que cambian con los demás
     # filtros y, con clave fija, el navegador dejaba el texto viejo ('Todos · 10' con
     # 0 embarques). Ver DECISIONS.md, punto 25.
     with f4:
         mes_sel = selectbox_sincronizado(
-            "Mes ETA", mes_opciones, f"mes_eta_{tab_key}",
+            "Llegada por Mes", mes_opciones, f"mes_eta_{tab_key}",
             lambda k: (f"Todos · {len(base_mes)}" if k == "Todos"
                        else f"{_etiqueta_mes_eta(k)} · {conteo_mes.get(k, 0)}"),
             mes_vigente)
@@ -1611,12 +1607,11 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
             "Empresa", empresa_opciones, f"empresa_{tab_key}",
             lambda e: (f"Todas · {len(base_emp)}" if e == "Todas" else f"{e} · {conteo_emp.get(e, 0)}"),
             empresa_vigente)
-    orden_sel = f6.selectbox("Ordenar por", criterios, key=f"orden_{tab_key}")
     with f7:
         st.write("")
         st.write("")
         if st.button("Limpiar filtros", key=f"limpiar_{tab_key}", width="stretch"):
-            for k in (f"busca_{tab_key}", f"pais_{tab_key}", f"estado_{tab_key}", f"orden_{tab_key}"):
+            for k in (f"busca_{tab_key}", f"pais_{tab_key}", f"estado_{tab_key}"):
                 st.session_state.pop(k, None)
             limpiar_filtro(f"mes_eta_{tab_key}")
             limpiar_filtro(f"empresa_{tab_key}")
@@ -1639,7 +1634,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     if busqueda and busqueda.strip():
         filtrado = filtrado[filtrado["Buscar"].str.contains(_norm(busqueda), regex=False, na=False)]
         activos_txt.append(f"búsqueda: {busqueda.strip()}")
-    filtrado = ordenar_vista(filtrado, orden_sel)
+    filtrado = ordenar_vista(filtrado, "ETA más próximo")
 
     resumen_valor = ""
     if valor_total:

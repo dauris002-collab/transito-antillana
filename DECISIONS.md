@@ -164,5 +164,9 @@ Borrador generado el 2026-10-01.
 - **Sin cambio:** el botón «Sin declarar · N» filtra la lista de «Detenidos» (muestra hasta 10 y «y N más»), pero en los diagramas de abajo solo REORDENA (los que cumplen primero); es el diseño actual.
 - **Reconsiderar si:** hace falta ver más de 10 en «Detenidos» o filtrar los diagramas en vez de reordenarlos.
 
+## 26. Dashboard: sin desplegables Estado y Ordenar por; «Llegada por Mes» (v5.8)
+- **Decisión:** el usuario no los usaba y las tarjetas-botón ya filtran por estado. Se quitaron de las pestañas del Dashboard; el estado vive en `st.session_state["estado_<tab>"]` (lo fijan las tarjetas, «Limpiar filtros» lo reinicia). El orden queda fijo en «ETA más próximo» (el valor por defecto anterior). «Mes ETA» pasa a llamarse «Llegada por Mes».
+- **Reconsiderar si:** hace falta ordenar por días detenido, BL, país o valor.
+
 ## Limitación, no decisión
 - **Repo público:** quedó público por un problema de permisos con repos privados que no se resolvió [CHAT]. No contiene credenciales. Es una limitación, no una elección.

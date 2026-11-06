@@ -168,3 +168,12 @@ def selectbox_sincronizado(etiqueta: str, opciones: list, clave: str, formato, v
     st.session_state[clave + "_wk"] = clave_widget
     st.session_state[clave + "_ult"] = elegido
     return elegido
+
+
+def limpiar_filtro(clave: str) -> None:
+    """Borra por completo un filtro creado con `selectbox_sincronizado` (widget actual,
+    su copia `_ult` y el puntero `_wk`): lo que necesita un botón «Limpiar filtros»."""
+    clave_widget = st.session_state.pop(clave + "_wk", None)
+    if clave_widget:
+        st.session_state.pop(clave_widget, None)
+    st.session_state.pop(clave + "_ult", None)

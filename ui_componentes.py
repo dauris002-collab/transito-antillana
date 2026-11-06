@@ -17,8 +17,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from ui_encabezado import (encabezado_html, recordar_filtro, restaurar_filtro, selectbox_sincronizado,
-                           valor_previo)
+from ui_encabezado import encabezado_html, limpiar_filtro, selectbox_sincronizado, valor_previo
 
 from sheets_io import (
     CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
@@ -1557,8 +1556,8 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     # Un valor que quedó guardado en la sesión pero ya no es una opción (el mes
     # se vació tras un refresco, o es un orden/estado que ya no existe) se
     # descarta: si no, el selectbox falla o muestra algo distinto a lo filtrado.
-    for k, validas in ((f"estado_{tab_key}", estados), (f"orden_{tab_key}", criterios),
-                       (f"mes_eta_{tab_key}", mes_opciones), (f"empresa_{tab_key}", empresa_opciones)):
+    # (Mes ETA y Empresa no van aquí: su valor se valida con valor_previo, más abajo.)
+    for k, validas in ((f"estado_{tab_key}", estados), (f"orden_{tab_key}", criterios)):
         if k in st.session_state and st.session_state[k] not in validas:
             st.session_state.pop(k, None)
 
@@ -1575,8 +1574,8 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     # elegido, Empresa reparte esos 19 entre las empresas; y al revés. La
     # selección vigente de Mes/Empresa se lee de session_state porque estos dos
     # widgets todavía no se dibujaron en esta pasada.
-    mes_vigente = st.session_state.get(f"mes_eta_{tab_key}", "Todos")
-    empresa_vigente = st.session_state.get(f"empresa_{tab_key}", "Todas")
+    mes_vigente = valor_previo(f"mes_eta_{tab_key}", mes_opciones, "Todos")
+    empresa_vigente = valor_previo(f"empresa_{tab_key}", empresa_opciones, "Todas")
 
     def _recortar(excluir: str) -> pd.DataFrame:
         d = df
@@ -1598,20 +1597,29 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     conteo_emp = base_emp["EmpresaTransito"].value_counts().to_dict() if "EmpresaTransito" in base_emp.columns else {}
 
     f4, f5, f6, f7 = st.columns([1, 1, 1, 1])
-    mes_sel = f4.selectbox("Mes ETA", mes_opciones, key=f"mes_eta_{tab_key}",
-                           format_func=lambda k: (f"Todos · {len(base_mes)}" if k == "Todos"
-                                                  else f"{_etiqueta_mes_eta(k)} · {conteo_mes.get(k, 0)}"))
-    empresa_sel = f5.selectbox("Empresa", empresa_opciones, key=f"empresa_{tab_key}",
-                               format_func=lambda e: (f"Todas · {len(base_emp)}" if e == "Todas"
-                                                      else f"{e} · {conteo_emp.get(e, 0)}"))
+    # selectbox_sincronizado: estas etiquetas llevan conteos que cambian con los demás
+    # filtros y, con clave fija, el navegador dejaba el texto viejo ('Todos · 10' con
+    # 0 embarques). Ver DECISIONS.md, punto 25.
+    with f4:
+        mes_sel = selectbox_sincronizado(
+            "Mes ETA", mes_opciones, f"mes_eta_{tab_key}",
+            lambda k: (f"Todos · {len(base_mes)}" if k == "Todos"
+                       else f"{_etiqueta_mes_eta(k)} · {conteo_mes.get(k, 0)}"),
+            mes_vigente)
+    with f5:
+        empresa_sel = selectbox_sincronizado(
+            "Empresa", empresa_opciones, f"empresa_{tab_key}",
+            lambda e: (f"Todas · {len(base_emp)}" if e == "Todas" else f"{e} · {conteo_emp.get(e, 0)}"),
+            empresa_vigente)
     orden_sel = f6.selectbox("Ordenar por", criterios, key=f"orden_{tab_key}")
     with f7:
         st.write("")
         st.write("")
         if st.button("Limpiar filtros", key=f"limpiar_{tab_key}", width="stretch"):
-            for k in (f"busca_{tab_key}", f"pais_{tab_key}", f"estado_{tab_key}",
-                      f"orden_{tab_key}", f"mes_eta_{tab_key}", f"empresa_{tab_key}"):
+            for k in (f"busca_{tab_key}", f"pais_{tab_key}", f"estado_{tab_key}", f"orden_{tab_key}"):
                 st.session_state.pop(k, None)
+            limpiar_filtro(f"mes_eta_{tab_key}")
+            limpiar_filtro(f"empresa_{tab_key}")
             rerun_fragmento()
 
     filtrado = df

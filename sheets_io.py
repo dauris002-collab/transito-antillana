@@ -2551,7 +2551,6 @@ def _lock_sync_pagos():
     return threading.Lock()
 
 
-@_con_manejo_apierror
 def _empresa_para_pagos(r, es_hist: bool) -> str:
     """Empresa canónica que tránsito atribuye a esta fila (fija por categoría, o la
     escrita en su columna Empresa), para llenar Pagos al sincronizar. '' si tránsito
@@ -2563,6 +2562,7 @@ def _empresa_para_pagos(r, es_hist: bool) -> str:
     return emp if emp in EMPRESAS_PAGO else ""
 
 
+@_con_manejo_apierror
 def sincronizar_pagos_con_transito(activos: pd.DataFrame, historico: pd.DataFrame):
     """Agrega a Pagos, con BL/Descripción/Cantidad/Llegada ya llenos, los
     expedientes de tránsito (activos + histórico) que todavía no tienen fila

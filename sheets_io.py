@@ -906,7 +906,7 @@ _ALIAS_PAISES_CRUDO = {
     "Estados Unidos": ["usa", "us", "u.s.a", "u.s.a.", "u.s.", "eeuu", "ee.uu", "ee.uu.", "eu",
                        "united states", "united states of america", "estados unidos de america",
                        "usa.", "america"],
-    "China": ["china", "prc", "p.r. china", "republica popular china", "cn", "china."],
+    "China": ["china", "prc", "p.r. china", "republica popular china", "cn", "china.", "chna", "chian"],
     "Corea del Sur": ["corea", "korea", "south korea", "corea del sur", "republica de corea", "kr"],
     "India": ["india", "in"],
     "Japón": ["japon", "japan", "jp"],

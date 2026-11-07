@@ -82,6 +82,24 @@ CUSTOM_CSS = """
 }
 html { -webkit-text-size-adjust: 100%; }
 
+/* Pantallas anchas (monitores de 27-34" y ultraanchos): sin tope, el contenido se
+   estiraba a 3400 px con letra diminuta. Se limita el ancho de lectura y se centra;
+   en pantallas muy grandes además se agranda la escala base (todo lo que va en rem).
+   En laptops y celulares (< 1800 px) no cambia nada. Ver DECISIONS.md, punto 27. */
+@media (min-width: 1800px) {
+    .block-container, [data-testid="stMainBlockContainer"] {
+        max-width: 1760px !important; margin-left:auto !important; margin-right:auto !important;
+    }
+}
+@media (min-width: 2300px) {
+    html { font-size: 18px; }
+    .block-container, [data-testid="stMainBlockContainer"] { max-width: 2100px !important; }
+}
+@media (min-width: 3000px) {
+    html { font-size: 20px; }
+    .block-container, [data-testid="stMainBlockContainer"] { max-width: 2500px !important; }
+}
+
 .nav-rotulo { font-size:0.70rem; text-transform:uppercase; letter-spacing:0.08em;
               color:#9CA3AF; font-weight:700; margin:0 0 4px 2px; }
 

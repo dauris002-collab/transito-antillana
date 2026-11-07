@@ -172,6 +172,7 @@ Borrador generado el 2026-10-01.
 - **Decisión:** en pantallas ≥2000 px el contenido se limita a 1580 px y se centra (es el aspecto de una ventana de ~1820 px con el menú abierto, aprobado a ojo en el monitor de 34", 3440×1440). Para que en monitores grandes ocupe más pantalla sin cambiar de aspecto, la letra base y el ancho crecen juntos: ≥2300 px → 20 px y 1975 px; ≥3000 px → 24 px y 2370 px (factores 1,25 y 1,5). Por debajo de 2000 px no cambia nada (así una laptop a 1920 px queda como antes). Solo CSS en `ui_componentes.py`.
 - **Descartado:** `zoom` de CSS. Escala todo, pero en Chromium 153 las listas desplegables de los filtros se abrían desplazadas fuera de la pantalla (probado).
 - **Límite:** las letras de los gráficos Plotly están en píxeles y no crecen con la letra base: se ven proporcionalmente algo más pequeñas que el resto. La nitidez depende de la densidad de píxeles del monitor; el CSS no la cambia.
+- **Excepción:** la pantalla de acceso (login) no hereda el tope de ancho ni la escala de letra (`ui_login.py`, con `:has(.st-key-login_card)`): su fondo partido gris | blanco se calcula al 59 % del ancho de la ventana y con el tope la tarjeta del PIN quedaba cruzando la línea de corte.
 - **Reconsiderar si:** se quiere otro tamaño (cambiar 20/24 px y los anchos).
 
 ## Limitación, no decisión

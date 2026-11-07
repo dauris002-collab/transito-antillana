@@ -84,6 +84,12 @@ LOGIN_CSS = (
     f" #F3F4F6 {_CORTE}, #E3E6EB {_CORTE}, #E3E6EB calc({_CORTE} + 1px),"
     f" #FFFFFF calc({_CORTE} + 1px)); }}"
     " .st-key-login_card { background:transparent; box-shadow:none; padding:0; } }"
+    # El fondo partido se calcula sobre el ancho de la ventana (59 %), por eso la
+    # pantalla de acceso NO debe heredar el tope de ancho ni la escala de letra que
+    # se aplican en monitores grandes (v5.8, DECISIONS #27): se desalinearían.
+    "[data-testid='stMainBlockContainer']:has(.st-key-login_card), .block-container:has(.st-key-login_card)"
+    " { max-width:initial !important; margin-left:0 !important; margin-right:0 !important; }"
+    "html:has(.st-key-login_card) { font-size:16px !important; }"
     # Celular: el PIN tiene que quedar a la vista sin bajar, se oculta el dibujo.
     "@media (max-width: 1100px) { .lg-vs { display:none; } }"
     "@media (max-width: 640px) { .lg-ruta { display:none; } .lg-h1 { font-size:2.3rem; } }"

@@ -98,11 +98,11 @@ html { -webkit-text-size-adjust: 100%; }
    de los filtros salían desplazadas fuera de la pantalla. */
 @media (min-width: 2300px) {
     html { font-size: 20px; }
-    .block-container, [data-testid="stMainBlockContainer"] { max-width: 1975px !important; }
+    .block-container, [data-testid="stMainBlockContainer"] { max-width: 130rem !important; }
 }
 @media (min-width: 3000px) {
     html { font-size: 24px; }
-    .block-container, [data-testid="stMainBlockContainer"] { max-width: 2370px !important; }
+    .block-container, [data-testid="stMainBlockContainer"] { max-width: 130rem !important; }
 }
 
 .nav-rotulo { font-size:0.70rem; text-transform:uppercase; letter-spacing:0.08em;

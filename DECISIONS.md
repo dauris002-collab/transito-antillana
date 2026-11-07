@@ -168,11 +168,11 @@ Borrador generado el 2026-10-01.
 - **Decisión:** el usuario no los usaba y las tarjetas-botón ya filtran por estado. Se quitaron de las pestañas del Dashboard; el estado vive en `st.session_state["estado_<tab>"]` (lo fijan las tarjetas, «Limpiar filtros» lo reinicia). El orden queda fijo en «ETA más próximo» (el valor por defecto anterior). «Mes ETA» pasa a llamarse «Llegada por Mes».
 - **Reconsiderar si:** hace falta ordenar por días detenido, BL, país o valor.
 
-## 27. Pantallas anchas: contenido a 1580 px, centrado (v5.8)
-- **Decisión:** en pantallas ≥1800 px el contenido se limita a 1580 px y se centra, sin escalar la letra. Es el aspecto de una ventana de ~1820 px con el menú lateral abierto, que el usuario aprobó a ojo en su monitor de 34" (3440×1440) reduciendo la ventana de Chrome. Por debajo de 1800 px no cambia nada. Solo CSS en `ui_componentes.py`.
-- **Descartado:** subir la letra base (18-20 px) en pantallas muy grandes: se probó y no era lo que se buscaba.
-- **Límite:** la nitidez del texto depende de la densidad de píxeles del monitor (34" a 3440×1440 ≈ 110 ppp, una laptop de 14" a 1080p ≈ 157 ppp); el CSS no la cambia.
-- **Reconsiderar si:** se quiere más ancho en el monitor grande (subir 1580 px).
+## 27. Pantallas anchas: misma vista, ampliada por tramos (v5.8)
+- **Decisión:** en pantallas ≥1800 px el contenido se limita a 1580 px y se centra (es el aspecto de una ventana de ~1820 px con el menú abierto, aprobado a ojo en el monitor de 34", 3440×1440). Para que en monitores grandes ocupe más pantalla sin cambiar de aspecto, la letra base y el ancho crecen juntos: ≥2300 px → 20 px y 1975 px; ≥3000 px → 24 px y 2370 px (factores 1,25 y 1,5). Por debajo de 1800 px no cambia nada. Solo CSS en `ui_componentes.py`.
+- **Descartado:** `zoom` de CSS. Escala todo, pero en Chromium 153 las listas desplegables de los filtros se abrían desplazadas fuera de la pantalla (probado).
+- **Límite:** las letras de los gráficos Plotly están en píxeles y no crecen con la letra base: se ven proporcionalmente algo más pequeñas que el resto. La nitidez depende de la densidad de píxeles del monitor; el CSS no la cambia.
+- **Reconsiderar si:** se quiere otro tamaño (cambiar 20/24 px y los anchos).
 
 ## Limitación, no decisión
 - **Repo público:** quedó público por un problema de permisos con repos privados que no se resolvió [CHAT]. No contiene credenciales. Es una limitación, no una elección.

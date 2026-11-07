@@ -92,6 +92,18 @@ html { -webkit-text-size-adjust: 100%; }
         max-width: 1580px !important; margin-left:auto !important; margin-right:auto !important;
     }
 }
+/* Monitores grandes: la MISMA vista ampliada de forma pareja (letra base y ancho
+   crecen en la misma proporción) para que ocupe más pantalla sin cambiar de aspecto.
+   Se usa tamaño de letra base y no `zoom` de CSS: con zoom, las listas desplegables
+   de los filtros salían desplazadas fuera de la pantalla. */
+@media (min-width: 2300px) {
+    html { font-size: 20px; }
+    .block-container, [data-testid="stMainBlockContainer"] { max-width: 1975px !important; }
+}
+@media (min-width: 3000px) {
+    html { font-size: 24px; }
+    .block-container, [data-testid="stMainBlockContainer"] { max-width: 2370px !important; }
+}
 
 .nav-rotulo { font-size:0.70rem; text-transform:uppercase; letter-spacing:0.08em;
               color:#9CA3AF; font-weight:700; margin:0 0 4px 2px; }

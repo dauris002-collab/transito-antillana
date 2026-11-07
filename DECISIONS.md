@@ -168,10 +168,11 @@ Borrador generado el 2026-10-01.
 - **Decisión:** el usuario no los usaba y las tarjetas-botón ya filtran por estado. Se quitaron de las pestañas del Dashboard; el estado vive en `st.session_state["estado_<tab>"]` (lo fijan las tarjetas, «Limpiar filtros» lo reinicia). El orden queda fijo en «ETA más próximo» (el valor por defecto anterior). «Mes ETA» pasa a llamarse «Llegada por Mes».
 - **Reconsiderar si:** hace falta ordenar por días detenido, BL, país o valor.
 
-## 27. Pantallas anchas: ancho tope y escala por tamaño (v5.8)
-- **Decisión:** en pantallas ≥1800 px el contenido se limita a 1760 px y se centra; ≥2300 px el tope sube a 2100 px y la letra base a 18 px; ≥3000 px (ultraancho 34") a 2500 px y 20 px. Por debajo de 1800 px (laptops, tabletas, celulares) no cambia nada. Solo CSS en `ui_componentes.py`.
-- **Motivo:** con `layout="wide"` y sin tope, en un monitor de 3440 px el contenido se estiraba y la letra quedaba diminuta.
-- **Reconsiderar si:** a alguien con monitor de 1920 px le molestan los márgenes de 80 px (subir el primer umbral a 2000 px).
+## 27. Pantallas anchas: contenido a 1580 px, centrado (v5.8)
+- **Decisión:** en pantallas ≥1800 px el contenido se limita a 1580 px y se centra, sin escalar la letra. Es el aspecto de una ventana de ~1820 px con el menú lateral abierto, que el usuario aprobó a ojo en su monitor de 34" (3440×1440) reduciendo la ventana de Chrome. Por debajo de 1800 px no cambia nada. Solo CSS en `ui_componentes.py`.
+- **Descartado:** subir la letra base (18-20 px) en pantallas muy grandes: se probó y no era lo que se buscaba.
+- **Límite:** la nitidez del texto depende de la densidad de píxeles del monitor (34" a 3440×1440 ≈ 110 ppp, una laptop de 14" a 1080p ≈ 157 ppp); el CSS no la cambia.
+- **Reconsiderar si:** se quiere más ancho en el monitor grande (subir 1580 px).
 
 ## Limitación, no decisión
 - **Repo público:** quedó público por un problema de permisos con repos privados que no se resolvió [CHAT]. No contiene credenciales. Es una limitación, no una elección.

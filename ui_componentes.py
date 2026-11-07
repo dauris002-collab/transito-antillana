@@ -86,8 +86,8 @@ html { -webkit-text-size-adjust: 100%; }
    estiraba a 3400 px con elementos diminutos. Se limita a 1580 px y se centra: es el
    aspecto de una ventana de ~1820 px con el menú lateral abierto, que es el que se
    aprobó a ojo en el monitor de 34". Sin escalar la letra. En laptops y celulares
-   (< 1800 px) no cambia nada. Ver DECISIONS.md, punto 27. */
-@media (min-width: 1800px) {
+   (< 2000 px) no cambia nada. Ver DECISIONS.md, punto 27. */
+@media (min-width: 2000px) {
     .block-container, [data-testid="stMainBlockContainer"] {
         max-width: 1580px !important; margin-left:auto !important; margin-right:auto !important;
     }

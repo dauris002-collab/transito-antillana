@@ -192,3 +192,5 @@ Revisión de todo el código y de los flujos de escritura. Cada punto se reprodu
 
 ## Limitación, no decisión
 - **Repo público:** quedó público por un problema de permisos con repos privados que no se resolvió [CHAT]. No contiene credenciales. Es una limitación, no una elección.
+
+29. **Tarjeta KPI vigente resaltada y con alternancia (nov 2026).** Al quitar el desplegable Estado (#26), el filtro puesto por una tarjeta ya no se veía y los conteos de «Llegada por Mes»/«Empresa» (p. ej. «Todos · 1») parecían rotos. Ahora la tarjeta activa lleva borde oscuro y pulsarla de nuevo quita el filtro (Total, Limpiar filtros también). Lógica de filtrado sin cambios.

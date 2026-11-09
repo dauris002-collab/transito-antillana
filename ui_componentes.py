@@ -1453,12 +1453,15 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
     # (st-key-<clave>). Con espacios o acentos el selector no engancha, por eso
     # se construye con un slug ASCII.
     clave = _slug_css(tab_key)
+    estado_activo = st.session_state.get(f"estado_{tab_key}", "Todos")
     estilos = "".join(
         f".st-key-kpi_{clave}_{slug} button {{"
         f"background:{color} !important; color:#fff !important; border:none !important;"
         f"border-radius:14px !important; width:100% !important; min-height:92px !important;"
         f"text-align:center !important; padding:14px 10px !important;"
-        f"box-shadow:0 2px 8px rgba(17,24,39,0.12) !important; transition:filter .15s ease;}} "
+        f"box-shadow:0 2px 8px rgba(17,24,39,0.12) !important; transition:filter .15s ease;"
+        # Tarjeta del filtro vigente: borde oscuro, para que se vea qué está recortando la lista.
+        f"{'outline:4px solid #111827 !important; outline-offset:2px !important;' if filtro == estado_activo and filtro != 'Todos' else ''}}} "
         f".st-key-kpi_{clave}_{slug} button > div {{"
         f"display:flex !important; flex-direction:column !important; align-items:center !important;"
         f"justify-content:center !important; width:100% !important;}} "
@@ -1473,7 +1476,7 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
         f".st-key-kpi_{clave}_{slug} button:hover {{filter:brightness(0.93); color:#fff !important;}} "
         f".st-key-kpi_{clave}_{slug} button:focus {{color:#fff !important;"
         f"box-shadow:0 0 0 3px rgba(17,24,39,0.15) !important;}}"
-        for _, _, color, _, slug in kpis
+        for _, _, color, filtro, slug in kpis
     )
     st.markdown(f"<style>{estilos}</style>", unsafe_allow_html=True)
 
@@ -1487,7 +1490,8 @@ def _render_categoria(df: pd.DataFrame, rol: str, tab_key: str, recibidas_mes: i
                         if filtro == "__historico__":
                             st.session_state["seccion"] = "Histórico"
                             st.rerun()
-                        st.session_state[f"estado_{tab_key}"] = filtro
+                        # Pulsar otra vez la tarjeta vigente quita el filtro.
+                        st.session_state[f"estado_{tab_key}"] = "Todos" if filtro == estado_activo else filtro
                         rerun_fragmento()
 
     # -------------------- Valor en tránsito (solo si el Sheet lo trae) --------------------

@@ -937,7 +937,8 @@ for _canon, _formas in _ALIAS_PAISES_CRUDO.items():
         ALIAS_PAISES[_norm(_f)] = _canon
 
 
-_VACIOS_PAIS = {"", "n/a", "na", "n.a.", "-", "--", "s/d", "nd", "no aplica", "pendiente", "?"}
+_VACIOS_PAIS = {"", "n/a", "na", "n.a.", "-", "--", "s/d", "nd", "no aplica", "pendiente", "?",
+                "sin especificar"}
 
 
 _RX_NO_PAIS = re.compile(r"^[\d\s/:.\-]+$")
@@ -990,6 +991,20 @@ def columna_de_valor(df: pd.DataFrame):
         if _norm(c) in NOMBRES_VALOR:
             return c
     return None
+
+
+def _celda_escribible(v):
+    """Lo que se puede mandar a Google Sheets: una celda vacía de Excel llega de
+    pandas como NaN (float) y la API la rechaza ('Out of range float values are not
+    JSON compliant'), tumbando la escritura completa. NaN/None -> ''."""
+    if v is None:
+        return ""
+    try:
+        if pd.isna(v):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return v
 
 
 def es_numero(v) -> bool:
@@ -1605,13 +1620,14 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str):
     if ws is None:
         return False, f"No existe la pestaña '{categoria}' en el Google Sheet."
     existentes = _bls_existentes(ws)
-    repetidos = sorted({str(r.get(COL_BL, "")).strip() for _, r in df.iterrows()
-                        if str(r.get(COL_BL, "")).strip() and _norm(r.get(COL_BL)) in existentes})
+    repetidos = sorted({str(_celda_escribible(r.get(COL_BL, ""))).strip() for _, r in df.iterrows()
+                        if str(_celda_escribible(r.get(COL_BL, ""))).strip()
+                        and _norm(_celda_escribible(r.get(COL_BL))) in existentes})
     if repetidos:
         return False, (f"Estos BL ya están en '{ws.title}': {', '.join(repetidos)}. "
                        "Quítalos del archivo o actualiza los datos antes de cargar.")
     opcionales = [c for c in OPCIONALES_CATEGORIA
-                  if c in df.columns and df[c].astype(str).str.strip().ne("").any()]
+                  if c in df.columns and df[c].map(_celda_escribible).astype(str).str.strip().ne("").any()]
     # Via_Transporte NO es "opcional por categoría" como Modelo/OC/EE -- toda
     # categoría puede tener embarques aéreos o marítimos -- así que se escribe
     # siempre que la carga masiva la traiga resuelta (ver form_carga_masiva).
@@ -1626,7 +1642,7 @@ def append_rows_bulk(df: pd.DataFrame, categoria: str):
     columnas_fila = REQUIRED_COLUMNS + opcionales
     filas = []
     for _, r in df.iterrows():
-        datos = {c: r.get(c, "") for c in columnas_fila}
+        datos = {c: _celda_escribible(r.get(c, "")) for c in columnas_fila}
         datos[COL_ACTUALIZACION] = sello
         datos[COL_ACTUALIZADO_POR] = autor
         filas.append(_fila_desde_dict(headers, datos))
@@ -1851,6 +1867,7 @@ def fijar_fecha_declaracion(bl: str, categoria: str, fecha=None, fila_sugerida=N
     return True, ""
 
 
+@_con_manejo_apierror
 def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str, fila_sugerida=None,
                           fecha=None, sobrescribir: bool = False, sello_esperado=None):
     """Mueve el embarque a la etapa indicada. Elegir una etapa ANTERIOR deshace
@@ -2438,8 +2455,8 @@ def registrar_sin_mora(bl: str, fecha, sobrescribir: bool = False):
         return False, f"El BL '{bl}' no tiene conceptos registrados todavía en '{PAGOS_SHEET}'."
 
     headers = _asegurar_columnas(ws, [COL_FECHA_SIN_MORA, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
-    actual = _leer_fila(ws, fila, headers)
-    ya_registrado = str(actual.get(COL_FECHA_SIN_MORA, "")).strip()
+    actual = {_norm_encabezado(k): v for k, v in _leer_fila(ws, fila, headers).items()}
+    ya_registrado = str(actual.get(_norm_encabezado(COL_FECHA_SIN_MORA), "")).strip()
     if ya_registrado and not sobrescribir:
         return False, (f"Este expediente ya tiene una fecha saludable registrada ({ya_registrado}). "
                        "Marca la casilla de corrección para cambiarla.")
@@ -2473,8 +2490,8 @@ def registrar_pago_realizado(bl: str, fecha, extra: dict, sobrescribir: bool = F
 
     headers = _asegurar_columnas(ws, [COL_FECHA_PAGO_REAL, COL_PAGOREAL_USD, COL_PAGOREAL_DOP,
                                        COL_ESTADO_PAGO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
-    actual = _leer_fila(ws, fila, headers)
-    ya_registrado = str(actual.get(COL_FECHA_PAGO_REAL, "")).strip()
+    actual = {_norm_encabezado(k): v for k, v in _leer_fila(ws, fila, headers).items()}
+    ya_registrado = str(actual.get(_norm_encabezado(COL_FECHA_PAGO_REAL), "")).strip()
     if ya_registrado and not sobrescribir:
         return False, (f"Este expediente ya tiene un pago registrado ({ya_registrado}). "
                        "Marca la casilla de corrección para cambiarlo.")
@@ -2590,7 +2607,7 @@ def sincronizar_pagos_con_transito(activos: pd.DataFrame, historico: pd.DataFram
             if fuente is None or fuente.empty:
                 continue
             for _, r in fuente.iterrows():
-                bl = str(r.get(COL_BL, "")).strip()
+                bl = str(_celda_escribible(r.get(COL_BL, ""))).strip()
                 clave = _norm(bl)
                 if not bl or clave in existentes or clave in vistos:
                     continue
@@ -2602,8 +2619,8 @@ def sincronizar_pagos_con_transito(activos: pd.DataFrame, historico: pd.DataFram
                 nuevas.append({
                     COL_BL: bl,
                     COL_EMPRESA: _empresa_para_pagos(r, es_hist),
-                    COL_DESC: str(r.get(COL_DESC, "")),
-                    COL_CANT: str(r.get(COL_CANT, "")),
+                    COL_DESC: str(_celda_escribible(r.get(COL_DESC, ""))),
+                    COL_CANT: str(_celda_escribible(r.get(COL_CANT, ""))),
                     COL_PAGO_LLEGADA: llegada.isoformat() if llegada else "",
                     COL_ACTUALIZACION: sello,
                     COL_ACTUALIZADO_POR: autor,

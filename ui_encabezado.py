@@ -177,3 +177,24 @@ def limpiar_filtro(clave: str) -> None:
     if clave_widget:
         st.session_state.pop(clave_widget, None)
     st.session_state.pop(clave + "_ult", None)
+
+
+def avisar_tras_recarga(texto: str, tipo: str = "ok") -> None:
+    """Deja un aviso para la corrida SIGUIENTE. Un st.success() escrito justo antes de
+    st.rerun() nunca llega a verse (la página se redibuja al instante), y quien guardaba
+    se quedaba sin saber si había funcionado. tipo: "ok" (confirmación) o "aviso"
+    (algo quedó a medias y hay que leerlo). Lo dibuja mostrar_avisos_pendientes()."""
+    st.session_state.setdefault("_avisos_pendientes", []).append((tipo, str(texto)))
+
+
+def mostrar_avisos_pendientes() -> None:
+    """Llamar una vez por corrida, arriba de la página. Las confirmaciones salen como
+    aviso flotante (se ve aunque la pantalla esté desplazada hacia abajo); los avisos
+    de algo a medias quedan además fijos arriba hasta la siguiente acción."""
+    for tipo, texto in st.session_state.pop("_avisos_pendientes", []):
+        if tipo == "ok":
+            st.toast(texto, icon="✅")
+        else:
+            st.toast(texto, icon="⚠️")
+            st.warning(texto)
+

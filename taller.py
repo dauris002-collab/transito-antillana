@@ -148,7 +148,7 @@ def enriquecer_taller(df: pd.DataFrame, hoy):
                                            if _texto(sol_crudo) else "sin fecha de solicitud; no se cuentan días."))
         if pago is None and _texto(pago_crudo):
             avisos.append(f"Fila {n}: fecha de pago '{_texto(pago_crudo)}' no válida; se toma como pendiente.")
-        elif pago and pago < sol:
+        elif pago and sol and pago < sol:   # sin 'sol' la comparación lanzaba TypeError y tumbaba la vista
             avisos.append(f"Fila {n}: la fecha de corte es anterior a la solicitud.")
         if usd is None and dop is None:
             avisos.append(f"Fila {n}: sin monto.")
@@ -205,8 +205,12 @@ def _campos(prefijo: str, ini: dict) -> dict:
                              format_func=lambda x: "—" if x is None else str(x))
     cliente = c4.text_input("Cliente", value=ini.get("Cliente", ""), key=f"{prefijo}_cli", max_chars=120)
     c5, c6, c7 = st.columns(3)
-    solicitud = c5.date_input("Fecha de la solicitud", value=ini.get("Solicitud") or hoy_rd(),
-                              max_value=hoy_rd(), format="DD/MM/YYYY", key=f"{prefijo}_sol")
+    # max_value nunca por debajo del valor inicial: una fecha futura tecleada en el
+    # Sheet hacía fallar el formulario entero al seleccionar ese renglón. Guardar una
+    # fecha futura lo sigue rechazando la validación de sheets_io.
+    sol_ini = ini.get("Solicitud") or hoy_rd()
+    solicitud = c5.date_input("Fecha de la solicitud", value=sol_ini,
+                              max_value=max(hoy_rd(), sol_ini), format="DD/MM/YYYY", key=f"{prefijo}_sol")
     usd = c6.number_input("USD pendiente (solo dólares)", min_value=0.0, step=0.01, format="%.2f",
                           value=_ini_monto(ini.get("USD")),
                           key=f"{prefijo}_usd")
@@ -276,7 +280,8 @@ def _gestion(datos_raw: pd.DataFrame, df: pd.DataFrame):
                 _resultado(*taller_editar(n, sel["snap"], datos))
         st.markdown("**Pago**")
         pc1, pc2, pc3 = st.columns([2, 1, 1])
-        fpago = pc1.date_input("Fecha de pago", value=ini.get("Pago") or hoy_rd(), max_value=hoy_rd(),
+        pago_ini = ini.get("Pago") or hoy_rd()
+        fpago = pc1.date_input("Fecha de pago", value=pago_ini, max_value=max(hoy_rd(), pago_ini),
                                format="DD/MM/YYYY", key=f"tpg_{v}_{n}")
         if pc2.button("Marcar pagado", key=f"tpm_{v}_{n}"):
             _resultado(*taller_marcar_pago(n, sel["snap"], fpago))

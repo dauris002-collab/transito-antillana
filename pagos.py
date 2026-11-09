@@ -18,6 +18,8 @@ Usa Streamlit e importa de sheets_io.py, logica.py y ui_componentes.py.
 
 from __future__ import annotations
 
+import hashlib
+import time
 from datetime import timedelta
 
 import pandas as pd
@@ -36,10 +38,10 @@ from sheets_io import (
     mover_empresa_primera_columna, parsear_fecha, parsear_marca, registrar_log,
     igualar_llegadas_pagos, registrar_pago_realizado, registrar_sin_mora, sincronizar_pagos_con_transito,
 )
-from logica import (PALETA_PAISES, enriquecer_pagos, esc, llegadas_desfasadas, pagos_sin_empresa,
-                    resumen_pagos, totales_conceptos)
+from logica import (PALETA_PAISES, clave_bl, enriquecer_pagos, esc, llegadas_desfasadas,
+                    pagos_sin_empresa, resumen_pagos, totales_conceptos)
 from ui_componentes import COLOR_TOTAL, rerun_fragmento
-from ui_encabezado import encabezado_html, recordar_filtro, restaurar_filtro
+from ui_encabezado import avisar_tras_recarga, encabezado_html, recordar_filtro, restaurar_filtro
 
 
 COLOR_SOBRECOSTO = "#991B1B"
@@ -210,20 +212,33 @@ def _embarques_de_categoria(categoria: str, activos: pd.DataFrame, historico: pd
     return filas
 
 
-def _hay_bls_sin_sincronizar(activos: pd.DataFrame, historico: pd.DataFrame, pagos_actual: pd.DataFrame) -> bool:
-    """Comparación en memoria contra lo que ya cargó cargar_todo() — cero
-    llamadas extra a la API. Solo cuando esto da True vale la pena pagar el
-    costo de sincronizar_pagos_con_transito() (que sí lee y escribe de verdad)."""
+def _bls_sin_sincronizar(activos: pd.DataFrame, historico: pd.DataFrame, pagos_actual: pd.DataFrame) -> tuple:
+    """BL (normalizados, ordenados) de tránsito que Pagos todavía no tiene.
+    Comparación en memoria contra lo que ya cargó cargar_todo() — cero llamadas
+    extra a la API. Solo cuando hay alguno vale la pena pagar el costo de
+    sincronizar_pagos_con_transito() (que sí lee y escribe de verdad)."""
     existentes = ({_norm(b) for b in pagos_actual[COL_BL] if str(b).strip()}
                  if pagos_actual is not None and not pagos_actual.empty else set())
+    faltan = set()
     for fuente in (activos, historico):
         if fuente is None or fuente.empty:
             continue
         for b in fuente[COL_BL]:
             b = str(b).strip()
             if b and _norm(b) not in existentes:
-                return True
-    return False
+                faltan.add(_norm(b))
+    return tuple(sorted(faltan))
+
+
+REINTENTO_SYNC_SEG = 60   # el mismo conjunto de BL faltantes no se reintenta antes de esto
+
+
+def _firma(*valores) -> str:
+    """Huella corta de los valores que un formulario muestra como punto de partida.
+    Va en la CLAVE de sus widgets: Streamlit conserva lo que el usuario dejó en un
+    widget mientras su clave no cambie, aunque el dato del Sheet ya sea otro; con la
+    huella en la clave, si el dato cambia nace un widget nuevo con el valor vigente."""
+    return hashlib.md5("|".join(str(v) for v in valores).encode("utf-8")).hexdigest()[:8]
 
 
 # ---------------------------------------------------------------------------
@@ -912,17 +927,21 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
     elegido = embarques[idx]
     bl = elegido["bl"]
 
+    # El cruce con la fila de Pagos usa la misma llave normalizada con la que
+    # guardar_pago ubica la fila al escribir: si aquí se comparara el texto exacto,
+    # un BL con otra mayúscula se mostraba como «expediente nuevo» (formulario en
+    # blanco) y al guardar se escribía ENCIMA de la fila existente.
     fila_existente = None
     if not enriquecido.empty:
-        coincidencias = enriquecido[enriquecido[COL_BL].astype(str).str.strip() == bl]
+        coincidencias = enriquecido[enriquecido[COL_BL].map(clave_bl) == clave_bl(bl)]
         if not coincidencias.empty:
             fila_existente = coincidencias.iloc[0]
     if fila_existente is None:
         st.caption("Expediente nuevo en Pagos — todavía sin conceptos registrados.")
     else:
         st.caption("Este expediente ya tiene conceptos registrados; los valores de abajo son los actuales.")
-        tiene_match_transito = bl in (set(activos[COL_BL].astype(str).str.strip())
-                                      | set(historico[COL_BL].astype(str).str.strip()))
+        tiene_match_transito = clave_bl(bl) in ({clave_bl(b) for b in activos[COL_BL]}
+                                                | {clave_bl(b) for b in historico[COL_BL]})
         llegada_mostrada = fila_existente.get("LlegadaEfectiva")
         etiqueta_llegada = f"📅 Llegada: {formato_eta(llegada_mostrada) if llegada_mostrada else '—'}"
         with st.expander(f"{etiqueta_llegada} · corregir"):
@@ -943,7 +962,7 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
                 if ok:
                     registrar_log("Corrección de llegada en Pagos", bl, "", nueva_llegada.isoformat())
                     invalidar_caches()
-                    st.success("Fecha de llegada corregida.")
+                    avisar_tras_recarga(f"Fecha de llegada corregida para el BL {bl}.")
                     st.rerun()
                 else:
                     st.error(mensaje)
@@ -958,12 +977,18 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
     empresa_previa = str(fila_existente.get(COL_EMPRESA, "")).strip() if fila_existente is not None else ""
     opciones_empresa = ["— Elige —"] + EMPRESAS_PAGO
     idx_empresa = opciones_empresa.index(empresa_previa) if empresa_previa in opciones_empresa else 0
+    # La huella de lo que hay HOY en el Sheet va en la clave de los campos: si
+    # alguien cambia un monto o agrega un concepto directo en el Sheet, el
+    # formulario se rearma con esos valores. Antes se quedaba con los que tenía al
+    # abrirse y «Guardar conceptos» devolvía el Sheet a los valores viejos (y
+    # vaciaba el concepto agregado por fuera) sin avisar.
+    huella = _firma(empresa_previa, *(valores_previos.get(c, "") for c in CONCEPTOS_PAGO))
     empresa_elegida = st.selectbox("Empresa (a quién se le debe este expediente)", opciones_empresa,
-                                   index=idx_empresa, key=f"pago_empresa_sel_{bl}")
+                                   index=idx_empresa, key=f"pago_empresa_sel_{bl}__{huella}")
 
     conceptos_aplican = st.multiselect(
         "Conceptos que aplican a este expediente (deja fuera los que no apliquen — vacío no es cero)",
-        CONCEPTOS_PAGO, default=seleccionados_previos, key=f"pago_conceptos_sel_{bl}",
+        CONCEPTOS_PAGO, default=seleccionados_previos, key=f"pago_conceptos_sel_{bl}__{huella}",
     )
 
     montos = {}
@@ -973,9 +998,13 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
             moneda = MONEDA_CONCEPTO[concepto]
             valor_previo = a_numero(valores_previos.get(concepto, "")) or 0.0
             with cols[i % 2]:
+                # Un monto negativo solo puede venir tecleado en el Sheet (un ajuste o
+                # un dedazo). Con mínimo 0 fijo, abrir ese expediente aquí lanzaba una
+                # excepción y tumbaba todo lo que va debajo del tablero de Pagos.
                 montos[concepto] = st.number_input(
-                    f"{concepto} ({moneda})", min_value=0.0, value=float(valor_previo),
-                    step=100.0, key=f"pago_monto_{concepto}_{bl}",
+                    f"{concepto} ({moneda})", min_value=0.0 if valor_previo >= 0 else None,
+                    value=float(valor_previo),
+                    step=100.0, key=f"pago_monto_{concepto}_{bl}__{huella}",
                 )
 
     if st.button("Guardar conceptos", type="primary", key="btn_guardar_conceptos"):
@@ -997,7 +1026,7 @@ def form_registrar_conceptos(enriquecido: pd.DataFrame, activos: pd.DataFrame, h
         if ok:
             registrar_log("Conceptos de pago guardados", bl, "", ", ".join(conceptos_aplican) or "(ninguno)")
             invalidar_caches()
-            st.success(f"Conceptos guardados para el BL {bl}.")
+            avisar_tras_recarga(f"Conceptos guardados para el BL {bl}.")
             st.rerun()
         else:
             st.error(mensaje)
@@ -1024,15 +1053,17 @@ def form_sin_mora(enriquecido: pd.DataFrame):
         if not corregir:
             return
 
+    # Clave por expediente: con una clave fija, la fecha elegida para un BL seguía
+    # puesta al pasar al siguiente.
     fecha = st.date_input("Fecha límite saludable de pago", value=hoy_rd(), format="DD/MM/YYYY",
-                          key="fecha_sin_mora")
+                          key=f"fecha_sin_mora_{bl}")
 
     if st.button("Confirmar", type="primary", key="btn_sin_mora"):
         ok, mensaje = registrar_sin_mora(bl, fecha, sobrescribir=corregir)
         if ok:
             registrar_log("Fecha saludable registrada", bl, "", fecha.isoformat())
             invalidar_caches()
-            st.success("Guardado.")
+            avisar_tras_recarga(f"Fecha saludable guardada para el BL {bl}: {formato_eta(fecha)}.")
             st.rerun()
         else:
             st.error(mensaje)
@@ -1067,15 +1098,26 @@ def form_pago_realizado(enriquecido: pd.DataFrame):
         if not corregir:
             return
 
-    fecha = st.date_input("Fecha en que se pagó", value=hoy_rd(), format="DD/MM/YYYY",
-                          key="fecha_pago_real")
-    c1, c2 = st.columns(2)
     extra_previo_usd = a_numero(fila.get(COL_PAGOREAL_USD, "")) or 0.0
     extra_previo_dop = a_numero(fila.get(COL_PAGOREAL_DOP, "")) or 0.0
-    extra_usd = c1.number_input("Extra pagado de más (USD) — 0 si no hubo diferencia", min_value=0.0,
-                                value=float(extra_previo_usd), step=100.0, key="extra_usd_pago_real")
-    extra_dop = c2.number_input("Extra pagado de más (DOP) — 0 si no hubo diferencia", min_value=0.0,
-                                value=float(extra_previo_dop), step=100.0, key="extra_dop_pago_real")
+    # Clave por expediente (y por lo que hoy dice el Sheet): con claves fijas, la
+    # fecha y el extra tecleados para un BL seguían puestos al elegir el siguiente,
+    # y un «Confirmar» le grababa a ese otro expediente un sobrecosto que no era suyo.
+    sufijo = f"{bl}__{_firma(ya_registrado, extra_previo_usd, extra_previo_dop)}"
+    fecha = st.date_input("Fecha en que se pagó", value=hoy_rd(), format="DD/MM/YYYY",
+                          key=f"fecha_pago_real_{sufijo}")
+    c1, c2 = st.columns(2)
+    # Un extra negativo ('pagado de menos') solo se escribe a mano en el Sheet. Si ya
+    # lo hay, el campo lo muestra y lo deja conservar: con mínimo 0 fijo, abrir la
+    # corrección de ese expediente lanzaba una excepción (valor por debajo del mínimo).
+    extra_usd = c1.number_input("Extra pagado de más (USD) — 0 si no hubo diferencia",
+                                min_value=0.0 if extra_previo_usd >= 0 else None,
+                                value=float(extra_previo_usd), step=100.0,
+                                key=f"extra_usd_pago_real_{sufijo}")
+    extra_dop = c2.number_input("Extra pagado de más (DOP) — 0 si no hubo diferencia",
+                                min_value=0.0 if extra_previo_dop >= 0 else None,
+                                value=float(extra_previo_dop), step=100.0,
+                                key=f"extra_dop_pago_real_{sufijo}")
 
     if st.button("Confirmar", type="primary", key="btn_pago_real"):
         extra = {"USD": extra_usd, "DOP": extra_dop}
@@ -1084,7 +1126,7 @@ def form_pago_realizado(enriquecido: pd.DataFrame):
             registrar_log("Pago Realizado registrado", bl, "",
                          f"{fecha.isoformat()} · extra {_fmt(extra_usd, 'USD')} · {_fmt(extra_dop, 'DOP')}")
             invalidar_caches()
-            st.success("Guardado — expediente marcado como Pagado.")
+            avisar_tras_recarga(f"Pago registrado: el BL {bl} quedó como Pagado.")
             st.rerun()
         else:
             st.error(mensaje)
@@ -1103,12 +1145,14 @@ def form_estado_pago(enriquecido: pd.DataFrame):
         st.caption("Este expediente tiene fecha de pago real; seguirá como Pagado hasta borrar "
                    "esa fecha en el Sheet.")
     estado = st.radio("Estado", [ESTADO_PAGO_PENDIENTE, ESTADO_PAGO_PAGADO],
-                      index=0 if actual == ESTADO_PAGO_PENDIENTE else 1, key=f"radio_estado_pago_{bl}")
+                      index=0 if actual == ESTADO_PAGO_PENDIENTE else 1,
+                      key=f"radio_estado_pago_{bl}__{_firma(actual)}")
     if st.button("Guardar estado", type="primary", key="btn_estado_pago"):
         ok, mensaje = marcar_estado_pago(bl, estado)
         if ok:
             registrar_log("Estado de pago actualizado", bl, "", estado)
             invalidar_caches()
+            avisar_tras_recarga(f"Estado del BL {bl}: {estado}.")
             st.rerun()
         else:
             st.error(mensaje)
@@ -1131,7 +1175,8 @@ def form_prioridad_pago(enriquecido: pd.DataFrame):
                else "Sin prioridad asignada todavía.")
     etiquetas = ["1 — pagar primero", "2", "3", "4 — puede esperar", "Quitar prioridad"]
     indice = (int(actual) - 1) if tiene_actual else 0
-    eleccion = st.radio("Prioridad", etiquetas, index=indice, key=f"radio_prio_{bl}")
+    eleccion = st.radio("Prioridad", etiquetas, index=indice,
+                        key=f"radio_prio_{bl}__{_firma(actual if tiene_actual else '')}")
     if st.button("Guardar prioridad", type="primary", key="btn_prioridad"):
         nueva = None if eleccion == "Quitar prioridad" else int(eleccion[0])
         ok, mensaje = fijar_prioridad_pago(bl, nueva)
@@ -1139,6 +1184,7 @@ def form_prioridad_pago(enriquecido: pd.DataFrame):
             registrar_log("Prioridad de pago actualizada", bl, "",
                           f"Prioridad {nueva}" if nueva else "Prioridad quitada")
             invalidar_caches()
+            avisar_tras_recarga(f"Prioridad del BL {bl}: {nueva}." if nueva else f"Prioridad quitada al BL {bl}.")
             st.rerun()
         else:
             st.error(mensaje)
@@ -1202,13 +1248,27 @@ def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
     # escrituras), y solo cuando la comparación en memoria encuentra un BL de
     # tránsito que Pagos todavía no tiene — así la mayoría de las veces esto no
     # cuesta ninguna llamada extra a la API.
-    if es_admin and _hay_bls_sin_sincronizar(activos, historico, df_pagos):
-        ok, mensaje = sincronizar_pagos_con_transito(activos, historico)
-        if ok:
-            invalidar_caches()
-            st.rerun()
+    #
+    # Freno: el mismo conjunto de BL faltantes se intenta una vez y no se repite
+    # antes de REINTENTO_SYNC_SEG. Sin él, si la escritura fallaba (cuota de Google)
+    # o la lectura siguiente no reflejaba las filas nuevas, CADA corrida volvía a
+    # escribir y a recargar: la página quedaba dando vueltas y gastando cuota.
+    faltan = _bls_sin_sincronizar(activos, historico, df_pagos) if es_admin else ()
+    if faltan:
+        previo = st.session_state.get("pagos_sync_intento")
+        reciente = bool(previo) and previo[0] == faltan and (time.time() - previo[1]) < REINTENTO_SYNC_SEG
+        if reciente:
+            st.warning(f"{len(faltan)} BL de tránsito todavía no aparecen en Pagos. "
+                       f"Se reintentará solo en menos de un minuto; si sigue igual, revisa la pestaña "
+                       f"'Pagos' del Sheet. ({previo[2]})")
         else:
-            st.warning(f"No se pudo sincronizar Pagos con tránsito automáticamente: {mensaje}")
+            ok, mensaje = sincronizar_pagos_con_transito(activos, historico)
+            st.session_state["pagos_sync_intento"] = (faltan, time.time(), mensaje)
+            if ok:
+                invalidar_caches()
+                st.rerun()
+            else:
+                st.warning(f"No se pudo sincronizar Pagos con tránsito automáticamente: {mensaje}")
 
     # Igualar la celda Llegada con el ETA de Tránsito: mismo criterio (solo
     # admin, solo si la comparación en memoria encuentra diferencias). Cada

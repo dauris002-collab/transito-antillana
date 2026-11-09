@@ -8,6 +8,7 @@ Streamlit e importa de sheets_io.py, logica.py y ui_componentes.py.
 
 from __future__ import annotations
 
+import hashlib
 import io
 from datetime import date
 
@@ -37,6 +38,7 @@ from ui_componentes import (
     COLOR_RECIBIDAS_MES, COLOR_TOTAL, VERSION_APP, _df_a_excel,
     _enriquecer_cacheado, tarjeta_kpi,
 )
+from ui_encabezado import avisar_tras_recarga
 
 
 # ---------------------------------------------------------------------------
@@ -149,9 +151,10 @@ def form_alta_manual(datos: dict):
         }])
         ok_pago, msg_pago = sincronizar_pagos_con_transito(fila_nueva, pd.DataFrame())
         if not ok_pago:
-            st.warning(f"El embarque se guardó, pero no se pudo reflejar en Pagos automáticamente "
-                       f"({msg_pago}). Se sincronizará solo la próxima vez que alguien abra esa pestaña.")
-        st.success(f"Embarque {bl.strip()} guardado en '{categoria}'.")
+            avisar_tras_recarga(f"El embarque se guardó, pero no se pudo reflejar en Pagos automáticamente "
+                                f"({msg_pago}). Se sincronizará solo la próxima vez que alguien abra esa pestaña.",
+                                "aviso")
+        avisar_tras_recarga(f"Embarque {bl.strip()} guardado en '{categoria}'.")
         st.rerun()
     else:
         st.error(mensaje)
@@ -189,7 +192,11 @@ def form_editar(datos: dict):
     categoria = fila["Categoria"]
     bl_original = str(fila[COL_BL]).strip()
     n_fila = fila.get("FilaSheet")
-    eta_actual = parsear_fecha(fila[COL_ETA]) or hoy_rd()
+    # None si el ETA del Sheet está vacío o no se puede leer. Antes se rellenaba con
+    # HOY: editar cualquier otro campo de un embarque 'sin fecha válida' le grababa
+    # como ETA el día de la edición, sin que nadie lo hubiera elegido.
+    eta_actual = parsear_fecha(fila[COL_ETA])
+    eta_crudo = str(fila[COL_ETA] or "").strip()
     salida_actual = parsear_fecha(fila.get(COL_FECHA_SALIDA, ""))
     sello = str(fila.get(COL_ACTUALIZACION, "")).strip()
     llego_actual = str(fila.get(COL_LLEGO, "") or "").strip()
@@ -199,6 +206,20 @@ def form_editar(datos: dict):
     con_cliente = categoria in CATEGORIAS_CON_CLIENTE_STOCK
     opciones_empresa = EMPRESAS_POR_CATEGORIA_FILA.get(categoria)
     via_actual = str(fila.get(COL_VIA, "") or "").strip() or VIA_MARITIMA
+    # "Sin especificar" es la etiqueta que la app le pone a un país vacío, no un
+    # dato: si se dejaba en el campo, guardar cualquier otro cambio escribía ese
+    # texto en la celda del Sheet.
+    pais_actual = "" if str(fila[COL_PAIS]).strip() == NO_ESPECIFICADO else str(fila[COL_PAIS])
+    # Clave propia por embarque (pestaña + fila + lo que hoy dice el Sheet). Sin
+    # clave, Streamlit identifica cada campo por su etiqueta y su valor inicial:
+    # dos embarques con el mismo país (o la misma cantidad, vía, fecha…) compartían
+    # el campo, y lo tecleado sin guardar en uno aparecía puesto en el otro.
+    huella = hashlib.md5("|".join(str(v) for v in (
+        bl_original, fila[COL_DESC], fila.get(COL_MODELO, ""), fila[COL_CANT], fila[COL_PAIS], via_actual,
+        fila[COL_ETA], fila.get(COL_FECHA_SALIDA, ""), fila.get(COL_OC, ""), fila.get(COL_EE, ""),
+        fila.get(COL_CLIENTE_STOCK, ""), fila.get(COL_EMPRESA_EMBARQUE, ""), sello,
+    )).encode("utf-8")).hexdigest()[:8]
+    k = f"ed_{{}}_{_norm(categoria)}_{n_fila}_{huella}".format
 
     if confirmado:
         st.info("Este embarque tiene la llegada confirmada, así que su ETA **es** la fecha de "
@@ -207,26 +228,30 @@ def form_editar(datos: dict):
 
     with st.form("form_editar"):
         c0, c1 = st.columns(2)
-        bl_nuevo = c0.text_input("BL", value=bl_original,
+        bl_nuevo = c0.text_input("BL", value=bl_original, key=k("bl"),
                                  help="Solo cámbialo si venía mal escrito. Es el identificador del embarque.")
-        descripcion = c1.text_input("Descripción", value=str(fila[COL_DESC]))
+        descripcion = c1.text_input("Descripción", value=str(fila[COL_DESC]), key=k("desc"))
         c2, c3 = st.columns(2)
-        modelo = c2.text_input("Modelo o serie", value=str(fila.get(COL_MODELO, ""))) if con_modelo else ""
-        cantidad = c3.text_input("Cantidad", value=str(fila[COL_CANT]))
+        modelo = (c2.text_input("Modelo o serie", value=str(fila.get(COL_MODELO, "")), key=k("modelo"))
+                  if con_modelo else "")
+        cantidad = c3.text_input("Cantidad", value=str(fila[COL_CANT]), key=k("cant"))
         c4, c5 = st.columns(2)
-        pais = c4.text_input("País de origen", value=str(fila[COL_PAIS]))
+        pais = c4.text_input("País de origen", value=pais_actual, key=k("pais"))
         via = c5.selectbox("Vía", [VIA_MARITIMA, VIA_AEREA],
                            index=([VIA_MARITIMA, VIA_AEREA].index(via_actual)
-                                  if via_actual in (VIA_MARITIMA, VIA_AEREA) else 0),
+                                  if via_actual in (VIA_MARITIMA, VIA_AEREA) else 0), key=k("via"),
                            help="Decide si el flujo dice 'Llegada a Puerto' o 'Llegada al Aeropuerto'.")
-        eta = st.date_input("Llegada (ETA)", value=eta_actual, format="DD/MM/YYYY")
-        salida = st.date_input("Fecha de salida", value=salida_actual, format="DD/MM/YYYY")
+        eta = st.date_input("Llegada (ETA)", value=eta_actual, format="DD/MM/YYYY", key=k("eta"))
+        if eta_actual is None:
+            st.caption(f"El ETA del Sheet está {'vacío' if not eta_crudo else 'escrito como «' + eta_crudo + '», que la app no puede leer'}. "
+                       "Elige la fecha correcta; si lo dejas en blanco, se conserva como está.")
+        salida = st.date_input("Fecha de salida", value=salida_actual, format="DD/MM/YYYY", key=k("salida"))
         oc = ee = ""
         if con_oc_ee:
             c6, c7 = st.columns(2)
-            oc = c6.text_input("OC", value=str(fila.get(COL_OC, "")))
-            ee = c7.text_input("EE", value=str(fila.get(COL_EE, "")))
-        cliente = (st.text_input("Cliente / Stock", value=str(fila.get(COL_CLIENTE_STOCK, "")))
+            oc = c6.text_input("OC", value=str(fila.get(COL_OC, "")), key=k("oc"))
+            ee = c7.text_input("EE", value=str(fila.get(COL_EE, "")), key=k("ee"))
+        cliente = (st.text_input("Cliente / Stock", value=str(fila.get(COL_CLIENTE_STOCK, "")), key=k("cliente"))
                    if con_cliente else "")
         empresa = ""
         if opciones_empresa:
@@ -242,13 +267,14 @@ def form_editar(datos: dict):
             seleccion_actual = (actual if actual
                                 else actual_crudo if (actual_crudo and actual is None)
                                 else "— Sin asignar —")
-            empresa = st.selectbox("Empresa", lista, index=lista.index(seleccion_actual))
+            empresa = st.selectbox("Empresa", lista, index=lista.index(seleccion_actual), key=k("empresa"))
             empresa = "" if empresa.startswith("—") else empresa
         elif categoria in EMPRESA_POR_CATEGORIA:
             st.caption(f"Empresa: {EMPRESA_POR_CATEGORIA[categoria]} (la define la categoría).")
         st.caption(f"Fila {n_fila} de '{categoria}' · ETA actual en el Sheet: {fila[COL_ETA] or '(vacío)'} "
                    f"· ¿Llegó?: {llego_actual or 'sin revisar'}")
-        forzar = st.checkbox("Sobrescribir aunque otra persona lo haya cambiado mientras tanto")
+        forzar = st.checkbox("Sobrescribir aunque otra persona lo haya cambiado mientras tanto",
+                             key=k("forzar"))
         guardar = st.form_submit_button("Guardar cambios", type="primary")
 
     if not guardar:
@@ -257,7 +283,8 @@ def form_editar(datos: dict):
     if not bl_nuevo.strip():
         st.error("El BL no puede quedar vacío.")
         return
-    if salida and salida > eta:
+    eta_texto = eta.isoformat() if eta else eta_crudo    # en blanco = se conserva lo que había
+    if salida and eta and salida > eta:
         st.error("La fecha de salida no puede ser posterior al ETA.")
         return
     if bl_nuevo.strip() != bl_original and bl_nuevo.strip() in _bls_existentes(datos):
@@ -266,7 +293,7 @@ def form_editar(datos: dict):
     # Se valida aquí además de en sheets_io para dar el mensaje antes de gastar
     # una escritura y para que el usuario lo vea junto al campo que lo causó.
     if confirmado:
-        problema = validar_eta_confirmado(eta.isoformat(), fila.get("F_Declaracion"))
+        problema = validar_eta_confirmado(eta_texto, fila.get(COL_FECHA_DECLARACION))
         if problema:
             st.error(problema)
             return
@@ -277,7 +304,7 @@ def form_editar(datos: dict):
         COL_CANT: cantidad.strip(),
         COL_PAIS: pais.strip(),
         COL_VIA: via,
-        COL_ETA: eta.isoformat(),
+        COL_ETA: eta_texto,
         COL_FECHA_SALIDA: salida.isoformat() if salida else "",
     }
     if con_modelo:
@@ -294,13 +321,13 @@ def form_editar(datos: dict):
                                       sello_esperado=sello, forzar=forzar)
     if ok:
         detalles = []
-        if str(fila[COL_ETA]).strip() != eta.isoformat():
-            detalles.append(f"ETA {fila[COL_ETA] or 'vacío'} → {eta.isoformat()}")
+        if eta_crudo != eta_texto:
+            detalles.append(f"ETA {eta_crudo or 'vacío'} → {eta_texto}")
         if bl_nuevo.strip() != bl_original:
             detalles.append(f"BL {bl_original} → {bl_nuevo.strip()}")
         registrar_log("Edición", bl_nuevo.strip(), categoria, "; ".join(detalles) or "campos varios")
         invalidar_caches()
-        st.success("Embarque actualizado.")
+        avisar_tras_recarga(f"Embarque {bl_nuevo.strip()} actualizado.")
         st.rerun()
     else:
         st.error(mensaje)
@@ -370,7 +397,11 @@ def form_carga_masiva(datos: dict):
         return
 
     try:
-        nuevo = pd.read_excel(archivo, dtype=str)
+        # fillna(""): una celda vacía de Excel llega como NaN aunque se pida texto.
+        # Sin esto, bastaba una celda en blanco (Cantidad, País, Modelo, Cliente,
+        # OC, EE) para que Google rechazara la carga ENTERA con 'Out of range
+        # float values are not JSON compliant', y un BL vacío contaba como 'nan'.
+        nuevo = pd.read_excel(archivo, dtype=str).fillna("")
     except Exception as e:
         st.error(f"No se pudo leer el archivo: {e}")
         return
@@ -489,10 +520,10 @@ def form_carga_masiva(datos: dict):
             invalidar_caches()
             ok_pago, msg_pago = sincronizar_pagos_con_transito(nuevos, pd.DataFrame())
             if not ok_pago:
-                st.warning(f"Los embarques se cargaron, pero no se pudieron reflejar en Pagos "
-                           f"automáticamente ({msg_pago}). Se sincronizarán solos la próxima vez "
-                           "que alguien abra esa pestaña.")
-            st.success(f"{len(nuevos)} embarque(s) cargado(s) en '{categoria}'.")
+                avisar_tras_recarga(f"Los embarques se cargaron, pero no se pudieron reflejar en Pagos "
+                                    f"automáticamente ({msg_pago}). Se sincronizarán solos la próxima vez "
+                                    "que alguien abra esa pestaña.", "aviso")
+            avisar_tras_recarga(f"{len(nuevos)} embarque(s) cargado(s) en '{categoria}'.")
             st.rerun()
         else:
             st.error(mensaje)
@@ -764,6 +795,7 @@ def mostrar_historico(datos: dict, rol: str):
             if ok:
                 registrar_log("Reversa de recibido", bl, categoria)
                 invalidar_caches()
+                avisar_tras_recarga(f"El BL {bl} volvió a '{categoria}'.")
                 st.rerun()
             else:
                 st.error(mensaje)
@@ -808,6 +840,7 @@ def mostrar_historico(datos: dict, rol: str):
                                     (("llegada", c_llegada), ("declaración", c_decl), ("almacén", c_alm)) if f)
                 registrar_log("Fechas de recibido corregidas", bl_f, str(fila_f.get("Categoria_Origen", "")), detalle)
                 invalidar_caches()
+                avisar_tras_recarga(f"Fechas corregidas para el BL {bl_f}: {detalle}.")
                 st.rerun()
             elif ok:
                 st.info(mensaje)
@@ -896,7 +929,8 @@ def _herramienta_fechas(df: pd.DataFrame):
         if ok:
             registrar_log("Normalización de fechas", "", "", f"{len(cambios)} celda(s); criterio={criterio}")
             invalidar_caches()
-            st.success(mensaje)
+            # Si alguna celda se saltó (el Sheet cambió), el mensaje lo dice: tiene que leerse.
+            avisar_tras_recarga(mensaje, "aviso" if "saltaron" in mensaje else "ok")
             st.rerun()
         else:
             st.error(mensaje)
@@ -1103,7 +1137,7 @@ def herramientas(datos: dict):
     if st.button("Releer estructura del Sheet"):
         _refrescar_estructura()
         invalidar_caches()
-        st.success("Estructura recargada.")
+        avisar_tras_recarga("Estructura del Sheet recargada.")
         st.rerun()
 
     st.caption(f"Versión de la app: {VERSION_APP} · Umbrales de alerta: " +

@@ -85,6 +85,7 @@ import streamlit as st
 
 from sheets_io import cargar_todo, invalidar_caches, registrar_log, taller_configurado
 from ui_componentes import CUSTOM_CSS, VERSION_APP, mostrar_dashboard, selector_horizontal
+from ui_encabezado import mostrar_avisos_pendientes
 from ui_login import LOGIN_CSS, html_portada, html_tarjeta
 from vistas_admin import (
     form_alta_manual, form_carga_masiva, form_editar, herramientas, mostrar_historico,
@@ -186,6 +187,17 @@ def restaurar_sesion():
     st.session_state.token = token
 
 
+def mantener_sesion():
+    """Con la sesión ya abierta, cada corrida vuelve a correr el reloj. Antes solo
+    se renovaba al RECARGAR la página: quien trabajaba dos horas seguidas sin
+    recargar tenía el token vencido, y a la primera reconexión del navegador
+    (cambio de red, equipo en reposo) lo devolvía al PIN en mitad del trabajo,
+    aunque el rótulo diga 'min de inactividad'."""
+    datos = _sesiones_activas().get(st.session_state.get("token", ""))
+    if datos:
+        datos["expira"] = time.time() + _vida_sesion(datos["rol"]) * 60
+
+
 def cerrar_sesion():
     _sesiones_activas().pop(st.session_state.get("token", ""), None)
     st.session_state.clear()
@@ -260,6 +272,7 @@ def main():
     if "rol" not in st.session_state:
         login_screen()
         return
+    mantener_sesion()
 
     with st.spinner("Leyendo los embarques…"):
         datos = cargar_todo()
@@ -314,6 +327,7 @@ def main():
         if st.button("↻ Actualizar", key="refrescar_top", width="stretch"):
             invalidar_caches()
             st.rerun()
+    mostrar_avisos_pendientes()
 
     if seccion == "Dashboard":
         mostrar_dashboard(datos)

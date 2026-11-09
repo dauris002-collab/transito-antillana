@@ -709,6 +709,17 @@ def monto_extra(fila) -> dict:
     }
 
 
+def clave_bl(bl) -> str:
+    """Llave con la que se cruza un BL entre Pagos y Tránsito: sin distinguir
+    mayúsculas, acentos ni espacios de más. Es el mismo criterio con el que
+    sheets_io decide si un BL 'ya existe' en Pagos (sincronizar y guardar_pago
+    usan _norm): si aquí se comparara el texto exacto, un BL tecleado como
+    'abc123' en una hoja y 'ABC123' en la otra quedaba sin llegada, sin días
+    sin pagar y marcado como 'sin tránsito', aunque la app lo tratara como el
+    mismo expediente al escribir."""
+    return _norm(str(bl if bl is not None else "").strip())
+
+
 def _llegadas_confirmadas(activos: pd.DataFrame, historico: pd.DataFrame) -> dict:
     """BL -> fecha de llegada CONFIRMADA, leída en vivo de tránsito (no del
     valor guardado en Pagos, que se sincroniza una sola vez y puede quedar
@@ -718,7 +729,7 @@ def _llegadas_confirmadas(activos: pd.DataFrame, historico: pd.DataFrame) -> dic
     mapa = {}
     if activos is not None and not activos.empty:
         for _, r in activos.iterrows():
-            bl = str(r.get(COL_BL, "")).strip()
+            bl = clave_bl(r.get(COL_BL, ""))
             if not bl:
                 continue
             llegada = fecha_llegada_fila(r)
@@ -726,7 +737,7 @@ def _llegadas_confirmadas(activos: pd.DataFrame, historico: pd.DataFrame) -> dic
                 mapa[bl] = llegada
     if historico is not None and not historico.empty:
         for _, r in historico.iterrows():
-            bl = str(r.get(COL_BL, "")).strip()
+            bl = clave_bl(r.get(COL_BL, ""))
             if not bl or bl in mapa:
                 continue
             llegada = parsear_fecha(r.get(COL_FECHA_LLEGADA_PUERTO, ""))
@@ -745,7 +756,7 @@ def _etas_activos(activos: pd.DataFrame) -> dict:
     if activos is None or activos.empty:
         return mapa
     for _, r in activos.iterrows():
-        bl = str(r.get(COL_BL, "")).strip()
+        bl = clave_bl(r.get(COL_BL, ""))
         if not bl or bl in mapa:
             continue
         eta = parsear_fecha(r.get(COL_ETA, ""))
@@ -768,19 +779,20 @@ def llegadas_desfasadas(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     etas_hist = {}
     if historico is not None and not historico.empty:
         for _, r in historico.iterrows():
-            bl = str(r.get(COL_BL, "")).strip()
+            bl = clave_bl(r.get(COL_BL, ""))
             if bl and bl not in etas_hist:
                 f = parsear_fecha(r.get(COL_ETA, ""))
                 if f:
                     etas_hist[bl] = f
     bls = df_pagos[COL_BL].astype(str).str.strip()
-    repetidos = set(bls[bls.duplicated(keep=False)])
+    claves = bls.map(clave_bl)
+    repetidos = set(claves[claves.duplicated(keep=False)])
     celdas = df_pagos[COL_PAGO_LLEGADA] if COL_PAGO_LLEGADA in df_pagos.columns else [""] * len(df_pagos)
     cambios = []
-    for bl, cruda in zip(bls, celdas):
-        if not bl or bl in repetidos:
+    for bl, clave, cruda in zip(bls, claves, celdas):
+        if not clave or clave in repetidos:
             continue
-        destino = confirmadas.get(bl) or etas.get(bl) or etas_hist.get(bl)
+        destino = confirmadas.get(clave) or etas.get(clave) or etas_hist.get(clave)
         if destino and parsear_fecha(cruda) != destino:
             cambios.append((bl, destino))
     return cambios
@@ -901,13 +913,14 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     bls_transito = set()
     for fuente in (activos, historico):
         if fuente is not None and not fuente.empty:
-            bls_transito |= {str(b).strip() for b in fuente[COL_BL] if str(b).strip()}
+            bls_transito |= {clave_bl(b) for b in fuente[COL_BL] if str(b).strip()}
     # Tecnicaribe y Motor Ibérico nunca van a estar en tránsito (esta app solo
     # trackea embarques de Antillana): avisar "sin tránsito" para ellos sería
     # una alarma falsa, no un dato útil.
+    claves_bl = [clave_bl(b) for b in df[COL_BL]]
     df["BLSinTransito"] = [
         bool(bl) and emp == EMPRESA_ANTILLANA and bl not in bls_transito
-        for bl, emp in zip(df[COL_BL].astype(str).str.strip(), empresas_efectivas)
+        for bl, emp in zip(claves_bl, empresas_efectivas)
     ]
 
     totales_actuales = [totales_conceptos(r) for _, r in df.iterrows()]
@@ -949,7 +962,7 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     llegadas_confirmadas = _llegadas_confirmadas(activos, historico)
     hoy = hoy_rd()
     dias_sin_pagar = []
-    for bl, fecha_pago in zip(df[COL_BL].astype(str).str.strip(), df["FechaPagoRealParsed"]):
+    for bl, fecha_pago in zip(claves_bl, df["FechaPagoRealParsed"]):
         llegada = llegadas_confirmadas.get(bl)
         if not llegada:
             dias_sin_pagar.append(None)  # todavía sin confirmar: el contador no arranca
@@ -967,7 +980,7 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     etas_activos = _etas_activos(activos)
     df["LlegadaEfectiva"] = [
         llegadas_confirmadas.get(bl) or etas_activos.get(bl) or parsear_fecha(cruda)
-        for bl, cruda in zip(df[COL_BL].astype(str).str.strip(), df.get(COL_PAGO_LLEGADA, []))
+        for bl, cruda in zip(claves_bl, df.get(COL_PAGO_LLEGADA, []))
     ]
 
     df["MontoExtra"] = [monto_extra(r) for _, r in df.iterrows()]

@@ -586,7 +586,7 @@ def _mediana(serie) -> str:
     return f"{int(pd.Series(valores).median())} d · {len(valores)} emb."
 
 
-def _grafico_anual(df_anio: pd.DataFrame, anio: int):
+def _grafico_anual(df_anio: pd.DataFrame, anio: int, sfx: str = ""):
     """Los 12 meses del año, incluidos los que van en cero: un mes vacío también
     es información y desaparecerlo del gráfico distorsiona la lectura."""
     conteo = df_anio.groupby("Mes").size().to_dict()
@@ -609,7 +609,7 @@ def _grafico_anual(df_anio: pd.DataFrame, anio: int):
     )
     st.plotly_chart(fig, width="stretch",
                     config={"displayModeBar": False, "staticPlot": True, "responsive": True},
-                    key=f"hist_anual_{anio}")
+                    key=f"hist_anual_{anio}{sfx}")
 
 
 def _tabla_detalle(df: pd.DataFrame) -> pd.DataFrame:
@@ -654,6 +654,29 @@ def mostrar_historico(datos: dict, rol: str):
         return
 
     descartados = len(crudo) - len(df)
+    if descartados:
+        st.caption(f"{descartados} registro(s) del archivo no tienen fecha interpretable y no se están contando.")
+
+    # Pestañas por tipo de recepción (columna Tipo_Recepcion): lo normal entra a almacén;
+    # «Venta CIF» y «Enviado al Cliente» no, así que no se mezclan con los ciclos ni con
+    # el conteo de almacén. Las claves de la pestaña de almacén son las de siempre.
+    tipo = (df["Tipo_Recepcion"].astype(str).str.strip() if "Tipo_Recepcion" in df.columns
+            else pd.Series([""] * len(df), index=df.index))
+    vistas = [("Almacén", "", "", ~tipo.isin(["Venta CIF", "Enviado al Cliente"])),
+              ("Venta CIF", "_cif", "_cif", tipo == "Venta CIF"),
+              ("Enviado al Cliente", "_cliente", "_cliente", tipo == "Enviado al Cliente")]
+    pestanas = st.tabs([f"{nombre} · {int(m.sum())}" for nombre, _, _, m in vistas])
+    for pestana, (nombre, sfx, arch, mascara) in zip(pestanas, vistas):
+        with pestana:
+            df_t = df[mascara]
+            if df_t.empty:
+                st.info(f"No hay embarques archivados como «{nombre}».")
+                continue
+            _historico_vista(df_t, rol, sfx, arch)
+
+
+def _historico_vista(df: pd.DataFrame, rol: str, sfx: str, arch: str):
+    """Cuerpo del Histórico para un tipo de recepción (sfx: sufijo de las claves de widgets)."""
     hoy = hoy_rd()
 
     mes_ant = (hoy.year - 1, 12) if hoy.month == 1 else (hoy.year, hoy.month - 1)
@@ -676,16 +699,13 @@ def mostrar_historico(datos: dict, rol: str):
     )
     k3.markdown(tarjeta_kpi(f"Acumulado {hoy.year}", n_anio, COLOR_TOTAL, f"{len(df)} en todo el histórico"),
                 unsafe_allow_html=True)
-    if descartados:
-        st.caption(f"{descartados} registro(s) del archivo no tienen fecha interpretable y no se están contando.")
-
     st.write("")
     st.divider()
 
     anios = sorted(df["Anio"].unique(), reverse=True)
     idx_anio = anios.index(hoy.year) if hoy.year in anios else 0
     c_anio, c_info = st.columns([1, 3])
-    anio_sel = int(c_anio.selectbox("Año", anios, index=idx_anio, key="hist_anio"))
+    anio_sel = int(c_anio.selectbox("Año", anios, index=idx_anio, key=f"hist_anio{sfx}"))
     df_anio = df[df["Anio"] == anio_sel]
     c_info.markdown(
         f"<div style='padding-top:1.9rem; color:#6B7280; font-size:0.9rem;'>"
@@ -694,7 +714,7 @@ def mostrar_historico(datos: dict, rol: str):
         unsafe_allow_html=True,
     )
 
-    _grafico_anual(df_anio, anio_sel)
+    _grafico_anual(df_anio, anio_sel, sfx)
 
     # -------------------- Tiempos de ciclo --------------------
     # La pregunta que sigue a "¿cuántos recibimos?" es "¿en cuánto tiempo?".
@@ -724,16 +744,16 @@ def mostrar_historico(datos: dict, rol: str):
     d1.download_button(
         f"Descargar resumen {anio_sel}",
         data=_df_a_excel(tabla_resumen.reset_index().rename(columns={"index": "Mes"}), f"Resumen {anio_sel}"),
-        file_name=f"resumen_recibidos_{anio_sel}.xlsx",
+        file_name=f"resumen_recibidos{arch}_{anio_sel}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="dl_resumen_anio", width="stretch",
+        key=f"dl_resumen_anio{sfx}", width="stretch",
     )
     d2.download_button(
         "Descargar histórico completo",
         data=_df_a_excel(_tabla_detalle(df), "Historico"),
-        file_name="historico_recibidos_completo.xlsx",
+        file_name=f"historico_recibidos{arch}_completo.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="dl_historico_total", width="stretch",
+        key=f"dl_historico_total{sfx}", width="stretch",
     )
 
     st.divider()
@@ -747,8 +767,8 @@ def mostrar_historico(datos: dict, rol: str):
     idx_mes = meses_con_datos.index(hoy.month) if (anio_sel == hoy.year and hoy.month in meses_con_datos) else 0
     m1, m2 = st.columns([1, 2])
     mes_sel = m1.selectbox("Mes", meses_con_datos, index=idx_mes,
-                           format_func=lambda m: MESES_ES[m], key="hist_mes")
-    busqueda = m2.text_input("Buscar en el mes", key="hist_busca",
+                           format_func=lambda m: MESES_ES[m], key=f"hist_mes{sfx}")
+    busqueda = m2.text_input("Buscar en el mes", key=f"hist_busca{sfx}",
                              placeholder="BL, descripción, modelo o cliente…")
 
     filtrado = df_anio[df_anio["Mes"] == mes_sel]
@@ -765,9 +785,9 @@ def mostrar_historico(datos: dict, rol: str):
     st.download_button(
         f"Descargar {etiqueta_mes} en Excel",
         data=_df_a_excel(tabla, etiqueta_mes),
-        file_name=f"recibidos_{anio_sel}_{mes_sel:02d}.xlsx",
+        file_name=f"recibidos{arch}_{anio_sel}_{mes_sel:02d}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="dl_mes",
+        key=f"dl_mes{sfx}",
     )
 
     if rol != "admin" or filtrado.empty:
@@ -776,7 +796,7 @@ def mostrar_historico(datos: dict, rol: str):
     st.write("")
     with st.expander("Revertir una recepción", expanded=False):
         opciones = _etiquetas_desambiguadas(filtrado, con_categoria=False, largo_desc=40)
-        elegido = st.selectbox("Embarque", opciones, key="sel_revertir")
+        elegido = st.selectbox("Embarque", opciones, key=f"sel_revertir{sfx}")
         fila = filtrado.iloc[opciones.index(elegido)]
         bl = str(fila[COL_BL]).strip()
         guardada = str(fila.get("Categoria_Origen", "")).strip()
@@ -787,9 +807,9 @@ def mostrar_historico(datos: dict, rol: str):
                        "fecha de declaración intactas.")
         else:
             st.caption("Este registro se archivó sin categoría de origen. Elige a dónde devolverlo:")
-            categoria = st.selectbox("Categoría de destino", CATEGORIAS, key="cat_revertir")
+            categoria = st.selectbox("Categoría de destino", CATEGORIAS, key=f"cat_revertir{sfx}")
 
-        if st.button("Quitar de recibido y devolver", key="btn_revertir", type="primary"):
+        if st.button("Quitar de recibido y devolver", key=f"btn_revertir{sfx}", type="primary"):
             ok, mensaje = quitar_de_recibido(bl, categoria_manual=categoria,
                                              fila_sugerida=fila.get("FilaSheet"))
             if ok:
@@ -804,7 +824,7 @@ def mostrar_historico(datos: dict, rol: str):
         st.caption("Para cuando la llegada, la declaración o la entrada a almacén se registraron con "
                    "otra fecha. Si cambias la de almacén, el embarque puede pasar de mes en el histórico.")
         opciones_f = _etiquetas_desambiguadas(filtrado, con_categoria=False, largo_desc=40)
-        elegido_f = st.selectbox("Embarque", opciones_f, key="sel_fechas_recibido")
+        elegido_f = st.selectbox("Embarque", opciones_f, key=f"sel_fechas_recibido{sfx}")
         fila_f = filtrado.iloc[opciones_f.index(elegido_f)]
         bl_f = str(fila_f[COL_BL]).strip()
         sufijo = f"{bl_f}_{fila_f.get('FilaSheet', '')}"

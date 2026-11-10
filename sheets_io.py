@@ -132,6 +132,7 @@ COL_FECHA_DECLARACION = "Fecha_Declaracion"          # recepción y declaración
 # momento de archivar, y por eso vive únicamente en "Recibido (Mes)".
 COL_FECHA_ALMACEN = "Fecha_Almacen"
 COL_TIPO_RECEPCION = "Tipo_Recepcion"      # vacío = recepción normal en almacén propio
+ENVIADO_CLIENTE = "Enviado al Cliente"   # fue directo al cliente: tampoco hay entrada a almacén propio
 VENTA_CIF = "Venta CIF"                    # se vendió CIF: el comprador se encarga de lo que sigue a la declaración
 
 
@@ -1921,7 +1922,7 @@ def eliminar_embarque(bl: str, categoria: str, fila_sugerida=None):
 
 @_con_manejo_apierror
 def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
-                         fecha_declaracion=None, fecha_almacen=None, venta_cif=False):
+                         fecha_declaracion=None, fecha_almacen=None, venta_cif=False, enviado_cliente=False):
     """Archiva el embarque en 'Recibido (Mes)' y lo saca del tablero activo.
 
     Candado: exige llegada confirmada y fecha de declaración. Si falta la
@@ -1955,12 +1956,15 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
     # Venta CIF: solo se exige hasta la declaración; no hay entrada a almacén
     # propio (lo demás lo hace el comprador) y el mes del histórico es el de
     # la declaración.
-    almacen = None if venta_cif else (parsear_fecha(fecha_almacen) or hoy_rd())
+    # Enviado al Cliente se trata igual que la venta CIF (sin almacén; mes = declaración);
+    # lo único que cambia es la etiqueta en Tipo_Recepcion, para distinguirlo.
+    sin_almacen = bool(venta_cif or enviado_cliente)
+    almacen = None if sin_almacen else (parsear_fecha(fecha_almacen) or hoy_rd())
     problema = _validar_orden_flujo(llegada, declaracion, almacen)
     if problema:
         return False, problema
 
-    base = llegada if BASE_FECHA_RECIBIDO == "llegada" else (declaracion if venta_cif else almacen)
+    base = llegada if BASE_FECHA_RECIBIDO == "llegada" else (declaracion if sin_almacen else almacen)
     fecha_recibido = base or llegada
     if fecha_recibido is None:
         return False, (f"El BL '{bl}' no tiene un ETA interpretable ('{eta_crudo or 'vacío'}'), "
@@ -1986,7 +1990,7 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
         COL_ACTUALIZADO_POR: usuario_actual(),
         COL_FECHA_DECLARACION: declaracion.isoformat(),
         COL_FECHA_ALMACEN: almacen.isoformat() if almacen else "",
-        COL_TIPO_RECEPCION: VENTA_CIF if venta_cif else "",
+        COL_TIPO_RECEPCION: VENTA_CIF if venta_cif else (ENVIADO_CLIENTE if enviado_cliente else ""),
     }
     if llegada:
         registro[COL_FECHA_LLEGADA_PUERTO] = llegada.isoformat()
@@ -2102,7 +2106,7 @@ def corregir_fechas_recibido(bl: str, fila_sugerida=None, llegada=None, declarac
 
     f_llegada = llegada or _vigente(COL_FECHA_LLEGADA_PUERTO) or _vigente(COL_ETA)
     f_decl = declaracion or _vigente(COL_FECHA_DECLARACION)
-    es_cif = str(actual.get(_norm_encabezado(COL_TIPO_RECEPCION), "")).strip() == VENTA_CIF
+    es_cif = str(actual.get(_norm_encabezado(COL_TIPO_RECEPCION), "")).strip() in (VENTA_CIF, ENVIADO_CLIENTE)
     if es_cif:
         almacen = None   # una venta CIF no tiene almacén propio
     f_alm = almacen or _vigente(COL_FECHA_ALMACEN)

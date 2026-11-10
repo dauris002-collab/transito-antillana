@@ -817,9 +817,9 @@ def mostrar_historico(datos: dict, rol: str):
                                           format="DD/MM/YYYY", key=f"fr_llegada_{sufijo}")
             nueva_decl = st.date_input("Recepción y declaración", value=f_decl,
                                        format="DD/MM/YYYY", key=f"fr_decl_{sufijo}")
-            es_cif_f = str(fila_f.get("Tipo_Recepcion", "") or "").strip() == "Venta CIF"
+            es_cif_f = str(fila_f.get("Tipo_Recepcion", "") or "").strip() in ("Venta CIF", "Enviado al Cliente")
             if es_cif_f:
-                st.caption("Venta CIF: no tiene fecha de almacén; el mes del histórico es el de la declaración.")
+                st.caption("Venta CIF / Enviado al Cliente: no tiene fecha de almacén; el mes del histórico es el de la declaración.")
                 nuevo_alm = None
             else:
                 nuevo_alm = st.date_input("Recibido en almacén", value=f_alm,

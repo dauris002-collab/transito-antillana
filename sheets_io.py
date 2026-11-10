@@ -280,15 +280,39 @@ ESTADO_PAGO_PENDIENTE = "Pendiente"
 ESTADO_PAGO_PAGADO = "Pagado"
 
 
-# Prioridad de pago (1 = pagar primero ... 4 = puede esperar). Campo MANUAL de
-# Logística, como Estado_Pago: se escribe a mano en el Sheet o desde el
-# formulario de la app. Vacío = sin prioridad — y "sin prioridad" no es lo
-# mismo que prioridad 4: son los expedientes a los que nadie les ha asignado
-# turno todavía, y en la plataforma quedan DEBAJO de los que sí tienen.
+# Prioridad de pago (1 = pagar primero; número entero libre, sin tope de 4
+# desde v5.9). Campo MANUAL de Logística, como Estado_Pago: se escribe a mano
+# en el Sheet o desde el formulario de la app. Vacío = sin prioridad — y "sin
+# prioridad" no es lo mismo que la prioridad más baja: son los expedientes a
+# los que nadie les ha asignado turno todavía, y en la plataforma quedan
+# DEBAJO de los que sí tienen, sea cual sea su número.
 COL_PRIORIDAD = "Prioridad"
 
 
+# Niveles con color propio en el distintivo (1 rojo ... 4 gris). Ya NO limita
+# qué números se aceptan: del 5 en adelante el distintivo sale en gris.
 PRIORIDADES_PAGO = [1, 2, 3, 4]
+
+
+# Sin tope de negocio (pedido expreso, 10 nov 2026): cualquier entero desde 1.
+# Este valor es solo el límite técnico de los campos numéricos de Streamlit
+# (enteros seguros de JavaScript, ~9e15); nunca se muestra ni se menciona.
+PRIORIDAD_MAX = 2 ** 53 - 1
+
+
+# Llave de orden para "sin prioridad": siempre por debajo de cualquier número válido.
+ORDEN_SIN_PRIORIDAD = float("inf")
+
+
+def es_prioridad_valida(n) -> bool:
+    """True si n es un entero de 1 a PRIORIDAD_MAX (acepta 3.0, no 3.5 ni bool)."""
+    if n is None or isinstance(n, bool):
+        return False
+    try:
+        f = float(n)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return f == f and f == int(f) and 1 <= int(f) <= PRIORIDAD_MAX
 
 
 # Fecha límite saludable que fija Logística a criterio propio. Ya NO congela
@@ -1204,7 +1228,7 @@ NOMBRE_TALLER = "Repuesto y Taller"     # nombre visible de la sección y de la 
 PESTANAS_TALLER = (NOMBRE_TALLER, "Taller")   # pestaña: nombre nuevo primero; "Taller" por compatibilidad
 COL_T_EMPRESA = "EMPRESA"
 COL_T_PROVEEDOR = "PROVEEDOR"
-COL_T_PRIORIDAD = "PRIORIDAD"           # 1-4, igual que Pagos (PRIORIDADES_PAGO)
+COL_T_PRIORIDAD = "PRIORIDAD"           # entero 1..PRIORIDAD_MAX, igual que Pagos
 COL_T_CLIENTE = "CLIENTE"
 COL_T_SOLICITUD = "FECHA DE LA SOLICITUD"
 COL_T_DIAS = "DÍAS SIN PAGAR"           # fórmula del Sheet; la app lo calcula y no lo lee
@@ -1448,8 +1472,8 @@ def _validar_taller(d: dict, hoy: date):
         if t and t[0] in "=+-@":
             return "El texto no puede empezar con = + - @.", None
     prio = d.get("prioridad")
-    if prio is not None and prio not in PRIORIDADES_PAGO:
-        return "La prioridad debe ser 1, 2, 3 o 4 (o quedar vacía).", None
+    if prio is not None and not es_prioridad_valida(prio):
+        return "La prioridad debe ser un número entero desde 1 (o quedar vacía).", None
     sol, corte = d.get("solicitud"), d.get("corte")
     if not isinstance(sol, date):
         return "La fecha de la solicitud es obligatoria.", None
@@ -2208,8 +2232,8 @@ def _buscar_fila_pago(ws, bl: str):
 def _aplicar_validaciones_pagos(ws):
     """Mejor esfuerzo: agrega los selectores nativos de Google Sheets —
     calendario en Fecha_SinMora / Fecha_PagoRealizado, lista desplegable en
-    Empresa y en Prioridad (1-4) — para que esas columnas se elijan con clic
-    en vez de tecleo libre.
+    Empresa, y en Prioridad una regla de número ≥ 1 (ya no
+    lista 1-4) — para que esas columnas se elijan con clic en vez de tecleo libre.
 
     'strict': False en ambos casos a propósito: si algo no calza exactamente,
     Sheets lo marca con una advertencia visual en vez de RECHAZAR la
@@ -2272,9 +2296,8 @@ def _aplicar_validaciones_pagos(ws):
                         "endColumnIndex": idx_prioridad,
                     },
                     "rule": {
-                        "condition": {"type": "ONE_OF_LIST",
-                                      "values": [{"userEnteredValue": str(p)} for p in PRIORIDADES_PAGO]},
-                        "showCustomUi": True,
+                        "condition": {"type": "NUMBER_GREATER_THAN_EQ",
+                                      "values": [{"userEnteredValue": "1"}]},
                         "strict": False,
                     },
                 },
@@ -2282,7 +2305,7 @@ def _aplicar_validaciones_pagos(ws):
         if not requests:
             return False, "No se encontraron las columnas esperadas (fechas / Empresa / Prioridad) en la pestaña."
         get_spreadsheet().batch_update({"requests": requests})
-        return True, "Selectores aplicados: calendario en las fechas, lista desplegable en Empresa y en Prioridad (1-4)."
+        return True, f"Selectores aplicados: calendario en las fechas, lista desplegable en Empresa y número desde 1 en Prioridad."
     except Exception as e:  # noqa: BLE001
         return False, f"No se pudo aplicar los selectores: {e}"
 
@@ -2539,12 +2562,14 @@ def marcar_estado_pago(bl: str, estado: str):
 
 @_con_manejo_apierror
 def fijar_prioridad_pago(bl: str, prioridad):
-    """Fija la prioridad de pago de un expediente (1-4, donde 1 = pagar
-    primero), o la quita con None (celda vacía). Mismo patrón que
+    """Fija la prioridad de pago de un expediente (entero desde 1,
+    donde 1 = pagar primero), o la quita con None (celda vacía). Mismo patrón que
     marcar_estado_pago(): campo manual de Logística, una sola celda más los
     sellos de auditoría, sin tocar nada más de la fila."""
-    if prioridad is not None and prioridad not in PRIORIDADES_PAGO:
-        return False, f"Prioridad '{prioridad}' no reconocida: usa 1, 2, 3 o 4."
+    if prioridad is not None and not es_prioridad_valida(prioridad):
+        return False, f"Prioridad '{prioridad}' no reconocida: usa un número entero desde 1."
+    if prioridad is not None:
+        prioridad = int(prioridad)
     ws = get_worksheet(PAGOS_SHEET)
     if ws is None:
         return False, f"No existe la pestaña '{PAGOS_SHEET}'."

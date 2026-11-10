@@ -22,7 +22,7 @@ from sheets_io import (
     COL_FECHA_SALIDA, COL_FECHA_SIN_MORA, COL_LLEGO, COL_MODELO, COL_OC,
     COL_PAGO_LLEGADA, COL_PAGOREAL_DOP, COL_PAGOREAL_USD, COL_PAIS, COL_ESTADO_PAGO,
     COL_PRIORIDAD, COL_VIA,
-    ESTADO_PAGO_PAGADO, PRIORIDADES_PAGO, VIA_AEREA,
+    ESTADO_PAGO_PAGADO, PRIORIDADES_PAGO, VIA_AEREA, es_prioridad_valida,
     CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESA_MOTOR_IBERICO, EMPRESA_TECNICARIBE,
     EMPRESAS_PAGO, ETAPAS_PUERTO,
     INDICE_ETAPA, MESES_ES_CORTO, MONEDA_CONCEPTO,
@@ -894,9 +894,9 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
     empresas_efectivas = empresas_crudas.apply(_canonizar_empresa)
     df["EmpresaEfectiva"] = empresas_efectivas.tolist()
 
-    # Prioridad de pago: la escribe Logística a mano en el Sheet (1-4). Solo
-    # cuentan enteros del 1 al 4; cualquier otra cosa (vacío, texto, 0, 5,
-    # "1.5") vale como "sin prioridad" en vez de romper el orden de la lista —
+    # Prioridad de pago: la escribe Logística a mano en el Sheet. Cuenta
+    # cualquier entero de 1 a PRIORIDAD_MAX; cualquier otra cosa (vacío, texto,
+    # 0, negativos, "1.5") vale como "sin prioridad" en vez de romper el orden de la lista —
     # un dedazo en el Sheet no puede tumbar la vista, solo deja ese expediente
     # sin turno hasta que se corrija.
     crudas_prio = (df[COL_PRIORIDAD] if COL_PRIORIDAD in df.columns
@@ -904,9 +904,7 @@ def enriquecer_pagos(df_pagos: pd.DataFrame, activos: pd.DataFrame,
 
     def _prioridad_valida(v):
         n = a_numero(v)
-        if n is None or n != int(n):
-            return None
-        return int(n) if int(n) in PRIORIDADES_PAGO else None
+        return int(n) if es_prioridad_valida(n) else None
 
     df["PrioridadPago"] = [_prioridad_valida(v) for v in crudas_prio]
 

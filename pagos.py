@@ -31,7 +31,7 @@ from sheets_io import (
     COL_FECHA_PAGO_REAL, COL_FECHA_SIN_MORA, COL_PAGO_LLEGADA, COL_PAGOREAL_DOP,
     COL_PAGOREAL_USD, COL_PRIORIDAD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO,
     ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE, MESES_ES_CORTO, MONEDA_CONCEPTO,
-    PRIORIDADES_PAGO, NOMBRE_TALLER, invalidar_taller,
+    PRIORIDADES_PAGO, NOMBRE_TALLER, invalidar_taller, ORDEN_SIN_PRIORIDAD, PRIORIDAD_MAX,
     _norm, a_numero, aplicar_selectores_pagos, fecha_llegada_fila, fijar_prioridad_pago,
     formato_eta,
     guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago,
@@ -67,15 +67,15 @@ COLOR_CONCEPTO = {c: PALETA_PAISES[i % len(PALETA_PAISES)] for i, c in enumerate
     _ORDEN_COLORES + [c for c in CONCEPTOS_PAGO if c not in _ORDEN_COLORES])}
 
 
-# Un color por prioridad de pago: 1 es lo más urgente (rojo) y 4 lo que más
-# puede esperar (gris). El distintivo usa BORDE, no relleno: resalta sin
+# Un color por prioridad de pago: 1 es lo más urgente (rojo) ... 4 gris; del 5
+# en adelante también gris (la prioridad ya no tiene tope de 4). El distintivo usa BORDE, no relleno: resalta sin
 # competir con la pastilla de estado Pendiente/Pagado que va al lado.
 COLOR_PRIORIDAD = {1: "#B91C1C", 2: "#B45309", 3: "#0C447C", 4: "#6B7280"}
 
 
 def _badge_prioridad(prio) -> str:
     """Pastilla con borde que dice qué prioridad de pago tiene el expediente
-    ('PRIORIDAD 3'). Vacío si no tiene una válida — solo cuentan enteros 1-4,
+    ('PRIORIDAD 3'). Vacío si no tiene una válida — solo cuentan enteros 1..PRIORIDAD_MAX,
     que es lo que enriquecer_pagos() deja pasar."""
     if prio is None or pd.isna(prio):
         return ""
@@ -433,12 +433,12 @@ ESTADO_SLUG = {v: k for k, v in ESTADO_DISPLAY.items()}
 
 def _clave_antiguedad(prio, dias, llegada):
     """Llave de orden para la lista de pagos (menor = más arriba):
-    1) con prioridad primero, la 1 antes que la 4; sin prioridad al final;
+    1) con prioridad primero, de menor a mayor número; sin prioridad al final;
     2) dentro de cada nivel, más días sin pagar primero;
     3) sin contador de días (llegada sin confirmar) después de los que sí lo
        tienen, por llegada más antigua. Una carga con 17 días sin prioridad
        queda DEBAJO de una con prioridad 1 aunque lleve menos días."""
-    p = int(prio) if prio is not None and not pd.isna(prio) else 99
+    p = int(prio) if prio is not None and not pd.isna(prio) else ORDEN_SIN_PRIORIDAD
     if dias is not None and not pd.isna(dias):
         return (p, 0, -int(dias), 0)
     return (p, 1, 0, llegada.toordinal() if llegada else 10 ** 9)
@@ -829,7 +829,7 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False,
 
     # Sin filtro de Prioridad a propósito (pedido expreso tras verlo en
     # producción): la prioridad se PONE —con el formulario de admin de abajo o
-    # escribiendo el número (1-4) en la columna 'Prioridad' de la pestaña Pagos
+    # escribiendo el número (entero desde 1) en la columna 'Prioridad' de la pestaña Pagos
     # del Sheet— y aquí solo se MUESTRA (distintivo con borde) y se ORDENA la
     # lista de la 1 a la 4. No hay control de filtro por prioridad.
 
@@ -1159,10 +1159,10 @@ def form_estado_pago(enriquecido: pd.DataFrame):
 
 
 def form_prioridad_pago(enriquecido: pd.DataFrame):
-    """Prioridad de pago (1 = pagar primero ... 4 = puede esperar). Es exactamente
+    """Prioridad de pago (1 = pagar primero; entero libre hasta PRIORIDAD_MAX). Es exactamente
     la misma columna 'Prioridad' de la pestaña Pagos del Sheet: lo que se guarde
     aquí se ve allá y viceversa — esto solo evita abrir el Sheet para cambiarla."""
-    st.markdown("**Fijar prioridad de pago (1-4)**")
+    st.markdown("**Fijar prioridad de pago**")
     if enriquecido.empty:
         st.info("No hay expedientes registrados.")
         return
@@ -1173,12 +1173,13 @@ def form_prioridad_pago(enriquecido: pd.DataFrame):
     tiene_actual = actual is not None and not pd.isna(actual)
     st.caption(f"Prioridad actual: {int(actual)}." if tiene_actual
                else "Sin prioridad asignada todavía.")
-    etiquetas = ["1 — pagar primero", "2", "3", "4 — puede esperar", "Quitar prioridad"]
-    indice = (int(actual) - 1) if tiene_actual else 0
-    eleccion = st.radio("Prioridad", etiquetas, index=indice,
-                        key=f"radio_prio_{bl}__{_firma(actual if tiene_actual else '')}")
+    sufijo = f"{bl}__{_firma(actual if tiene_actual else '')}"
+    numero = st.number_input("Prioridad (1 = pagar primero)",
+                             min_value=1, max_value=PRIORIDAD_MAX, step=1,
+                             value=int(actual) if tiene_actual else 1, key=f"num_prio_{sufijo}")
+    quitar = st.checkbox("Quitar prioridad", key=f"quitar_prio_{sufijo}")
     if st.button("Guardar prioridad", type="primary", key="btn_prioridad"):
-        nueva = None if eleccion == "Quitar prioridad" else int(eleccion[0])
+        nueva = None if quitar else int(numero)
         ok, mensaje = fijar_prioridad_pago(bl, nueva)
         if ok:
             registrar_log("Prioridad de pago actualizada", bl, "",
@@ -1302,7 +1303,7 @@ def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
         form_pago_realizado(enriquecido)
     with st.expander("Marcar estado (Pendiente/Pagado)"):
         form_estado_pago(enriquecido)
-    with st.expander("Fijar prioridad de pago (1-4)"):
+    with st.expander("Fijar prioridad de pago"):
         form_prioridad_pago(enriquecido)
     sin_emp = pagos_sin_empresa(df_pagos, activos, historico)
     with st.expander(f"Revisión: expedientes sin Empresa ({len(sin_emp)})"):
@@ -1318,7 +1319,7 @@ def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
                                file_name="pagos_sin_empresa.csv", mime="text/csv", key="dl_pagos_sin_empresa")
     with st.expander("Activar selectores en Sheets (fechas, Empresa y Prioridad)"):
         st.caption("Solo hace falta correrlo una vez. Agrega el ícono de calendario nativo de Google "
-                  "Sheets en las fechas, y una lista desplegable en Empresa y en Prioridad (1-4), "
+                  "Sheets en las fechas, una lista desplegable en Empresa y una regla de número entero en Prioridad, "
                   "para elegir con clic en vez de teclear. Si la columna 'Prioridad' todavía no "
                   "existe en la pestaña Pagos, este botón también la crea.")
         if st.button("Activar selectores", key="btn_selector_fecha"):

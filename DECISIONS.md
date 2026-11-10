@@ -71,7 +71,7 @@ Borrador generado el 2026-10-01.
 - **Reconsiderar si:** [?]
 
 ## 11. Prioridad de pago
-- **Decisión:** número 1-4 puesto a mano (formulario de admin o directo en el Sheet). La plataforma lo muestra (borde) y ordena de 1 a 4, con "sin prioridad" debajo. NO hay filtro por prioridad. [PE]
+- **Decisión:** número entero puesto a mano (formulario de admin o directo en el Sheet), SIN tope de 4 desde v5.9 [PE, 10 nov 2026]; sin tope de negocio (cualquier entero desde 1; `PRIORIDAD_MAX` en `sheets_io.py` es solo el límite técnico de los campos numéricos, ~9e15). Vale igual en Pagos y en Repuesto y Taller. La plataforma lo muestra (borde; colores propios del 1 al 4, gris del 5 en adelante) y ordena de menor a mayor, con "sin prioridad" siempre debajo. NO hay filtro por prioridad. [PE]
 - **Orden (v5.1):** en 'Pendientes por antigüedad' y en la lista de expedientes: primero los que tienen prioridad (1 arriba), y dentro de cada nivel los que llevan más días sin pagar; sin llegada confirmada al final, por llegada más antigua. Una carga sin prioridad nunca pasa por encima de una con prioridad, aunque lleve más días. [PE, 1 oct 2026]
 - **Por qué:** el filtro sobraba como control. Vacío ≠ 4: son expedientes a los que nadie ha dado turno.
 - **Reconsiderar si:** [?]

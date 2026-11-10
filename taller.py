@@ -15,7 +15,7 @@ Reglas (decididas el 12 oct 2026):
    regla que Pagos, decisión 9); sin fecha, está Pendiente.
  - Días sin pagar = (fecha de pago, o hoy si sigue pendiente) - fecha de la
    solicitud. Se calcula aquí: la columna DÍAS SIN PAGAR del Sheet no se lee.
- - Prioridad 1-4 (decisión 11); varias filas pueden compartirla; vacía va debajo.
+ - Prioridad entera desde 1, sin tope de 4 (decisión 11); varias filas pueden compartirla; vacía va debajo.
    Orden: prioridad y, dentro de cada nivel, más días sin pagar primero.
  - USD y DOP son columnas separadas: nunca se suman entre sí.
 """
@@ -34,7 +34,7 @@ from sheets_io import (
     COL_T_CLIENTE, COL_T_CORTE, COL_T_DOP, COL_T_EMPRESA, COL_T_PRIORIDAD,
     COL_T_PROVEEDOR, COL_T_SOLICITUD, COL_T_USD, EMPRESA_ANTILLANA,
     EMPRESA_MOTOR_IBERICO, EMPRESA_TECNICARIBE, EMPRESAS_PAGO, MESES_ES_CORTO,
-    PRIORIDADES_PAGO, _norm_encabezado, a_numero, ahora_rd, cargar_taller, hoy_rd, parsear_fecha,
+    ORDEN_SIN_PRIORIDAD, PRIORIDAD_MAX, es_prioridad_valida, _norm_encabezado, a_numero, ahora_rd, cargar_taller, hoy_rd, parsear_fecha,
     snapshot_taller, taller_agregar, taller_editar, taller_limpiar, taller_marcar_pago,
 )
 from html import escape as _esc
@@ -117,7 +117,7 @@ def _monto(v):
 def _prioridad(texto):
     try:
         n = float(texto)
-        return int(n) if n == int(n) and int(n) in PRIORIDADES_PAGO else None
+        return int(n) if es_prioridad_valida(n) else None
     except (ValueError, OverflowError):
         return None
 
@@ -142,7 +142,7 @@ def enriquecer_taller(df: pd.DataFrame, hoy):
         if emp_txt and not emp:
             avisos.append(f"Fila {n}: empresa '{emp_txt}' no reconocida.")
         if prio_txt and prio is None:
-            avisos.append(f"Fila {n}: prioridad '{prio_txt}' no válida (usa 1 a 4).")
+            avisos.append(f"Fila {n}: prioridad '{prio_txt}' no válida (usa un entero desde 1).")
         if sol is None:
             avisos.append(f"Fila {n}: " + (f"fecha de solicitud '{_texto(sol_crudo)}' no válida; no se cuentan días."
                                            if _texto(sol_crudo) else "sin fecha de solicitud; no se cuentan días."))
@@ -169,7 +169,7 @@ def enriquecer_taller(df: pd.DataFrame, hoy):
 def ordenar_taller(df: pd.DataFrame) -> pd.DataFrame:
     """Prioridad primero (1 arriba, sin prioridad al final); dentro de cada nivel,
     más días sin pagar primero; sin contador de días después."""
-    clave = pd.DataFrame({"p": df["Prioridad"].fillna(99), "s": df["Dias"].isna(),
+    clave = pd.DataFrame({"p": df["Prioridad"].fillna(ORDEN_SIN_PRIORIDAD), "s": df["Dias"].isna(),
                           "d": -df["Dias"].fillna(0), "f": df["Fila"]}, index=df.index)
     return df.loc[clave.sort_values(["p", "s", "d", "f"]).index]
 
@@ -198,11 +198,12 @@ def _campos(prefijo: str, ini: dict) -> dict:
                            index=EMPRESAS_PAGO.index(emp) if emp in EMPRESAS_PAGO else None)
     proveedor = c2.text_input("Proveedor", value=ini.get("Proveedor", ""), key=f"{prefijo}_prov", max_chars=120)
     c3, c4 = st.columns(2)
-    opciones = [None] + list(PRIORIDADES_PAGO)
     p = ini.get("Prioridad")
-    prioridad = c3.selectbox("Prioridad", opciones, key=f"{prefijo}_prio",
-                             index=opciones.index(int(p)) if p is not None and not pd.isna(p) and int(p) in opciones else 0,
-                             format_func=lambda x: "—" if x is None else str(x))
+    # Vacío = sin prioridad. Entero libre desde 1 (sin tope de 4).
+    prio_num = c3.number_input("Prioridad (vacío = sin prioridad)", min_value=1, max_value=PRIORIDAD_MAX,
+                               step=1, key=f"{prefijo}_prio",
+                               value=int(p) if p is not None and not pd.isna(p) else None)
+    prioridad = None if prio_num is None else int(prio_num)
     cliente = c4.text_input("Cliente", value=ini.get("Cliente", ""), key=f"{prefijo}_cli", max_chars=120)
     c5, c6, c7 = st.columns(3)
     # max_value nunca por debajo del valor inicial: una fecha futura tecleada en el

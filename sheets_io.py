@@ -289,9 +289,22 @@ ESTADO_PAGO_PAGADO = "Pagado"
 COL_PRIORIDAD = "Prioridad"
 
 
-# Niveles con color propio en el distintivo (1 rojo ... 4 gris). Ya NO limita
-# qué números se aceptan: del 5 en adelante el distintivo sale en gris.
+# Ya NO limita qué números se aceptan (ver es_prioridad_valida); se conserva
+# por compatibilidad con importaciones existentes.
 PRIORIDADES_PAGO = [1, 2, 3, 4]
+
+
+# Color del distintivo de prioridad (pedido expreso, 10 nov 2026): del 1 al 5
+# en rojo; del 6 en adelante en un tono ámbar, menos llamativo que el rojo.
+# Para cambiar el corte o los colores, solo se tocan estas tres líneas.
+PRIORIDAD_ROJA_HASTA = 5
+COLOR_PRIORIDAD_ALTA = "#B91C1C"
+COLOR_PRIORIDAD_BAJA = "#B45309"
+
+
+def color_prioridad(n) -> str:
+    """Color (hex) del distintivo de la prioridad n."""
+    return COLOR_PRIORIDAD_ALTA if int(n) <= PRIORIDAD_ROJA_HASTA else COLOR_PRIORIDAD_BAJA
 
 
 # Sin tope de negocio (pedido expreso, 10 nov 2026): cualquier entero desde 1.

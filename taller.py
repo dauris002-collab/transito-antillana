@@ -34,7 +34,7 @@ from sheets_io import (
     COL_T_CLIENTE, COL_T_CORTE, COL_T_DOP, COL_T_EMPRESA, COL_T_PRIORIDAD,
     COL_T_PROVEEDOR, COL_T_SOLICITUD, COL_T_USD, EMPRESA_ANTILLANA,
     EMPRESA_MOTOR_IBERICO, EMPRESA_TECNICARIBE, EMPRESAS_PAGO, MESES_ES_CORTO,
-    ORDEN_SIN_PRIORIDAD, PRIORIDAD_MAX, es_prioridad_valida, _norm_encabezado, a_numero, ahora_rd, cargar_taller, hoy_rd, parsear_fecha,
+    ORDEN_SIN_PRIORIDAD, PRIORIDAD_MAX, color_prioridad, es_prioridad_valida, _norm_encabezado, a_numero, ahora_rd, cargar_taller, hoy_rd, parsear_fecha,
     snapshot_taller, taller_agregar, taller_editar, taller_limpiar, taller_marcar_pago,
 )
 from html import escape as _esc
@@ -339,7 +339,6 @@ _CSS = (
     "</style>"
 )
 DIAS_ROJO = 30   # más de 30 días sin pagar: el contador sale en rojo
-_COLOR_PRIO = {1: "#B91C1C", 2: "#B45309", 3: "#0C447C", 4: "#6B7280"}
 _ESTATUS = ["Todos", "Pendiente", "Pagado"]
 
 
@@ -359,7 +358,7 @@ def _pildora(n) -> str:
     if pd.isna(n):
         return '<td class="v">—</td>'
     n = int(n)
-    c = _COLOR_PRIO.get(n, "#6B7280")
+    c = color_prioridad(n)
     return f'<td><span class="tl-prio" style="border-color:{c}; color:{c};">PRIORIDAD&nbsp;<b>{n}</b></span></td>'
 
 
@@ -395,7 +394,7 @@ def _pildora_span(n) -> str:
     if pd.isna(n):
         return ""
     n = int(n)
-    c = _COLOR_PRIO.get(n, "#6B7280")
+    c = color_prioridad(n)
     return f'<span class="tl-prio" style="border-color:{c}; color:{c};">PRIORIDAD&nbsp;<b>{n}</b></span>'
 
 

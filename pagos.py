@@ -32,6 +32,7 @@ from sheets_io import (
     COL_PAGOREAL_USD, COL_PRIORIDAD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO,
     ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE, MESES_ES_CORTO, MONEDA_CONCEPTO,
     PRIORIDADES_PAGO, NOMBRE_TALLER, invalidar_taller, ORDEN_SIN_PRIORIDAD, PRIORIDAD_MAX,
+    color_prioridad,
     _norm, a_numero, aplicar_selectores_pagos, fecha_llegada_fila, fijar_prioridad_pago,
     formato_eta,
     guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago,
@@ -67,10 +68,9 @@ COLOR_CONCEPTO = {c: PALETA_PAISES[i % len(PALETA_PAISES)] for i, c in enumerate
     _ORDEN_COLORES + [c for c in CONCEPTOS_PAGO if c not in _ORDEN_COLORES])}
 
 
-# Un color por prioridad de pago: 1 es lo más urgente (rojo) ... 4 gris; del 5
-# en adelante también gris (la prioridad ya no tiene tope de 4). El distintivo usa BORDE, no relleno: resalta sin
+# El color del distintivo de prioridad sale de color_prioridad() (sheets_io):
+# 1-5 rojo, 6 en adelante ámbar. Usa BORDE, no relleno: resalta sin
 # competir con la pastilla de estado Pendiente/Pagado que va al lado.
-COLOR_PRIORIDAD = {1: "#B91C1C", 2: "#B45309", 3: "#0C447C", 4: "#6B7280"}
 
 
 def _badge_prioridad(prio) -> str:
@@ -80,7 +80,7 @@ def _badge_prioridad(prio) -> str:
     if prio is None or pd.isna(prio):
         return ""
     n = int(prio)
-    color = COLOR_PRIORIDAD.get(n, "#6B7280")
+    color = color_prioridad(n)
     return (f'<span class="pago-prio" style="border-color:{color}; color:{color};">'
             f'PRIORIDAD&nbsp;<b>{n}</b></span>')
 

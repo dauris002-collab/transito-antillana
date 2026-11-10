@@ -868,7 +868,9 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False,
     filtro_activo = _tarjetas_resumen(resumen, st.session_state.get("pago_filtro_estado", "todos"))
     if resumen["n_dias_pago"]:
         st.caption(f"Tiempo promedio de pago: días entre la llegada y el pago realizado, "
-                   f"sobre {resumen['n_dias_pago']} expediente(s) pagados con ambas fechas.")
+                   f"sobre {resumen['n_dias_pago']} expediente(s) pagados con ambas fechas"
+                   + (f"; {resumen['n_pagos_anticipados']} se pagaron antes de llegar y cuentan como 0 d."
+                      if resumen.get("n_pagos_anticipados") else "."))
 
     if con_montos.empty:
         st.info(f"Hay {len(vista)} expediente(s) en esta selección, pero ninguno tiene montos "

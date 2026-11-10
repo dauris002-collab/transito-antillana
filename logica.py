@@ -1024,7 +1024,7 @@ def resumen_pagos(df: pd.DataFrame) -> dict:
     positivo — un pago más barato que lo estimado no "resta" sobrecosto,
     simplemente no genera ninguno)."""
     vacio = {"n_pagados": 0, "n_abiertos": 0, "n_a_tiempo": 0, "dias_mora_promedio": None,
-             "dias_pago_promedio": None, "n_dias_pago": 0,
+             "dias_pago_promedio": None, "n_dias_pago": 0, "n_pagos_anticipados": 0,
              "sobrecosto": {"USD": 0.0, "DOP": 0.0}, "total_por_pagar": {"USD": 0.0, "DOP": 0.0}}
     if df is None or df.empty or "EstadoEfectivo" not in df.columns:
         return vacio
@@ -1054,6 +1054,10 @@ def resumen_pagos(df: pd.DataFrame) -> dict:
     a_tiempo = sum(1 for d in dias if d <= 0)
     dias_pago = [d for d in (cerrados["DiasHastaPago"] if "DiasHastaPago" in cerrados.columns else [])
                  if d is not None and pd.notna(d)]
+    # Un pago ANTES de la llegada (anticipo) cuenta como 0 días: si no, resta a los
+    # que sí se pagaron tarde y el promedio sale negativo sin significar nada (DECISIONS #32).
+    n_anticipados = sum(1 for d in dias_pago if d < 0)
+    dias_pago = [max(d, 0) for d in dias_pago]
     sobrecosto = {"USD": 0.0, "DOP": 0.0}
     for extra in cerrados["MontoExtra"]:
         for moneda in ("USD", "DOP"):
@@ -1068,6 +1072,7 @@ def resumen_pagos(df: pd.DataFrame) -> dict:
         "dias_mora_promedio": (sum(dias) / len(dias)) if dias else None,
         "dias_pago_promedio": (sum(dias_pago) / len(dias_pago)) if dias_pago else None,
         "n_dias_pago": len(dias_pago),
+        "n_pagos_anticipados": n_anticipados,
         "sobrecosto": sobrecosto,
         "total_por_pagar": total_por_pagar,
     }

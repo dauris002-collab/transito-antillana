@@ -596,6 +596,15 @@ def tarjeta_kpi(label: str, valor, color: str, sub: str = "") -> str:
     )
 
 
+def _rotulo_paso(indice: int, es_aerea: bool = False) -> str:
+    """Texto visible de cada paso del flujo: 0 llegada, 1 declaración, 2 almacén.
+    Solo cambia lo que se lee en pantalla: ETAPAS_PUERTO, ETAPA_ALMACEN y los
+    nombres que se guardan en bitácora/SLA siguen igual."""
+    if indice == 0:
+        return "Llegada al aeropuerto" if es_aerea else "Llegada a puerto"
+    return "Declaración" if indice == 1 else "Recepción en almacén"
+
+
 def html_flujo(fechas: dict, etapa_actual: str, es_aerea: bool = False) -> str:
     """Diagrama de las etapas en HTML/CSS puro.
 
@@ -611,7 +620,7 @@ def html_flujo(fechas: dict, etapa_actual: str, es_aerea: bool = False) -> str:
     partes = ['<div class="flujo">']
     for i, etapa in enumerate(ETAPAS_PUERTO):
         clase = "hecho" if i < idx else ("actual" if i == idx else "")
-        etiqueta = "Llegada al aeropuerto" if (es_aerea and i == 0) else etapa
+        etiqueta = _rotulo_paso(i, es_aerea)
         icono = "✈️" if (es_aerea and i == 0) else ICONO_ETAPA[etapa]
         fecha = fechas.get(etapa)
         partes.append(
@@ -621,7 +630,7 @@ def html_flujo(fechas: dict, etapa_actual: str, es_aerea: bool = False) -> str:
         )
     partes.append(
         f'<div class="paso"><div class="pt">{ICONO_ALMACEN}</div>'
-        f'<div class="txt"><div class="et">{esc(ETAPA_ALMACEN)}</div>'
+        f'<div class="txt"><div class="et">{esc(_rotulo_paso(2, es_aerea))}</div>'
         f'<div class="fch">&nbsp;</div></div></div>'
     )
     partes.append("</div>")
@@ -929,7 +938,7 @@ def _ficha_embarque(fila):
         fechas = fechas_flujo_de_fila(fila)
         rotulos = {
             "Llegada a puerto": "Llegada al aeropuerto" if es_aerea else "Llegada a puerto",
-            "Recepción y declaración": "Recepción y declaración",
+            "Recepción y declaración": "Declaración",
         }
         for nombre_etapa, fecha in fechas.items():
             if fecha:
@@ -1123,6 +1132,122 @@ def _archivar(fila, clave: str, etiqueta: str = "Marcar como recibido", df=None)
             st.error(mensaje)
 
 
+def _paso_declaracion(fila, clave: str, bl: str, categoria: str):
+    """Paso azul 'Declaración': la fecha va junto al botón, en el mismo renglón.
+    Dentro de un form, cambiar la fecha no recarga la pantalla: solo el botón escribe."""
+    with st.form(f"form_decl_{clave}", border=False):
+        c1, c2 = st.columns([1, 1.6], vertical_alignment="bottom")
+        fecha = c1.date_input("Fecha de declaración", value=hoy_rd(), format="DD/MM/YYYY",
+                              key=f"fdecl_{clave}")
+        enviar = c2.form_submit_button(f"{ICONO_ETAPA['Recepción y declaración']} Confirmar declaración",
+                                       type="primary", width="stretch")
+    if enviar:
+        ok, mensaje = fijar_fecha_declaracion(bl, categoria, fecha=fecha,
+                                              fila_sugerida=fila.get("FilaSheet"),
+                                              sello_esperado=fila.get(COL_ACTUALIZACION))
+        if ok:
+            registrar_log("Declaración registrada", bl, categoria, fecha.isoformat())
+            invalidar_caches()
+            st.rerun()
+        else:
+            st.error(mensaje)
+
+
+def _paso_almacen(fila, clave: str, bl: str, categoria: str):
+    """Paso azul 'Recepción en almacén' (archiva). Misma idea: fecha + botón en un renglón.
+    Venta CIF y Enviado al Cliente (decisión #30) quedan en un desplegable aparte y son
+    excluyentes entre sí; con cualquiera de los dos no hay fecha de almacén."""
+    with st.form(f"form_alm_{clave}", border=False):
+        c1, c2 = st.columns([1, 1.6], vertical_alignment="bottom")
+        fecha = c1.date_input("Fecha de recepción en almacén", value=hoy_rd(), format="DD/MM/YYYY",
+                              key=f"alm_{clave}")
+        enviar = c2.form_submit_button(f"{ICONO_ALMACEN} Confirmar recepción en almacén",
+                                       type="primary", width="stretch")
+        with st.expander("¿No entró a almacén? (Venta CIF / Enviado al Cliente)"):
+            destino = st.radio("Destino", ["Entró a almacén", "Venta CIF", "Enviado al Cliente"],
+                               key=f"dest_{clave}", label_visibility="collapsed")
+            st.caption("Con Venta CIF o Enviado al Cliente se archiva con la fecha de declaración, "
+                       "sin fecha de almacén (la fecha de arriba se ignora).")
+    if enviar:
+        venta_cif = destino == "Venta CIF"
+        enviado = destino == "Enviado al Cliente"
+        ok, mensaje = marcar_como_recibido(bl, categoria, fila_sugerida=fila.get("FilaSheet"),
+                                           fecha_almacen=None if (venta_cif or enviado) else fecha,
+                                           venta_cif=venta_cif, enviado_cliente=enviado)
+        if ok:
+            registrar_log("Recibido", bl, categoria,
+                          "Venta CIF" if venta_cif else "Enviado al Cliente" if enviado
+                          else f"almacén={fecha.isoformat()}")
+            invalidar_caches()
+            st.rerun()
+        elif str(mensaje).startswith("FALTAN_ETAPAS::"):
+            st.error("La pantalla estaba desactualizada: a este embarque le falta la llegada o la "
+                     "declaración. Pulsa ↻ Actualizar y vuelve a intentarlo.")
+        else:
+            st.error(mensaje)
+
+
+def _panel_correccion(fila, clave: str, bl: str, categoria: str, declarado: bool, es_aerea: bool):
+    """Corregir = elegir QUÉ se corrige y se ve solo ese campo con su botón.
+    Antes eran una etapa en radio, una fecha, 'Ir a esta etapa' y, más abajo, otra
+    fecha y otro botón: no quedaba claro cuál tocar."""
+    nombre_llegada = "llegada al aeropuerto" if es_aerea else "llegada a puerto"
+    llegada = parsear_fecha(fila.get(COL_ETA, ""))
+    decl = fila.get("F_Declaracion") if declarado else None
+    opciones = {"llegada": f"Cambiar la fecha de {nombre_llegada}"
+                           + (f" (hoy: {formato_eta(llegada)})" if llegada else "")}
+    if declarado:
+        opciones["declaracion"] = "Cambiar la fecha de declaración" + (f" (hoy: {formato_eta(decl)})" if decl else "")
+        opciones["quitar_decl"] = "Quitar la declaración (volver a «Llegada»)"
+    opciones["no_llego"] = "Esta carga todavía no ha llegado (deshacer llegada)"
+    sello = fila.get(COL_ACTUALIZACION)
+    n_fila = fila.get("FilaSheet")
+
+    def _listo(ok, mensaje, accion, detalle=""):
+        if ok:
+            registrar_log(accion, bl, categoria, detalle)
+            invalidar_caches()
+            st.rerun()
+        else:
+            st.error(mensaje)
+
+    with st.expander("✏️ Corregir fechas"):
+        que = st.radio("¿Qué quieres corregir?", list(opciones), index=None,
+                       format_func=opciones.get, key=f"corr_que_{clave}")
+        if que == "llegada":
+            nueva = st.date_input(f"Fecha de {nombre_llegada}", value=llegada or hoy_rd(),
+                                  format="DD/MM/YYYY", key=f"fll_{clave}_{llegada}")
+            st.caption("Es el ETA ya confirmado del embarque. No puede ser futura ni posterior a la declaración.")
+            if st.button("Guardar fecha de llegada", key=f"fll_btn_{clave}", width="stretch",
+                         disabled=nueva == llegada):
+                ok, mensaje = actualizar_embarque(bl, categoria, {COL_ETA: nueva.isoformat()},
+                                                  fila_sugerida=n_fila,
+                                                  sello_esperado=str(sello or "").strip())
+                _listo(ok, mensaje, "Llegada a puerto corregida",
+                       f"{llegada.isoformat() if llegada else 'vacío'} → {nueva.isoformat()}")
+        elif que == "declaracion":
+            nueva = st.date_input("Fecha de declaración", value=decl or hoy_rd(),
+                                  format="DD/MM/YYYY", key=f"fdc_{clave}_{decl}")
+            if st.button("Guardar fecha de declaración", key=f"fdc_btn_{clave}", width="stretch",
+                         disabled=nueva == decl):
+                ok, mensaje = fijar_fecha_declaracion(bl, categoria, fecha=nueva, fila_sugerida=n_fila,
+                                                      sobrescribir=True, sello_esperado=sello)
+                _listo(ok, mensaje, "Declaración corregida", nueva.isoformat())
+        elif que == "quitar_decl":
+            st.caption("Borra la fecha de declaración y deja el embarque en «Llegada», "
+                       "conservando la llegada ya confirmada.")
+            if st.button("Quitar declaración", key=f"qd_btn_{clave}", width="stretch"):
+                ok, mensaje = avanzar_estado_puerto(bl, categoria, ETAPAS_PUERTO[0], fila_sugerida=n_fila,
+                                                    sello_esperado=sello)
+                _listo(ok, mensaje, f"Etapa ajustada a '{ETAPAS_PUERTO[0]}'")
+        elif que == "no_llego":
+            st.caption("Va más atrás todavía: borra la declaración y marca «¿Llegó?» en NO. "
+                       "Úsalo cuando la llegada misma se confirmó por error.")
+            if st.button("Deshacer llegada", key=f"undo_{clave}", width="stretch"):
+                ok, mensaje = marcar_no_llego(bl, categoria, fila_sugerida=n_fila, sello_esperado=sello)
+                _listo(ok, mensaje, "Llegada deshecha")
+
+
 def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
     """Un diagrama por embarque, siempre visible. El admin avanza con un solo
     botón (la etapa siguiente, que es el 95% de los casos) y corrige fechas o
@@ -1151,15 +1276,6 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
     clave_ver = f"ver_todos_{_slug_css(contexto)}"
     ver_todos = st.session_state.get(clave_ver, False)
     visibles = orden if ver_todos else orden.head(TOPE_PROCESO)
-
-    fecha_evento = hoy_rd()
-    if es_admin:
-        fecha_evento = st.date_input(
-            "Fecha del evento que vas a confirmar abajo", value=hoy_rd(), format="DD/MM/YYYY",
-            key=f"fecha_evento_{_slug_css(contexto)}",
-            help="Se usa para la etapa que confirmes con los botones de abajo. Cámbiala si estás "
-                 "registrando algo que pasó otro día; así los contadores no mienten.",
-        )
 
     for _, fila in visibles.iterrows():
         bl = str(fila[COL_BL]).strip()
@@ -1195,83 +1311,10 @@ def _panel_en_proceso(df: pd.DataFrame, rol: str, contexto: str):
         if es_admin and bl:
             declarado = _lleno(fila.get("F_Declaracion"))
             if not declarado:
-                if st.button(f"{ICONO_ETAPA['Recepción y declaración']} Confirmar: Recepción y declaración",
-                             key=f"av_{clave}", type="primary", width="stretch"):
-                    ok, mensaje = fijar_fecha_declaracion(bl, categoria, fecha=fecha_evento,
-                                                          fila_sugerida=fila.get("FilaSheet"),
-                                                          sello_esperado=fila.get(COL_ACTUALIZACION))
-                    if ok:
-                        registrar_log("Declaración registrada", bl, categoria, fecha_evento.isoformat())
-                        invalidar_caches()
-                        st.rerun()
-                    else:
-                        st.error(mensaje)
-                        st.caption("Agrega la fecha de declaración, ya sea corrigiendo la celda "
-                                  f"'Fecha_Declaracion' en la pestaña '{categoria}' del Sheet, o "
-                                  "actualizando los datos y repitiendo la acción aquí en la aplicación.")
+                _paso_declaracion(fila, clave, bl, categoria)
             else:
-                _archivar(fila, clave, etiqueta=f"{ICONO_ALMACEN} {ETAPA_ALMACEN} (archiva)", df=visibles)
-
-            with st.expander("Corregir fecha o retroceder etapa"):
-                etapa_destino = st.radio(
-                    "Etapa", ETAPAS_PUERTO,
-                    index=(1 if declarado else 0), horizontal=True, key=f"radio_etapa_{clave}",
-                )
-                if etapa_destino == ETAPAS_PUERTO[1]:
-                    fecha_corregida = st.date_input("Fecha real de la declaración", value=hoy_rd(),
-                                                    format="DD/MM/YYYY", key=f"fc_{clave}")
-                else:
-                    fecha_corregida = None
-                    st.caption("Vuelve a 'Llegada a puerto' conservando la llegada ya confirmada "
-                              "(el ETA actual) y borra la fecha de declaración.")
-                if st.button("Ir a esta etapa", key=f"corr_{clave}", width="stretch"):
-                    ok, mensaje = avanzar_estado_puerto(bl, categoria, etapa_destino,
-                                                        fila_sugerida=fila.get("FilaSheet"),
-                                                        fecha=fecha_corregida, sobrescribir=True,
-                                                        sello_esperado=fila.get(COL_ACTUALIZACION))
-                    if ok:
-                        registrar_log(f"Etapa ajustada a '{etapa_destino}'", bl, categoria,
-                                     fecha_corregida.isoformat() if fecha_corregida else "")
-                        invalidar_caches()
-                        st.rerun()
-                    else:
-                        st.error(mensaje)
-                        st.caption("Agrega la fecha de declaración, ya sea corrigiendo la celda "
-                                  f"'Fecha_Declaracion' en la pestaña '{categoria}' del Sheet, o "
-                                  "actualizando los datos y repitiendo la acción aquí en la aplicación.")
-                st.divider()
-                st.caption("Si la carga llegó otro día, corrige aquí la fecha real de llegada a puerto "
-                          "(es el ETA del embarque, ya confirmado). No puede ser futura ni posterior "
-                          "a la declaración.")
-                llegada_vigente = parsear_fecha(fila.get(COL_ETA, ""))
-                nueva_llegada = st.date_input("Fecha real de llegada a puerto", value=llegada_vigente,
-                                              format="DD/MM/YYYY", key=f"fll_{clave}")
-                if st.button("Guardar fecha de llegada", key=f"fll_btn_{clave}", width="stretch",
-                             disabled=nueva_llegada is None or nueva_llegada == llegada_vigente):
-                    ok, mensaje = actualizar_embarque(bl, categoria, {COL_ETA: nueva_llegada.isoformat()},
-                                                      fila_sugerida=fila.get("FilaSheet"),
-                                                      sello_esperado=str(fila.get(COL_ACTUALIZACION, "") or "").strip())
-                    if ok:
-                        registrar_log("Llegada a puerto corregida", bl, categoria,
-                                     f"{llegada_vigente.isoformat() if llegada_vigente else 'vacío'} → "
-                                     f"{nueva_llegada.isoformat()}")
-                        invalidar_caches()
-                        st.rerun()
-                    else:
-                        st.error(mensaje)
-                st.divider()
-                st.caption("'Deshacer llegada' va más atrás todavía: además de borrar la "
-                          "declaración, marca '¿Llegó?' en NO — para cuando la llegada misma se "
-                          "confirmó por error.")
-                if st.button("Deshacer llegada", key=f"undo_{clave}", width="stretch"):
-                    ok, mensaje = marcar_no_llego(bl, categoria, fila_sugerida=fila.get("FilaSheet"),
-                                                  sello_esperado=fila.get(COL_ACTUALIZACION))
-                    if ok:
-                        registrar_log("Llegada deshecha", bl, categoria)
-                        invalidar_caches()
-                        st.rerun()
-                    else:
-                        st.error(mensaje)
+                _paso_almacen(fila, clave, bl, categoria)
+            _panel_correccion(fila, clave, bl, categoria, declarado, es_aerea)
         st.divider()
 
     if len(orden) > TOPE_PROCESO:

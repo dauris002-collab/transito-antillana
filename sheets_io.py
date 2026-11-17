@@ -1874,9 +1874,9 @@ def _validar_orden_flujo(llegada, declaracion, almacen=None):
     o "" si todo está bien. Una declaración anterior a la llegada no es un dato
     válido: son contadores que después alguien lee como desempeño."""
     secuencia = [("Llegada a puerto", llegada),
-                 ("Recepción y declaración", declaracion)]
+                 ("Declaración", declaracion)]
     if almacen:
-        secuencia.append((ETAPA_ALMACEN, almacen))
+        secuencia.append(("Recepción en almacén", almacen))
     previa_nombre, previa_fecha = None, None
     for etapa, f in secuencia:
         if not f:
@@ -2039,7 +2039,7 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
     sin_almacen = bool(venta_cif or enviado_cliente)
     almacen = None if sin_almacen else (parsear_fecha(fecha_almacen) or hoy_rd())
     hoy = hoy_rd()
-    for nombre, f in (("Recepción y declaración", declaracion), (ETAPA_ALMACEN, almacen)):
+    for nombre, f in (("Declaración", declaracion), ("Recepción en almacén", almacen)):
         if f and f > hoy:
             return False, (f"La fecha de '{nombre}' ({formato_eta(f)}) es futura: registra la "
                            "fecha en que de verdad ocurrió.")
@@ -2225,8 +2225,8 @@ def corregir_fechas_recibido(bl: str, fila_sugerida=None, llegada=None, declarac
     f_alm = almacen or _vigente(COL_FECHA_ALMACEN)
 
     hoy = hoy_rd()
-    for nombre, f in (("Llegada a puerto", f_llegada), ("Recepción y declaración", f_decl),
-                      (ETAPA_ALMACEN, f_alm)):
+    for nombre, f in (("Llegada a puerto", f_llegada), ("Declaración", f_decl),
+                      ("Recepción en almacén", f_alm)):
         if f and f > hoy:
             return False, f"La fecha de '{nombre}' ({formato_eta(f)}) es futura: un embarque recibido ya ocurrió."
     problema = _validar_orden_flujo(f_llegada, f_decl, f_alm)

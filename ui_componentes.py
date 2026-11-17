@@ -22,7 +22,7 @@ from ui_encabezado import encabezado_html, limpiar_filtro, selectbox_sincronizad
 from sheets_io import (
     CACHE_TTL, CATEGORIAS, COL_ACTUALIZACION, COL_ACTUALIZADO_POR, COL_BL, COL_CANT,
     COL_CLIENTE_STOCK, COL_DESC, COL_EE, COL_ETA, COL_LLEGO, COL_MODELO,
-    COL_OC, COL_PAIS, COL_VIA, ETAPA_ALMACEN, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES,
+    COL_OC, COL_PAIS, COL_VIA, ETAPAS_PUERTO, INDICE_ETAPA, MESES_ES,
     MESES_ES_CORTO, NO_ESPECIFICADO, SLA_ETAPA_DEFECTO, VIA_MARITIMA, EMPRESAS_PAGO,
     _norm, _slug_css, avanzar_estado_puerto, columnas_extra, confirmar_llegada,
     eliminar_embarque, es_llego_si, es_numero, fijar_fecha_declaracion, formato_dinero,
@@ -44,7 +44,7 @@ from logica import (
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------------------------
-VERSION_APP = "5.11"
+VERSION_APP = "5.12"
 
 
 VISTA_EN_PROCESO_PUERTO = "Puerto/Aeropuerto · Estatus"
@@ -1019,117 +1019,20 @@ def _resumen_ejecutivo(df: pd.DataFrame, recibidas_mes: int) -> str:
     return f'<div class="resumen">{" · ".join(piezas)}.</div>'
 
 
-def _archivar(fila, clave: str, etiqueta: str = "Marcar como recibido", df=None):
-    """Botón de archivo + rescate cuando falta la declaración.
+def _archivar(fila, clave: str, df=None):
+    """Indicación en «Acciones sobre un embarque» de dónde se pasa a almacén.
 
-    El candado que impide archivar sin haber pasado por el flujo se mantiene (si
-    no, el histórico se llena de embarques sin trazabilidad). Y la fecha de
-    entrada a almacén se PIDE SIEMPRE antes de archivar: antes el botón
-    archivaba de un solo clic grabando la fecha de hoy en silencio, y eso
-    falseaba el ciclo puerto→almacén de la analítica igual que la declaración
-    inventada que ya se corrigió — la carga casi nunca entra al almacén el mismo
-    día en que alguien se sienta a archivarla. Si además falta la declaración,
-    el mismo formulario la pide con su fecha REAL, en vez de rellenarla sola
-    con la de hoy."""
-    bl = str(fila[COL_BL]).strip()
-    categoria = fila["Categoria"]
-    n_fila = fila.get("FilaSheet")
-    pendiente_key = f"faltan_{clave}"
-
-    if st.button(etiqueta, key=f"rec_{clave}", type="primary", width="stretch"):
-        # Ya no se archiva de una vez: primero se abre el formulario con la
-        # fecha de almacén. Lo que falte del flujo se detecta con lo que ya
-        # muestra la pantalla (sin llamada extra a la API); al guardar, el
-        # servidor lo vuelve a validar — el candado no se movió de sitio.
-        faltantes = []
-        if not es_llego_si(fila.get(COL_LLEGO, "")):
-            faltantes.append(ETAPAS_PUERTO[0])
-        elif not _lleno(fila.get("F_Declaracion")):
-            faltantes.append(ETAPAS_PUERTO[1])
-        st.session_state[pendiente_key] = faltantes
-        rerun_fragmento()
-
-    faltan = st.session_state.get(pendiente_key)
-    if faltan is None:
-        return
-
-    # Rescate huérfano: si la fila que lo abrió ya no está en la vista actual
-    # (la archivaron o borraron por otra vía), la clave se limpia y se sigue.
-    if df is not None and n_fila not in set(df["FilaSheet"]):
-        st.session_state.pop(pendiente_key, None)
-        return
-
-    if ETAPAS_PUERTO[0] in faltan:
-        st.warning("Este embarque no tiene la llegada confirmada. Marca '¿Llegó?' en SI antes de "
-                   "archivarlo: sin esa confirmación no hay fecha de llegada y el histórico "
-                   "quedaría sin trazabilidad.")
-        if st.button("Entendido", key=f"ok_falta_llegada_{clave}"):
-            st.session_state.pop(pendiente_key, None)
-            rerun_fragmento()
-        return
-
-    falta_declaracion = ETAPAS_PUERTO[1] in faltan
-    venta_cif = st.checkbox(
-        "Venta CIF", key=f"cif_{clave}",
-        help="Se vendió CIF: solo se registra la declaración y se archiva; lo que sigue "
-             "(entrada a almacén) le corresponde al comprador.")
-    enviado_cliente = st.checkbox(
-        "Enviado al Cliente", key=f"cliente_{clave}",
-        help="La mercancía fue directo al cliente, sin entrar al almacén: se archiva con la "
-             "declaración y queda marcada «Enviado al Cliente» para distinguirla de las que "
-             "sí entraron a almacén.")
-    if venta_cif and enviado_cliente:
-        st.warning("Elige solo una: Venta CIF o Enviado al Cliente.")
-    sin_almacen = venta_cif or enviado_cliente
-    with st.form(f"form_faltan_{clave}"):
-        if falta_declaracion:
-            st.warning("Falta registrar la recepción y declaración. Pon la fecha real en que ocurrió y "
-                       "el embarque se archiva completo, con su trazabilidad.")
-            fecha_dec = st.date_input(f"{ICONO_ETAPA['Recepción y declaración']} Recepción y declaración",
-                                      value=hoy_rd(), format="DD/MM/YYYY", key=f"falta_dec_{clave}")
-        elif sin_almacen:
-            st.caption(("Venta CIF" if venta_cif else "Enviado al Cliente")
-                       + ": ya está la declaración; se archiva sin fecha de almacén.")
-            fecha_dec = None
-        else:
-            st.caption("Pon la fecha REAL en que la mercancía entró al almacén (si fue hoy, déjala "
-                       "como está). Es la fecha con la que se miden los ciclos en la analítica.")
-            fecha_dec = None
-        if sin_almacen:
-            fecha_almacen = None
-        else:
-            fecha_almacen = st.date_input(f"{ICONO_ALMACEN} {ETAPA_ALMACEN}", value=hoy_rd(),
-                                          format="DD/MM/YYYY", key=f"almacen_{clave}")
-        c1, c2 = st.columns(2)
-        confirmar = c1.form_submit_button("Guardar y archivar", type="primary", width="stretch")
-        cancelar = c2.form_submit_button("Cancelar", width="stretch")
-
-    if cancelar:
-        st.session_state.pop(pendiente_key, None)
-        rerun_fragmento()
-    if confirmar and venta_cif and enviado_cliente:
-        st.error("Elige solo una: Venta CIF o Enviado al Cliente.")
-    elif confirmar:
-        ok, mensaje = marcar_como_recibido(bl, categoria, fila_sugerida=n_fila,
-                                           fecha_declaracion=fecha_dec, fecha_almacen=fecha_almacen,
-                                           venta_cif=venta_cif, enviado_cliente=enviado_cliente)
-        if ok:
-            st.session_state.pop(pendiente_key, None)
-            registrar_log("Recibido" + (" (declaración completada)" if fecha_dec else ""),
-                          bl, categoria,
-                          ("Venta CIF" if venta_cif else "Enviado al Cliente" if enviado_cliente else f"almacén={fecha_almacen.isoformat()}")
-                          + (f" · declaración={fecha_dec.isoformat()}" if fecha_dec else ""))
-            invalidar_caches()
-            st.rerun()
-        elif str(mensaje).startswith("FALTAN_ETAPAS::"):
-            # La pantalla estaba desactualizada (alguien tocó la fila mientras
-            # tanto): ahora sí se sabe qué falta y el formulario se reabre
-            # pidiéndolo. La fecha de almacén ya elegida se conserva sola,
-            # porque vive en el widget con su clave.
-            st.session_state[pendiente_key] = mensaje.split("::", 1)[1].split("|")
-            rerun_fragmento()
-        else:
-            st.error(mensaje)
+    Antes aquí había un botón «Marcar como recibido» con su propio formulario.
+    Pero estas listas solo contienen embarques en TRÁNSITO (sin '¿Llegó?' en SI),
+    así que el botón nunca podía archivar: siempre terminaba en el aviso de que
+    falta la llegada. La declaración y la recepción en almacén se registran en
+    «Puerto/Aeropuerto · Estatus», con la fecha junto al botón azul."""
+    lugar = "aeropuerto" if es_aereo(fila.get(COL_VIA, "")) else "puerto"
+    if es_llego_si(fila.get(COL_LLEGO, "")):
+        st.caption(f"La declaración y la recepción en almacén se confirman en «{VISTA_EN_PROCESO_PUERTO}».")
+    else:
+        st.caption(f"Cuando llegue a {lugar}: confirma la llegada ('¿Llegó?' en SI) y después registra la "
+                   f"declaración y la recepción en almacén en «{VISTA_EN_PROCESO_PUERTO}».")
 
 
 def _paso_declaracion(fila, clave: str, bl: str, categoria: str):
@@ -1807,7 +1710,7 @@ def _panel_acciones(df: pd.DataFrame, tab_key: str):
     if pendiente:
         bl_pend, cat_pend, fila_pend = pendiente
         st.warning(f"¿Eliminar definitivamente el BL {bl_pend} (fila {fila_pend} de {cat_pend})? "
-                   "No se puede deshacer. Si el embarque llegó, usa 'Marcar como recibido' para "
+                   "No se puede deshacer. Si el embarque llegó, confirma la recepción en almacén para "
                    "conservarlo en el histórico.")
         d1, d2, _ = st.columns([1, 1, 3])
         if d1.button("Sí, eliminar", key=f"si_del_{tab_key}", type="primary"):

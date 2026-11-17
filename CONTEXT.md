@@ -62,7 +62,7 @@ Columnas: la fuente de verdad son las constantes de `sheets_io.py` (`REQUIRED_CO
 - KPIs y totales de Pagos usan solo expedientes con montos (`TieneMontos`); los demás se cuentan aparte en un aviso (`pagos.py:534-556`).
 - `Prioridad` 1-4; vacío queda debajo de todos, no equivale a 4.
 
-## Pruebas (v5.11, 16 nov 2026) — cómo correrlas: VERIFICAR.md
+## Pruebas (v5.11–v5.12, nov 2026) — cómo correrlas: VERIFICAR.md
 
 Todo corre sin red y sin credenciales, contra un Google Sheet falso en memoria (`tests/fake_gspread.py`).
 - `tests/test_e2e.py` — punta a punta: levanta la app completa (`app.py`) y recorre login por rol, cada sección, alta → llegada → declaración → almacén → reversa, correcciones, editar, eliminar, carga masiva, Pagos, Repuesto y Taller, fallos de Google (403/429/503) y 12 Sheets con datos sucios al azar.

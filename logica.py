@@ -136,7 +136,7 @@ def etiqueta_etapa(etapa: str, via="") -> str:
 
 ETIQUETA_CORTA_ETAPA = {
     "Llegada a puerto": "Llegada a puerto",
-    "Recepción y declaración": "Recepción/declaración",
+    "Recepción y declaración": "Declaración",   # solo el texto visible; la clave no cambia
 }
 
 

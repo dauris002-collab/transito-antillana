@@ -568,3 +568,44 @@ def test_con_datos_sucios_ninguna_seccion_se_cae(libros, semilla):
         at.session_state["pago_origen_ult"] = "Repuesto y Taller"
         ir(at, "Estatus de Pago")
         sin_errores(at)
+
+
+# ---------------- «Acciones sobre un embarque»: sin botón de archivar sin salida
+def test_acciones_indica_donde_se_pasa_a_almacen(libros):
+    """Las categorías solo listan embarques en tránsito: ahí no se puede archivar,
+    así que no hay botón; se indica dónde se hace."""
+    antes = escrituras_fuera_de_log(libros.LIBRO)
+    at = abrir_app("1111")
+    at.session_state["categoria_activa"] = "Montacargas"
+    at.run()
+    sel = [s for s in at.selectbox if s.key and s.key.startswith("sel_accion_")][0]
+    for opcion in sel.options:
+        sel.set_value(opcion).run()
+        sin_errores(at)
+        assert not [b for b in at.button if "recibido" in str(b.label).lower() or "almacén" in str(b.label)]
+        assert any("Puerto/Aeropuerto · Estatus" in c.value for c in at.caption)
+    assert escrituras_fuera_de_log(libros.LIBRO) == antes
+
+
+def test_chips_y_textos_dicen_declaracion(libros):
+    at = ver_puerto(abrir_app("1111"))
+    html = " ".join(m.value for m in at.markdown)
+    assert "Recepción/declaración" not in html and "Recepción y declaración" not in html
+    assert "Declaración <b>" in html
+
+
+# ------------------------------------- editar: el selector no salta a otro
+@pytest.mark.parametrize("campo,valor", [("Descripción", "Descripción totalmente nueva"), ("BL", "MON-PUERTO-B")])
+def test_editar_se_queda_en_el_mismo_embarque(libros, campo, valor):
+    at = abrir_app("1111", "Editar")
+    sel = at.selectbox(key="sel_editar")
+    sel.set_value(next(o for o in sel.options if o.startswith("MON-PUERTO"))).run()
+    [t for t in at.text_input if t.label == campo][0].set_value(valor)
+    boton(at, "Guardar cambios").click()
+    at.run()
+    sin_errores(at)
+    assert not at.error, [e.value for e in at.error]
+    actual = at.selectbox(key="sel_editar").value
+    assert valor in actual, f"tras guardar, el selector quedó en {actual!r}"
+    m = libros.LIBRO.hoja("Montacargas")
+    assert valor in (m.valor(6, "Descripcion"), m.valor(6, "BL"))

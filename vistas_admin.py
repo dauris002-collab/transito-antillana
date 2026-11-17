@@ -327,6 +327,13 @@ def form_editar(datos: dict):
             detalles.append(f"BL {bl_original} → {bl_nuevo.strip()}")
         registrar_log("Edición", bl_nuevo.strip(), categoria, "; ".join(detalles) or "campos varios")
         invalidar_caches()
+        # Seguir en el MISMO embarque. El selector recuerda la opción por su texto
+        # («BL · descripción · categoría»); si cambió la descripción o el BL, ese texto
+        # ya no existe y Streamlit volvía al primero de la lista, con riesgo de editar
+        # otro embarque sin darse cuenta. Se preselecciona por BL + fila del Sheet.
+        st.session_state["editar_bl"] = bl_nuevo.strip()
+        st.session_state["editar_fila"] = n_fila
+        st.session_state.pop("sel_editar", None)
         avisar_tras_recarga(f"Embarque {bl_nuevo.strip()} actualizado.")
         st.rerun()
     else:
@@ -838,14 +845,14 @@ def _historico_vista(df: pd.DataFrame, rol: str, sfx: str, arch: str):
         with st.form(f"form_fechas_recibido_{sufijo}"):
             nueva_llegada = st.date_input("Llegada a puerto", value=f_puerto,
                                           format="DD/MM/YYYY", key=f"fr_llegada_{sufijo}")
-            nueva_decl = st.date_input("Recepción y declaración", value=f_decl,
+            nueva_decl = st.date_input("Fecha de declaración", value=f_decl,
                                        format="DD/MM/YYYY", key=f"fr_decl_{sufijo}")
             es_cif_f = str(fila_f.get("Tipo_Recepcion", "") or "").strip() in ("Venta CIF", "Enviado al Cliente")
             if es_cif_f:
                 st.caption("Venta CIF / Enviado al Cliente: no tiene fecha de almacén; el mes del histórico es el de la declaración.")
                 nuevo_alm = None
             else:
-                nuevo_alm = st.date_input("Recibido en almacén", value=f_alm,
+                nuevo_alm = st.date_input("Fecha de recepción en almacén", value=f_alm,
                                           format="DD/MM/YYYY", key=f"fr_alm_{sufijo}")
             guardar_f = st.form_submit_button("Guardar fechas", type="primary")
         if guardar_f:

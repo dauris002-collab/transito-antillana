@@ -21,14 +21,9 @@ BASE_REF = os.environ.get("BASE_REF", "origin/main")
 
 # (patrón de la ruta del resultado, motivo). Vaciar esta lista cuando el cambio ya esté en la rama base.
 CAMBIOS_ESPERADOS = [
-    (r"^/a_numero/-?\d{1,3}(\.\d{3}){2,}$", "montos con puntos de miles ('1.200.000') ya no se ignoran"),
-    (r"^/es_aereo/", "la vía se reconoce sin importar mayúsculas ni acentos"),
-    (r"^/es_prioridad_valida/inf$", "infinito ya no lanza excepción"),
-    (r"^/escrituras/declarar_futuro/", "una declaración con fecha futura se rechaza"),
-    (r"^/escrituras/archivar_almacen_futuro/", "archivar con fecha de almacén futura se rechaza"),
-    (r"^/escrituras/no_llego_pantalla_vieja/", "«no llegó»/«deshacer llegada» respeta el sello de la pantalla"),
-    (r"^/escrituras/quitar_declaracion/sheet/Montacargas\[6\]\[5\]$",
-     "quitar la declaración ya no reescribe '¿Llegó?' (antes lo pasaba por NO y volvía a SI)"),
+    # v5.12: nombres de etapa en los mensajes de validación («Declaración», «Recepción en almacén»).
+    (r"^/orden_flujo/", "mensajes de orden de fechas con los nombres nuevos de etapa"),
+    (r"^/escrituras/[a-z_]+/resultado\[1\]$", "mensajes de validación con los nombres nuevos de etapa"),
 ]
 
 

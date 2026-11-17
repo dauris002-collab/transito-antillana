@@ -44,7 +44,7 @@ from logica import (
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------------------------
-VERSION_APP = "5.10"
+VERSION_APP = "5.11"
 
 
 VISTA_EN_PROCESO_PUERTO = "Puerto/Aeropuerto · Estatus"
@@ -1181,8 +1181,14 @@ def _paso_almacen(fila, clave: str, bl: str, categoria: str):
             invalidar_caches()
             st.rerun()
         elif str(mensaje).startswith("FALTAN_ETAPAS::"):
-            st.error("La pantalla estaba desactualizada: a este embarque le falta la llegada o la "
-                     "declaración. Pulsa ↻ Actualizar y vuelve a intentarlo.")
+            if ETAPAS_PUERTO[0] in str(mensaje):
+                # Declaración puesta a mano en el Sheet sin '¿Llegó?' en SI.
+                st.error("Este embarque tiene fecha de declaración pero no la llegada confirmada. "
+                         f"Pon '¿Llegó?' en SI en la pestaña '{categoria}' del Sheet (o quita la "
+                         "declaración) y pulsa ↻ Actualizar.")
+            else:
+                st.error("La pantalla estaba desactualizada: a este embarque le falta la "
+                         "declaración. Pulsa ↻ Actualizar y vuelve a intentarlo.")
         else:
             st.error(mensaje)
 

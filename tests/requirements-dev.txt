@@ -1,0 +1,7 @@
+# Solo para correr las pruebas en una PC o en una sesión de Claude. NO lo usa Streamlit Cloud
+# (que instala únicamente el requirements.txt de la raíz).
+-r ../requirements.txt
+pytest==9.2.0
+hypothesis==6.170.15
+# Opcional, solo para tests/navegador.py (capturas en Chrome):
+# playwright

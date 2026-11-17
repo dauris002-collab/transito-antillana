@@ -1147,7 +1147,9 @@ def form_estado_pago(enriquecido: pd.DataFrame):
         st.caption("Este expediente tiene fecha de pago real; seguirá como Pagado hasta borrar "
                    "esa fecha en el Sheet.")
     estado = st.radio("Estado", [ESTADO_PAGO_PENDIENTE, ESTADO_PAGO_PAGADO],
-                      index=0 if actual == ESTADO_PAGO_PENDIENTE else 1,
+                      # Solo 'Pagado' (sin importar mayúsculas) preselecciona Pagado; antes un
+                      # 'pendiente' en minúsculas en el Sheet dejaba marcado Pagado por defecto.
+                      index=1 if _norm(actual) == _norm(ESTADO_PAGO_PAGADO) else 0,
                       key=f"radio_estado_pago_{bl}__{_firma(actual)}")
     if st.button("Guardar estado", type="primary", key="btn_estado_pago"):
         ok, mensaje = marcar_estado_pago(bl, estado)

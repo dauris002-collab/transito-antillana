@@ -22,7 +22,7 @@ from sheets_io import (
     COL_FECHA_LLEGADA_PUERTO, COL_FECHA_SALIDA, COL_LLEGO, COL_MODELO, COL_OC,
     COL_PAIS, COL_VIA, MAX_FILAS_LECTURA, MESES_ES, MESES_ES_CORTO, NO_ESPECIFICADO,
     REQUIRED_COLUMNS, VIA_AEREA, VIA_MARITIMA,
-    _con_reintento, _leer_log, _norm, _refrescar_estructura, _validar_orden_flujo,
+    _con_reintento, _leer_log, _norm, _norm_encabezado, _refrescar_estructura, _validar_orden_flujo,
     actualizar_embarque, ahora_rd, append_row, append_rows_bulk, es_llego_si,
     corregir_fechas_recibido, es_numero, get_spreadsheet, hoy_rd, invalidar_caches, normalizar_etas,
     parsear_fecha, quitar_de_recibido, registrar_log, sincronizar_pagos_con_transito,
@@ -409,7 +409,10 @@ def form_carga_masiva(datos: dict):
     mapa = {}
     for canon in REQUIRED_COLUMNS + columnas_opcionales:
         for real in nuevo.columns:
-            if _norm(real) == _norm(canon):
+            # Mismo criterio que al leer el Sheet: 'Cliente/Stock' o 'Pais Origen' valen
+            # por 'CLIENTE / STOCK' y 'Pais_Origen'. Antes una columna opcional escrita
+            # así se descartaba sin avisar.
+            if real not in mapa and _norm_encabezado(real) == _norm_encabezado(canon):
                 mapa[real] = canon
                 break
     nuevo = nuevo.rename(columns=mapa)

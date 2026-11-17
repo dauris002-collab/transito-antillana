@@ -104,6 +104,9 @@ def empresa_de_embarque(categoria, valor_fila) -> str:
     return canonizar_empresa(v) or v
 
 
+_VIAS_AEREAS = {_norm(VIA_AEREA), "aerea"}
+
+
 def es_aereo(via) -> bool:
     """True si el modo de transporte de ESTA fila es aéreo. Ya NO depende de la
     categoría del embarque -- antes 'Aéreos' era una categoría/pestaña propia;
@@ -111,7 +114,9 @@ def es_aereo(via) -> bool:
     ver COL_VIA), así que cualquier categoría puede tener embarques por avión
     o por barco. Vacío (filas de antes de que existiera esta columna) se trata
     como marítimo, no como aéreo."""
-    return str(via).strip() == VIA_AEREA
+    # Sin distinguir mayúsculas ni acentos: 'Aereo' o 'AÉREO' tecleado a mano en el
+    # Sheet se trataba como marítimo (y el embarque salía 'en puerto').
+    return _norm(via) in _VIAS_AEREAS
 
 
 def lugar_de(via) -> str:

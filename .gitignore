@@ -10,3 +10,7 @@ Secretsss.txt
 app_ORIGINAL_BACKUP.py
 
 .DS_Store
+
+# Pruebas
+.pytest_cache/
+.hypothesis/

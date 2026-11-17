@@ -325,7 +325,9 @@ def es_prioridad_valida(n) -> bool:
         f = float(n)
     except (TypeError, ValueError, OverflowError):
         return False
-    return f == f and f == int(f) and 1 <= int(f) <= PRIORIDAD_MAX
+    if f != f or f in (float("inf"), float("-inf")):     # NaN o infinito ('inf', '1e999')
+        return False
+    return f == int(f) and 1 <= int(f) <= PRIORIDAD_MAX
 
 
 # Fecha límite saludable que fija Logística a criterio propio. Ya NO congela
@@ -865,6 +867,25 @@ def _leer_fila(ws, fila: int, headers: list) -> dict:
     return {h: valores[i] for i, h in enumerate(headers)}
 
 
+def _peticiones_celdas(fila: int, headers: list, valores: dict) -> list:
+    """Peticiones de batch_update para escribir SOLO las celdas de `valores`
+    ({columna: valor}) en la fila dada. Una columna que la pestaña no tiene se
+    omite. Si dos claves apuntan a la misma columna (nombre canónico y nombre
+    real del Sheet), manda la última, igual que en _fila_desde_dict.
+
+    Por qué no reescribir la fila entera: la fila se lee como TEXTO DE PANTALLA
+    (row_values) y devolverla completa convertía en texto las celdas que nadie
+    tocó —un monto con formato quedaba como '1,235', una fecha del calendario
+    como '24/11/2026'— y aplastaba cualquier fórmula que hubiera en la fila."""
+    indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
+    por_columna = {}
+    for nombre, valor in valores.items():
+        columna = indices.get(_norm_encabezado(nombre))
+        if columna:
+            por_columna[columna] = valor
+    return [{"range": rowcol_to_a1(fila, c), "values": [[v]]} for c, v in sorted(por_columna.items())]
+
+
 def _conflicto_sello(fila_norm: dict, sello_esperado, que: str = "embarque") -> str:
     """Bloqueo optimista (mismo patrón de actualizar_embarque): si la pantalla
     trae el sello de Fecha_Actualizacion que vio y el de la fila recién leída
@@ -1067,6 +1088,11 @@ def a_numero(valor):
     elif "," in limpio:
         entero, _, decimales = limpio.rpartition(",")
         limpio = f"{entero.replace(',', '')}.{decimales}" if len(decimales) in (1, 2) else limpio.replace(",", "")
+    elif re.fullmatch(r"-?\d{1,3}(\.\d{3}){2,}", limpio):
+        # '1.200.000': dos o más grupos de tres con punto y ninguna coma solo pueden
+        # ser separadores de miles. Antes devolvía None y ese monto dejaba de sumar
+        # sin avisar. ('1.500', con un solo punto, sigue leyéndose 1.5.)
+        limpio = limpio.replace(".", "")
     try:
         return float(limpio)
     except ValueError:
@@ -1735,10 +1761,11 @@ def actualizar_embarque(bl_original: str, categoria: str, datos: dict,
         if problema:
             return False, problema
 
-    rango = f"{rowcol_to_a1(fila, 1)}:{rowcol_to_a1(fila, len(headers))}"
-    _con_reintento(lambda: ws.update(range_name=rango,
-                                     values=[_fila_desde_dict(headers, combinado)],
-                                     value_input_option="RAW"))
+    # Solo las celdas editadas + los dos sellos (ver _peticiones_celdas).
+    escribir = {**datos, COL_ACTUALIZACION: combinado[COL_ACTUALIZACION],
+                COL_ACTUALIZADO_POR: combinado[COL_ACTUALIZADO_POR]}
+    _con_reintento(lambda: ws.batch_update(_peticiones_celdas(fila, headers, escribir),
+                                           value_input_option="RAW"))
     return True, ""
 
 
@@ -1770,12 +1797,16 @@ def marcar_llegada(bl: str, categoria: str, valor: str, fila_sugerida=None, sell
     headers = _asegurar_columnas(ws, [COL_LLEGO, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
     indices = {_norm_encabezado(h): i + 1 for i, h in enumerate(headers)}
 
-    if es_llego_si(valor):
+    # El sello se verifica en CUALQUIER sentido (antes solo al confirmar con SI:
+    # «Deshacer llegada» o «No, está retrasado» desde una pantalla vieja pisaban
+    # lo que otra persona acababa de registrar, declaración incluida).
+    if es_llego_si(valor) or sello_esperado is not None:
         actual = _leer_fila(ws, fila, headers)
         actual_norm = {_norm_encabezado(k): v for k, v in actual.items()}
         conflicto = _conflicto_sello(actual_norm, sello_esperado)
         if conflicto:
             return False, conflicto
+    if es_llego_si(valor):
         problema = validar_eta_confirmado(actual_norm.get(_norm_encabezado(COL_ETA), ""),
                                           actual_norm.get(_norm_encabezado(COL_FECHA_DECLARACION), ""))
         if problema:
@@ -1891,6 +1922,9 @@ def fijar_fecha_declaracion(bl: str, categoria: str, fecha=None, fila_sugerida=N
     if final == actual:
         return True, "Sin cambios: la declaración ya estaba registrada."
 
+    if final > hoy_rd():
+        return False, (f"La fecha de declaración ({formato_eta(final)}) es futura. "
+                       "Registra la fecha en que de verdad se declaró.")
     problema = _validar_orden_flujo(llegada, final)
     if problema:
         return False, problema
@@ -1932,13 +1966,20 @@ def avanzar_estado_puerto(bl: str, categoria: str, nueva_etapa: str, fila_sugeri
         if conflicto:
             return False, conflicto
     if nueva_etapa == ETAPA_LLEGADA:
-        # Retroceder a 'llegada' implica borrar la declaración: eso lo hace
-        # marcar_llegada al escribir SI de nuevo no es necesario, así que aquí
-        # solo se confirma la llegada y se limpia lo posterior.
-        ok, msg = marcar_llegada(bl, categoria, LLEGO_NO, fila_sugerida=fila_sugerida)
-        if not ok:
-            return ok, msg
-        return marcar_llegada(bl, categoria, LLEGO_SI, fila_sugerida=fila_sugerida)
+        # Retroceder a 'llegada' = borrar la declaración conservando la llegada.
+        # UNA sola escritura. Antes eran dos (marcar NO y luego SI): si la
+        # segunda fallaba (cuota, permisos, o el ETA ya no pasaba la validación)
+        # el embarque quedaba con la llegada DESHECHA sin que nadie lo pidiera.
+        headers = _asegurar_columnas(ws, [COL_FECHA_DECLARACION, COL_ACTUALIZACION, COL_ACTUALIZADO_POR])
+        actual = {_norm_encabezado(k): v for k, v in _leer_fila(ws, fila_num, headers).items()}
+        if not es_llego_si(actual.get(_norm_encabezado(COL_LLEGO), "")):
+            return False, ("Este embarque no tiene la llegada confirmada: no hay etapa a la que "
+                           "volver. Actualiza los datos.")
+        cambios = {COL_FECHA_DECLARACION: "", COL_ACTUALIZACION: marca_ahora(),
+                   COL_ACTUALIZADO_POR: usuario_actual()}
+        _con_reintento(lambda: ws.batch_update(_peticiones_celdas(fila_num, headers, cambios),
+                                               value_input_option="RAW"))
+        return True, ""
     return fijar_fecha_declaracion(bl, categoria, fecha=fecha, fila_sugerida=fila_sugerida,
                                    sobrescribir=sobrescribir)
 
@@ -1997,6 +2038,11 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
     # lo único que cambia es la etiqueta en Tipo_Recepcion, para distinguirlo.
     sin_almacen = bool(venta_cif or enviado_cliente)
     almacen = None if sin_almacen else (parsear_fecha(fecha_almacen) or hoy_rd())
+    hoy = hoy_rd()
+    for nombre, f in (("Recepción y declaración", declaracion), (ETAPA_ALMACEN, almacen)):
+        if f and f > hoy:
+            return False, (f"La fecha de '{nombre}' ({formato_eta(f)}) es futura: registra la "
+                           "fecha en que de verdad ocurrió.")
     problema = _validar_orden_flujo(llegada, declaracion, almacen)
     if problema:
         return False, problema
@@ -2038,19 +2084,49 @@ def marcar_como_recibido(bl: str, categoria: str, fila_sugerida=None,
         if valor:
             registro[columna] = valor
 
-    _con_reintento(lambda: ws_destino.append_row(_fila_desde_dict(headers_destino, registro),
-                                                 value_input_option="RAW"))
-    if not _verificar_fila_bl(ws_origen, fila, bl):
-        return False, (f"El embarque quedó archivado en '{RECIBIDO_SHEET}', pero la fila {fila} de "
-                       f"'{categoria}' cambió mientras se procesaba y NO se borró. Bórrala a mano en "
-                       "el Sheet para que no quede duplicado, o vuelve a intentarlo.")
+    respuesta = _con_reintento(lambda: ws_destino.append_row(_fila_desde_dict(headers_destino, registro),
+                                                             value_input_option="RAW"))
+    # Archivar son DOS escrituras (copiar al archivo y borrar del origen). Si la
+    # segunda no se puede hacer, se intenta DESHACER la primera: así repetir la
+    # acción no deja el embarque dos veces en el histórico (antes el mensaje
+    # invitaba a reintentar y cada reintento agregaba otra copia).
+    motivo, borrado_intentado = "", False
     try:
-        _con_reintento(lambda: ws_origen.delete_rows(fila))
+        if not _verificar_fila_bl(ws_origen, fila, bl):
+            motivo = f"la fila {fila} de '{categoria}' cambió mientras se procesaba"
+        else:
+            borrado_intentado = True
+            _con_reintento(lambda: ws_origen.delete_rows(fila))
     except Exception as e:  # noqa: BLE001
-        return False, (f"El embarque quedó archivado en '{RECIBIDO_SHEET}', pero NO se pudo borrar de "
-                       f"'{categoria}' (fila {fila}): {e}. Bórrala a mano en el Sheet para que no quede "
-                       "duplicado, o vuelve a intentarlo.")
-    return True, ""
+        motivo = f"no se pudo borrar la fila {fila} de '{categoria}' ({e})"
+    if not motivo:
+        return True, ""
+    # Solo se deshace la copia cuando es SEGURO que el origen sigue intacto. Si Google
+    # devolvió error al borrar pero la fila ya no está igual, puede que el borrado sí se
+    # haya aplicado: deshacer ahí dejaría el embarque fuera de las dos pestañas.
+    try:
+        origen_intacto = (not borrado_intentado) or _leer_fila(ws_origen, fila, headers_origen) == datos
+    except Exception:  # noqa: BLE001
+        origen_intacto = False
+    if origen_intacto and _deshacer_append(ws_destino, respuesta, bl):
+        return False, (f"No se archivó: {motivo}. No cambió nada; actualiza los datos y repite la acción.")
+    return False, (f"El embarque quedó copiado en '{RECIBIDO_SHEET}', pero {motivo}. NO repitas la acción "
+                   f"(quedaría dos veces en el histórico): abre el Sheet y, si su fila sigue en '{categoria}', "
+                   "bórrala a mano; después actualiza los datos.")
+
+
+def _deshacer_append(ws, respuesta, bl: str) -> bool:
+    """Borra la fila que un append_row acaba de agregar (la ubica por el rango que
+    devolvió la API y confirma el BL antes de borrar). True solo si la borró."""
+    try:
+        rango = str(respuesta["updates"]["updatedRange"]).split("!")[-1]
+        fila = int(re.search(r"(\d+)", rango.split(":")[0]).group(1))
+        if fila < 2 or not _verificar_fila_bl(ws, fila, bl):
+            return False
+        _con_reintento(lambda: ws.delete_rows(fila))
+        return True
+    except Exception:  # noqa: BLE001 - si no se puede deshacer, se avisa arriba
+        return False
 
 
 @_con_manejo_apierror
@@ -2432,10 +2508,10 @@ def guardar_pago(bl: str, conceptos: dict, estado: str = None, empresa: str = No
     conflicto = _conflicto_sello(combinado_norm, sello_esperado, que="expediente")
     if conflicto:
         return False, conflicto
-    combinado.update(datos)
-    rango = f"{rowcol_to_a1(fila, 1)}:{rowcol_to_a1(fila, len(headers))}"
-    _con_reintento(lambda: ws.update(range_name=rango, values=[_fila_desde_dict(headers, combinado)],
-                                     value_input_option="RAW"))
+    # Solo conceptos/estado/empresa/llegada que vienen en esta llamada + sellos
+    # (ver _peticiones_celdas): lo demás de la fila no se toca.
+    _con_reintento(lambda: ws.batch_update(_peticiones_celdas(fila, headers, datos),
+                                           value_input_option="RAW"))
     return True, ""
 
 

@@ -57,6 +57,17 @@ async def recorrer(pw, ancho, alto, nombre) -> int:
         fallos += n
         print(f"{nombre:10} {seccion:16} excepciones en pantalla: {n}")
         await pg.screenshot(path=str(SALIDA / f"{nombre}_3_{seccion.replace(' ', '_')}.png"))
+    # Repuesto y Taller (otro Sheet): se entra por Estatus de Pago → origen.
+    await pg.get_by_text("Estatus de Pago", exact=True).first.click()
+    await pg.wait_for_timeout(2000)
+    await pg.get_by_label("Origen").first.click()
+    await pg.get_by_role("option", name="Repuesto y Taller").first.click()
+    await pg.wait_for_selector("text=Repuesto y Taller", timeout=30000)
+    await pg.wait_for_timeout(3000)
+    n = await pg.locator('[data-testid="stException"]').count()
+    fallos += n
+    print(f"{nombre:10} {'Repuesto y Taller':16} excepciones en pantalla: {n}")
+    await pg.screenshot(path=str(SALIDA / f"{nombre}_4_taller.png"), full_page=True)
     await nav.close()
     return fallos
 

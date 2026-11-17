@@ -176,23 +176,83 @@ def _mes_de(valor) -> date | None:
     return date(f.year, f.month, 1) if f else None
 
 
-def _tarjeta_kpi_bi(icono: str, label: str, valor: str, color_a: str = "", color_b: str = "", delta: str = "") -> str:
-    """Tarjeta KPI formal: fondo blanco, filete fino, etiqueta en versalitas,
-    cifra en tinta oscura y la nota (mediana, n, tendencia) en gris. El color
-    se reserva para las gráficas; ícono y degradados se quitaron en v5.13
-    (los parámetros se conservan para no tocar las llamadas)."""
-    nota = (f'<div style="font-size:0.72rem; color:{_TXT}; margin-top:4px;">{esc(delta)}</div>'
-            if delta else "")
-    tam = 1.5 if len(str(valor)) <= 12 else 1.12
+_NAVY = "#0C447C"
+
+
+def _sparkline(valores: list, ancho: int = 120, alto: int = 26) -> str:
+    """Mini-línea SVG (sin ejes) para dar la tendencia de un KPI de un vistazo.
+    El último punto se marca. Vacía si hay menos de 3 valores."""
+    vals = [float(v) for v in valores if v is not None and v == v]
+    if len(vals) < 3:
+        return ""
+    lo, hi = min(vals), max(vals)
+    rango = (hi - lo) or 1.0
+    paso = ancho / (len(vals) - 1)
+    pts = [(i * paso, alto - 3 - (v - lo) / rango * (alto - 6)) for i, v in enumerate(vals)]
+    linea = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
+    x, y = pts[-1]
+    return (f'<svg viewBox="0 0 {ancho} {alto}" width="100%" height="{alto}" preserveAspectRatio="none" '
+            f'style="display:block; margin-top:8px; overflow:visible;" aria-hidden="true">'
+            f'<polyline points="{linea}" fill="none" stroke="{_ACCENT}" stroke-width="1.5" '
+            f'vector-effect="non-scaling-stroke" stroke-linejoin="round"/>'
+            f'<circle cx="{x:.1f}" cy="{y:.1f}" r="2.5" fill="{_ACCENT}"/></svg>')
+
+
+def _barra_participacion(pct) -> str:
+    """Barra fina de participación (0–100 %), para País y Categoría principal."""
+    if pct is None:
+        return ""
+    return (f'<div style="height:4px; background:#EEF0F3; border-radius:2px; margin-top:10px; overflow:hidden;">'
+            f'<div style="width:{max(2.0, min(100.0, pct)):.1f}%; height:100%; background:{_ACCENT};"></div></div>')
+
+
+def _celda_kpi(etiqueta: str, valor_html: str, nota: str = "", extra: str = "") -> str:
+    nota_html = (f'<div style="font-size:0.72rem; color:{_TXT}; margin-top:5px; line-height:1.35;">'
+                 f'{nota}</div>') if nota else ""
+    return (f'<div class="kpi-celda">'
+            f'<div style="font-size:0.64rem; font-weight:700; letter-spacing:0.08em; text-transform:uppercase; '
+            f'color:{_TXT};">{esc(etiqueta)}</div>'
+            f'<div style="margin-top:8px; color:{_NAVY}; font-family:{_FUENTE}; line-height:1.1;">{valor_html}</div>'
+            f'{nota_html}{extra}</div>')
+
+
+def _cifra(valor, unidad: str = "", grande: bool = True) -> str:
+    """Cifra en grande con la unidad aparte, más chica: '15 días' se lee como dato,
+    '15 d' como abreviatura."""
+    if valor in (None, "", "—"):
+        return f'<span style="font-size:1.6rem; font-weight:700; color:{_TXT_SUAVE};">—</span>'
+    tam = "1.9rem" if grande else "1.15rem"
+    u = (f'<span style="font-size:0.78rem; font-weight:600; color:{_TXT}; margin-left:4px;">{esc(unidad)}</span>'
+         if unidad else "")
+    return f'<span style="font-size:{tam}; font-weight:700; letter-spacing:-0.02em;">{esc(str(valor))}</span>{u}'
+
+
+def _bloque_kpis(celdas: list, corte: str, alcance: str) -> str:
+    """Panel ejecutivo de indicadores: una sola pieza con encabezado azul marino,
+    fecha de corte y alcance (filtros), y celdas separadas por filetes. Se acomoda
+    solo: 6 columnas en escritorio, 2 en celular."""
     return (
-        f'<div style="background:#FFFFFF; border:1px solid {_REJILLA}; border-left:3px solid #0C447C; '
-        f'border-radius:8px; padding:12px 14px; min-height:104px; display:flex; flex-direction:column; '
-        f'justify-content:center;">'
-        f'<div style="font-size:0.66rem; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; '
-        f'color:{_TXT};">{esc(label)}</div>'
-        f'<div style="font-size:{tam}rem; font-weight:700; color:{_TXT_FUERTE}; margin-top:4px; '
-        f'font-family:{_FUENTE}; letter-spacing:-0.01em; line-height:1.15;">{esc(str(valor))}</div>'
-        f'{nota}</div>'
+        '<style>'
+        '.kpi-bloque{border:1px solid #D9DCE1; border-radius:10px; overflow:hidden; background:#fff;'
+        ' box-shadow:0 1px 2px rgba(16,24,40,0.04);}'
+        f'.kpi-cab{{background:{_NAVY}; color:#fff; display:flex; justify-content:space-between; align-items:center;'
+        ' flex-wrap:wrap; gap:4px 16px; padding:9px 18px;}'
+        '.kpi-rejilla{display:grid; grid-template-columns:repeat(6,minmax(0,1fr));}'
+        '.kpi-celda{padding:16px 18px 15px; border-left:1px solid #E6E8EC; min-width:0;}'
+        '.kpi-celda:first-child{border-left:none;}'
+        '@media (max-width:1100px){.kpi-rejilla{grid-template-columns:repeat(3,minmax(0,1fr));}'
+        ' .kpi-celda:nth-child(3n+1){border-left:none;} .kpi-celda:nth-child(n+4){border-top:1px solid #E6E8EC;}}'
+        '@media (max-width:640px){.kpi-rejilla{grid-template-columns:repeat(2,minmax(0,1fr));}'
+        ' .kpi-celda{border-left:1px solid #E6E8EC !important; border-top:1px solid #E6E8EC;}'
+        ' .kpi-celda:nth-child(odd){border-left:none !important;} .kpi-celda:nth-child(-n+2){border-top:none;}}'
+        '</style>'
+        '<div class="kpi-bloque">'
+        '<div class="kpi-cab">'
+        '<span style="font-size:0.7rem; font-weight:700; letter-spacing:0.12em; text-transform:uppercase;">'
+        'Indicadores clave de importación</span>'
+        f'<span style="font-size:0.72rem; color:rgba(255,255,255,0.82);">{esc(corte)} · {esc(alcance)}</span>'
+        '</div>'
+        f'<div class="kpi-rejilla">{"".join(celdas)}</div></div>'
     )
 
 
@@ -1154,12 +1214,12 @@ def panel_analitica(datos: dict):
     def _principal(columna: str, base: pd.DataFrame):
         serie = _conteo_por(base, columna) if not base.empty else pd.Series(dtype=float)
         if serie.empty:
-            return "—", ""
+            return "—", "", None
         parte = serie.iloc[0] / serie.sum() * 100
-        return str(serie.index[0]), f"{parte:.0f}% de los embarques"
+        return str(serie.index[0]), f"{parte:.0f}% de los embarques · {int(serie.sum()):,} en total", parte
 
-    pais_nombre, pais_pct = _principal("Pais", universo_f)
-    cat_nombre, cat_pct = _principal("Categoria", universo_f[universo_f["Categoria"] != CATEGORIA_NO_PRODUCTO]
+    pais_nombre, pais_pct, pais_num = _principal("Pais", universo_f)
+    cat_nombre, cat_pct, cat_num = _principal("Categoria", universo_f[universo_f["Categoria"] != CATEGORIA_NO_PRODUCTO]
                                      if not universo_f.empty else universo_f)
 
     prom_mes = _promedio_mensual(mensual_f)
@@ -1169,24 +1229,45 @@ def panel_analitica(datos: dict):
     def _d(v):
         return f"{v:.0f} d" if v is not None else "—"
 
-    _titulo_seccion("Resumen")
-    with st.container(key="bikpirow"):
-        cols = st.columns(6)
-        tarjetas = [
-            ("Embarques recibidos", str(len(mensual_f)), _flecha(tendencias["conteo"])),
-            ("Promedio mensual", f"{prom_mes:.1f}" if prom_mes is not None else "—",
-             f"{meses_n} mes(es) cerrados" if prom_mes is not None else ""),
-            ("Puerto → almacén", _d(ciclo_prom), f"mediana {_d(ciclo_med)} · n={ciclo_n}" if ciclo_n else ""),
-            ("Marítimo / Aéreo",
-             (f"{por_via[VIA_MARITIMA][0]:.0f} / {por_via[VIA_AEREA][0]:.0f} d"
-              if por_via[VIA_AEREA][0] is not None and por_via[VIA_MARITIMA][0] is not None else "—"),
-             f"n={por_via[VIA_MARITIMA][2]} / {por_via[VIA_AEREA][2]}"),
-            ("País principal", pais_nombre, pais_pct),
-            ("Categoría principal", cat_nombre, cat_pct),
-        ]
-        for col, (label, valor, nota) in zip(cols, tarjetas):
-            with col:
-                st.markdown(_tarjeta_kpi_bi("", label, valor, delta=nota), unsafe_allow_html=True)
+    # Series para las mini-líneas: últimos 12 meses (meses sin datos = 0 en volumen).
+    mes_actual = date(hoy_rd().year, hoy_rd().month, 1)
+    serie_rec, serie_dias = [], []
+    if not mensual_f.empty:
+        conteo = mensual_f["Mes"].value_counts()
+        meses12 = _rango_meses(min(conteo.index), mes_actual)[-12:]
+        serie_rec = [int(conteo.get(m, 0)) for m in meses12 if m < mes_actual]
+    if not dias_real.empty:
+        por_mes = dias_real.dropna(subset=["Mes"]).groupby("Mes")["dias_total"].mean().sort_index()
+        serie_dias = list(por_mes.values[-12:])
+
+    def _nota_delta(texto):
+        return f'<span style="color:{_TXT_FUERTE}; font-weight:600;">{esc(texto)}</span>' if texto else ""
+
+    via_m, via_a = por_via[VIA_MARITIMA], por_via[VIA_AEREA]
+    valor_via = (f'<div style="display:flex; gap:18px; align-items:baseline; flex-wrap:wrap;">'
+                 f'<div>{_cifra(f"{via_m[0]:.0f}" if via_m[0] is not None else None, "días")}'
+                 f'<div style="font-size:0.68rem; color:{COLOR_MARITIMO}; font-weight:700; margin-top:2px;">'
+                 f'MARÍTIMO</div></div>'
+                 f'<div>{_cifra(f"{via_a[0]:.0f}" if via_a[0] is not None else None, "días")}'
+                 f'<div style="font-size:0.68rem; color:{COLOR_AEREO}; font-weight:700; margin-top:2px;">'
+                 f'AÉREO</div></div></div>')
+    celdas = [
+        _celda_kpi("Embarques recibidos", _cifra(f"{len(mensual_f):,}"),
+                   _nota_delta(_flecha(tendencias["conteo"])) or "en almacén", _sparkline(serie_rec)),
+        _celda_kpi("Promedio mensual", _cifra(f"{prom_mes:.1f}" if prom_mes is not None else None, "embarques"),
+                   f"{meses_n} meses cerrados" if prom_mes is not None else ""),
+        _celda_kpi("Ciclo puerto → almacén", _cifra(f"{ciclo_prom:.0f}" if ciclo_prom is not None else None, "días"),
+                   f"Mediana {_d(ciclo_med)} · {ciclo_n} embarques" if ciclo_n else "", _sparkline(serie_dias)),
+        _celda_kpi("Ciclo por vía", valor_via, f"{via_m[2]} marítimos · {via_a[2]} aéreos"),
+        _celda_kpi("Origen principal", _cifra(pais_nombre, grande=False), esc(pais_pct), _barra_participacion(pais_num)),
+        _celda_kpi("Categoría principal", _cifra(cat_nombre, grande=False), esc(cat_pct), _barra_participacion(cat_num)),
+    ]
+    alcance = ("Años: " + ", ".join(str(a) for a in sorted(anios_sel)) if anios_sel else "Todos los años")
+    if paises_sel or cats_sel:
+        alcance += " · con filtros"
+    hoy = hoy_rd()
+    st.markdown(_bloque_kpis(celdas, f"Corte al {hoy.day} {MESES_ES_CORTO[hoy.month]} {hoy.year}", alcance),
+                unsafe_allow_html=True)
     nota_aprox = (f" {n_aprox} embarque(s) archivados sin fecha de almacén real quedan fuera de estos promedios."
                   if n_aprox else "")
     st.caption("Puerto → almacén: días promedio desde la llegada confirmada hasta la entrada a almacén, solo con "

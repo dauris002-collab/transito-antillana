@@ -624,6 +624,7 @@ def test_analitica_con_historia_dibuja_lineas_y_barras(libros):
     assert sum("bar" in t for t in tipos) >= 5
     assert not any("pie" in t for t in tipos), "sin donas"
     textos = " ".join(m.value for m in at.markdown)
+    assert "Indicadores clave de importación" in textos and "kpi-celda" in textos
     for titulo in ("Llegadas a puerto y aeropuerto por mes", "Llegadas por vía", "Embarques por categoría",
                    "Días de puerto a almacén, por mes"):
         assert titulo in textos

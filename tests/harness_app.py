@@ -14,8 +14,11 @@ import estado_prueba  # noqa: E402
 
 if estado_prueba.LIBRO is None:
     # Arranque a mano (streamlit run tests/harness_app.py): se crea el Sheet de prueba.
+    import os  # noqa: E402
     import datos  # noqa: E402
-    estado_prueba.LIBRO = datos.libro_principal()
+    # TRANSITO_DATOS=analitica: libro con ~15 meses de historia (capturas de Analítica).
+    estado_prueba.LIBRO = (datos.libro_analitica() if os.environ.get("TRANSITO_DATOS") == "analitica"
+                           else datos.libro_principal())
     estado_prueba.TALLER = datos.libro_taller()
 
 sheets_io.get_spreadsheet = lambda: estado_prueba.LIBRO

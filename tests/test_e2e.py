@@ -609,3 +609,31 @@ def test_editar_se_queda_en_el_mismo_embarque(libros, campo, valor):
     assert valor in actual, f"tras guardar, el selector quedó en {actual!r}"
     m = libros.LIBRO.hoja("Montacargas")
     assert valor in (m.valor(6, "Descripcion"), m.valor(6, "BL"))
+
+
+# ----------------------------------------------------------------- analítica
+def test_analitica_con_historia_dibuja_lineas_y_barras(libros):
+    import datos
+    libros.LIBRO = datos.libro_analitica()
+    at = abrir_app("2222", "Analítica")
+    sin_errores(at)
+    graficas = at.get("plotly_chart")
+    import json
+    tipos = [{t["type"] for t in json.loads(g.proto.spec)["data"]} for g in graficas]
+    assert sum("scatter" in t for t in tipos) >= 2, "líneas: llegadas por mes y días por mes"
+    assert sum("bar" in t for t in tipos) >= 5
+    assert not any("pie" in t for t in tipos), "sin donas"
+    textos = " ".join(m.value for m in at.markdown)
+    for titulo in ("Llegadas a puerto y aeropuerto por mes", "Llegadas por vía", "Embarques por categoría",
+                   "Días de puerto a almacén, por mes"):
+        assert titulo in textos
+
+
+def test_analitica_clic_en_categoria_filtra(libros):
+    import datos
+    libros.LIBRO = datos.libro_analitica()
+    at = abrir_app("2222", "Analítica")
+    at.session_state["an_categorias"] = {"selection": {"points": [{"y": "Generadores", "x": 23}]}}
+    at.run()
+    sin_errores(at)
+    assert any("Clic en categoría" in m.value and "Generadores" in m.value for m in at.markdown)

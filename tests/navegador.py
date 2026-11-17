@@ -32,6 +32,13 @@ rol = "admin"
 '''
 
 
+async def _errores(pg) -> int:
+    """Excepciones en pantalla. Con showErrorDetails = "none" (config de producción)
+    Streamlit no muestra stException sino un aviso genérico: se cuentan los dos."""
+    return (await pg.locator('[data-testid="stException"]').count()
+            + await pg.get_by_text("This app has encountered an error").count())
+
+
 async def recorrer(pw, ancho, alto, nombre) -> int:
     nav = await pw.chromium.launch(**({"executable_path": CHROME} if CHROME else {}), args=["--no-sandbox"])
     pg = await (await nav.new_context(viewport={"width": ancho, "height": alto})).new_page()
@@ -53,10 +60,11 @@ async def recorrer(pw, ancho, alto, nombre) -> int:
     for seccion in ("Estatus de Pago", "Histórico", "Analítica", "Editar", "Herramientas"):
         await pg.get_by_text(seccion, exact=True).first.click()
         await pg.wait_for_timeout(2500)
-        n = await pg.locator('[data-testid="stException"]').count()
+        n = await _errores(pg)
         fallos += n
         print(f"{nombre:10} {seccion:16} excepciones en pantalla: {n}")
-        await pg.screenshot(path=str(SALIDA / f"{nombre}_3_{seccion.replace(' ', '_')}.png"))
+        await pg.screenshot(path=str(SALIDA / f"{nombre}_3_{seccion.replace(' ', '_')}.png"),
+                            full_page=seccion == "Analítica")
     # Repuesto y Taller (otro Sheet): se entra por Estatus de Pago → origen.
     await pg.get_by_text("Estatus de Pago", exact=True).first.click()
     await pg.wait_for_timeout(2000)
@@ -64,7 +72,7 @@ async def recorrer(pw, ancho, alto, nombre) -> int:
     await pg.get_by_role("option", name="Repuesto y Taller").first.click()
     await pg.wait_for_selector("text=Repuesto y Taller", timeout=30000)
     await pg.wait_for_timeout(3000)
-    n = await pg.locator('[data-testid="stException"]').count()
+    n = await _errores(pg)
     fallos += n
     print(f"{nombre:10} {'Repuesto y Taller':16} excepciones en pantalla: {n}")
     await pg.screenshot(path=str(SALIDA / f"{nombre}_4_taller.png"), full_page=True)

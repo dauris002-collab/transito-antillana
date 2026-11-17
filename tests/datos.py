@@ -98,3 +98,41 @@ def libro_taller() -> FakeSpreadsheet:
     libro = FakeSpreadsheet({"Repuesto y Taller": filas})
     libro.hoja("Repuesto y Taller").row_count = 50
     return libro
+
+
+def libro_analitica(semilla: int = 7) -> FakeSpreadsheet:
+    """Libro con ~15 meses de historia (para ver la Analítica con forma real):
+    el libro principal + ~160 embarques archivados y ~25 en tránsito, al azar
+    pero siempre iguales (semilla fija). Solo para pruebas y capturas."""
+    import random
+    rnd = random.Random(semilla)
+    libro = libro_principal()
+    rec = libro.hoja("Recibido (Mes)")
+    cats = ["Montacargas", "Construcción y Minería", "Generadores", "General", "Agrícola", "Elevadores", "Aéreos",
+            "Carga Suelta"]
+    pesos = [5, 3, 4, 6, 1, 1, 4, 2]
+    paises = ["USA", "China", "Japón", "Brasil", "India", "Italia", "Alemania", "México"]
+    p_pesos = [8, 6, 3, 1, 2, 1, 1, 2]
+    n = 1
+    for meses_atras in range(15, 0, -1):
+        for _ in range(rnd.randint(6, 14)):
+            cat = rnd.choices(cats, pesos)[0]
+            llegada = -(meses_atras * 30) + rnd.randint(-12, 12)
+            if llegada > -3:
+                continue
+            aereo = cat == "Aéreos" or rnd.random() < 0.08
+            decl = llegada + (rnd.randint(0, 3) if aereo else rnd.randint(2, 12))
+            alm = min(decl + (rnd.randint(1, 4) if aereo else rnd.randint(3, 20)), -1)
+            fila = _rec(f"HA-{n:04d}", cat, d(llegada), d(decl), d(alm), "")
+            fila[list(sio.COLUMNAS_RECIBIDO).index("Pais_Origen")] = rnd.choices(paises, p_pesos)[0]
+            if aereo:
+                fila[list(sio.COLUMNAS_RECIBIDO).index("Via_Transporte")] = "Aéreo"
+            rec.append_rows([fila])
+            n += 1
+    gen = libro.hoja("General")
+    for i in range(25):
+        eta = rnd.randint(-5, 80)
+        gen.append_rows([["TR-%03d" % i, "Repuestos", "1", rnd.choices(paises, p_pesos)[0], d(eta), "", "",
+                          rnd.choice(["Marítimo", "Marítimo", "Aéreo"]), "", "2026-11-01 08:00:00", "Dauris"]])
+    libro.escrituras = libro.lecturas = 0
+    return libro

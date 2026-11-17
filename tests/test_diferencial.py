@@ -21,9 +21,7 @@ BASE_REF = os.environ.get("BASE_REF", "origin/main")
 
 # (patrón de la ruta del resultado, motivo). Vaciar esta lista cuando el cambio ya esté en la rama base.
 CAMBIOS_ESPERADOS = [
-    # v5.12: nombres de etapa en los mensajes de validación («Declaración», «Recepción en almacén»).
-    (r"^/orden_flujo/", "mensajes de orden de fechas con los nombres nuevos de etapa"),
-    (r"^/escrituras/[a-z_]+/resultado\[1\]$", "mensajes de validación con los nombres nuevos de etapa"),
+    # Vacía: la v5.13 solo cambia la Analítica, que no altera ningún resultado de este volcado.
 ]
 
 

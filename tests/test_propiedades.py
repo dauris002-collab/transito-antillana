@@ -391,3 +391,35 @@ def test_localizar_fila_nunca_devuelve_otro_bl(bls, objetivo, sugerida):
         assert len(coincidencias) == 1 or fila == sugerida, "con BL repetido solo vale la fila que la pantalla mostró"
     else:
         assert error and (not coincidencias or len(coincidencias) > 1)
+
+
+# ---------------------------------------------------------------- analítica
+@LENTO
+@given(st.lists(fila_transito, max_size=12), st.integers(0, 40))
+def test_llegadas_mensuales_no_pierde_ni_inventa(transito, n_hist):
+    """Cada embarque con fecha legible aparece UNA vez; lo no confirmado nunca cae en
+    un mes pasado; el histórico siempre cuenta como llegada confirmada."""
+    import analitica as an
+    import streamlit
+    from datos import libro_analitica
+    streamlit.cache_data.clear()
+    libro = libro_analitica()
+    sio.get_spreadsheet = lambda: libro
+    historico = sio.cargar_todo()["historico"].head(n_hist)
+    act = pd.DataFrame(transito)
+    for c in sio.ALL_COLUMNS + ["Categoria", "FilaSheet"]:
+        if c not in act.columns:
+            act[c] = ""
+    out = an._llegadas_mensuales(act, historico)
+    con_fecha_act = sum(1 for v in act[sio.COL_ETA] if sio.parsear_fecha(v))
+    con_fecha_hist = sum(1 for _, r in historico.iterrows()
+                         if sio.parsear_fecha(r.get(sio.COL_FECHA_LLEGADA_PUERTO, "")) or sio.parsear_fecha(r.get(sio.COL_ETA, "")))
+    assert len(out) == con_fecha_act + con_fecha_hist
+    mes_actual = date(sio.hoy_rd().year, sio.hoy_rd().month, 1)
+    prog = out[out["Estado"] == an.LLEGADA_PROGRAMADA]
+    assert all(m >= mes_actual for m in prog["Mes"])
+    assert len(prog) == sum(1 for v, ll in zip(act[sio.COL_ETA], act[sio.COL_LLEGO])
+                            if sio.parsear_fecha(v) and not sio.es_llego_si(ll))
+    assert set(out["Via"]) <= {sio.VIA_AEREA, sio.VIA_MARITIMA}
+    an._figura_llegadas_mes(out)
+    an._figura_llegadas_via_mes(out)

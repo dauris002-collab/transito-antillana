@@ -5,7 +5,7 @@ Panel de gráficas de negocio (no operativo), con acabado tipo BI: filtros
 interactivos (segmented_control para Año, multiselects para País/Categoría,
 clic-para-filtrar en las gráficas de País y Categoría), barra visible de
 filtros activos con limpieza total de un toque, tarjetas KPI con tendencia,
-donas con total al centro, área bajo la línea de tendencia, cada gráfica en
+cada gráfica en
 su propia tarjeta con título y la pregunta de negocio que responde. No es una
 fuente de datos aparte: se arma sobre lo mismo que ya trae cargar_todo()
 (activos + histórico). Sin escrituras: todo aquí es de solo lectura.
@@ -40,6 +40,13 @@ de menú, y valores que ya no existen en la data (un país que se borró del
 Sheet, p.ej.) se descartan en vez de filtrar en silencio. Para quitar la
 selección: clic de nuevo sobre el mismo punto, o "Limpiar todos los filtros".
 
+Rediseño formal (v5.13, nov 2026): el panel se ordena por COMPORTAMIENTO de las
+importaciones -- volumen mes a mes (línea de llegadas con lo que viene en camino,
+barras por vía y de recepción en almacén), origen y mezcla (barras; la dona de
+categoría pasó a barras) y tiempos del ciclo (línea mensual por vía y barras). Un
+solo color por medida; Marítimo azul y Aéreo naranja en todas las gráficas; KPI en
+tarjetas blancas sin íconos ni degradados.
+
 Rediseño visual (sep 2026): títulos y subtítulos FUERA de la figura Plotly
 (tipografía HTML nítida, estilo tarjeta de Power BI/Tableau), un solo color de
 acento por gráfica de una sola medida en vez de arcoíris por barra, esquinas
@@ -59,28 +66,25 @@ import streamlit as st
 from sheets_io import (
     CACHE_TTL, COL_BL, COL_DESC, COL_ETA, COL_FECHA_ALMACEN, COL_FECHA_DECLARACION,
     COL_FECHA_LLEGADA_PUERTO, COL_FECHA_SALIDA, COL_PAIS, COL_VIA,
-    MESES_ES_CORTO, NO_ESPECIFICADO, VIA_AEREA, VIA_MARITIMA,
-    hoy_rd, parsear_fecha, unificar_paises,
+    COL_LLEGO, MESES_ES_CORTO, NO_ESPECIFICADO, VIA_AEREA, VIA_MARITIMA,
+    es_llego_si, hoy_rd, parsear_fecha, unificar_paises,
 )
 from logica import ETAPAS_PUERTO, es_aereo
 from ui_componentes import _enriquecer_cacheado, esc
 
 
-# Paleta categórica para las gráficas donde el color DISTINGUE categorías
-# (dona de categoría). Para gráficas de una sola medida se usa UN acento —
-# el arcoíris por barra es lo que hacía verse amateur; en BI el color solo se
-# gasta cuando codifica información.
-PALETA_BI = ["#2563EB", "#F59E0B", "#10B981", "#8B5CF6", "#EF4444",
-            "#0EA5E9", "#EC4899", "#14B8A6", "#F97316", "#6366F1"]
-
-COLOR_AEREO = "#2563EB"
-COLOR_MARITIMO = "#10B981"
-
-# Acentos de una sola medida
-_ACCENT_AZUL = "#2563EB"      # volumen / conteos
-_ACCENT_AMBAR = "#F59E0B"     # tiempos / atención
-_ACCENT_VERDE = "#10B981"     # productos
-_AZUL_SUAVE = "rgba(37,99,235,0.10)"
+# Estilo formal (v5.13): un solo color por medida, gris para lo secundario y
+# color de serie solo cuando DISTINGUE algo (Marítimo vs Aéreo). Marítimo y
+# Aéreo conservan su color en todas las gráficas (el color sigue a la entidad).
+# El par azul/naranja pasa la validación de daltonismo (ΔE 24.7 protan).
+COLOR_MARITIMO = "#2A78D6"
+COLOR_AEREO = "#EB6834"
+_ACCENT = "#2A78D6"           # medida única (conteos y días)
+_ACCENT_CLARO = "#9EC5F4"     # misma medida con un solo dato (no es promedio)
+_GRIS_REF = "#898781"         # líneas de referencia (promedio)
+# Se conservan los nombres anteriores para no tocar el resto del módulo.
+_ACCENT_AZUL = _ACCENT_AMBAR = _ACCENT_VERDE = _ACCENT
+PALETA_BI = [COLOR_MARITIMO, COLOR_AEREO]
 
 # "Aéreos" sigue siendo una pestaña real del Sheet (y se puede filtrar por
 # ella), pero NO es un tipo de producto -- es un modo de transporte, igual que
@@ -90,15 +94,16 @@ _AZUL_SUAVE = "rgba(37,99,235,0.10)"
 # tiene su propio gráfico (Aéreo vs Marítimo, y las tarjetas de "ahora mismo").
 CATEGORIA_NO_PRODUCTO = "Aéreos"
 
-_FUENTE = "Segoe UI, -apple-system, BlinkMacSystemFont, sans-serif"
+_FUENTE = "system-ui, -apple-system, Segoe UI, sans-serif"
 
-_TXT_FUERTE = "#111827"
-_TXT = "#374151"
-_TXT_SUAVE = "#6B7280"
-_REJILLA = "#EEF2F7"
+_TXT_FUERTE = "#0B0B0B"
+_TXT = "#52514E"
+_TXT_SUAVE = "#898781"
+_REJILLA = "#E1E0D9"
+_BASE_EJE = "#C3C2B7"
 
 _LAYOUT_BASE = dict(
-    margin=dict(t=8, b=6, l=8, r=14),
+    margin=dict(t=8, b=6, l=8, r=14), bargap=0.35,
     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     font=dict(color=_TXT, size=12, family=_FUENTE),
     showlegend=False, dragmode=False,
@@ -110,7 +115,7 @@ _LAYOUT_BASE = dict(
 def _eje_valores(**extra) -> dict:
     """Eje de la medida: rejilla apenas visible, sin línea de eje, desde cero.
     Los overrides llegan como kwargs y se funden sobre los defaults."""
-    eje = dict(showgrid=True, gridcolor=_REJILLA, zeroline=False, title="",
+    eje = dict(showgrid=True, gridcolor=_REJILLA, gridwidth=1, zeroline=False, title="",
                tickfont=dict(size=11, color=_TXT_SUAVE), rangemode="tozero")
     eje.update(extra)
     return eje
@@ -119,8 +124,8 @@ def _eje_valores(**extra) -> dict:
 def _eje_categorias(**extra) -> dict:
     """Eje de las etiquetas: sin rejilla, texto un poco más fuerte.
     Los overrides llegan como kwargs y se funden sobre los defaults."""
-    eje = dict(showgrid=False, zeroline=False, title="",
-               tickfont=dict(size=12, color=_TXT))
+    eje = dict(showgrid=False, zeroline=False, title="", showline=True, linecolor=_BASE_EJE,
+               tickfont=dict(size=11.5, color=_TXT))
     eje.update(extra)
     return eje
 
@@ -129,12 +134,12 @@ def _encabezado_grafica(icono: str, titulo: str, detalle: str = ""):
     """Título de tarjeta estilo BI: fuera de la figura Plotly, con la pregunta
     de negocio que responde como subtítulo. La tipografía HTML es más nítida
     que la del canvas de Plotly y deja el área del gráfico solo para datos."""
-    sub = (f'<div style="font-size:0.76rem; color:{_TXT_SUAVE}; margin-top:1px;">{esc(detalle)}</div>'
+    # Formal: sin ícono (el parámetro se conserva para no tocar las llamadas).
+    sub = (f'<div style="font-size:0.76rem; color:{_TXT}; margin-top:2px;">{esc(detalle)}</div>'
            if detalle else "")
     st.markdown(
-        f'<div style="margin:2px 0 6px;">'
-        f'<span style="font-size:0.95rem;">{icono}</span> '
-        f'<span style="font-size:0.9rem; font-weight:700; color:{_TXT_FUERTE};">{esc(titulo)}</span>'
+        f'<div style="margin:2px 0 8px;">'
+        f'<span style="font-size:0.92rem; font-weight:650; color:{_TXT_FUERTE};">{esc(titulo)}</span>'
         f"{sub}</div>",
         unsafe_allow_html=True,
     )
@@ -144,8 +149,9 @@ def _titulo_seccion(texto: str):
     """Separador de bloque en versalitas grises, como los encabezados de grupo
     de un dashboard BI."""
     st.markdown(
-        f'<div style="font-size:0.7rem; font-weight:800; letter-spacing:0.09em; '
-        f'text-transform:uppercase; color:{_TXT_SUAVE}; margin:14px 0 2px;">{esc(texto)}</div>',
+        f'<div style="font-size:0.72rem; font-weight:700; letter-spacing:0.08em; '
+        f'text-transform:uppercase; color:{_TXT}; margin:22px 0 6px; padding-bottom:6px; '
+        f'border-bottom:1px solid {_REJILLA};">{esc(texto)}</div>',
         unsafe_allow_html=True,
     )
 
@@ -170,30 +176,23 @@ def _mes_de(valor) -> date | None:
     return date(f.year, f.month, 1) if f else None
 
 
-def _tarjeta_kpi_bi(icono: str, label: str, valor: str, color_a: str, color_b: str, delta: str = "") -> str:
-    """Tarjeta KPI propia de esta pestaña: degradado, ícono y valor grande --
-    aquí es el resumen ejecutivo, así que puede pesar más visualmente. La
-    tendencia ('delta') va en una pastilla semitransparente: el texto suelto
-    sobre el degradado se perdía, y un color semántico (verde/rojo) encima de
-    un fondo ya de color es más ruido que señal -- qué dirección es "mejor"
-    se explica en el caption debajo de la fila, no en la tarjeta misma."""
-    delta_html = (
-        f'<div style="display:inline-block; background:rgba(255,255,255,0.22); '
-        f'border-radius:999px; padding:2px 10px; font-size:0.62rem; font-weight:600; '
-        f'color:#fff; margin-top:6px;">{esc(delta)}</div>'
-    ) if delta else ""
+def _tarjeta_kpi_bi(icono: str, label: str, valor: str, color_a: str = "", color_b: str = "", delta: str = "") -> str:
+    """Tarjeta KPI formal: fondo blanco, filete fino, etiqueta en versalitas,
+    cifra en tinta oscura y la nota (mediana, n, tendencia) en gris. El color
+    se reserva para las gráficas; ícono y degradados se quitaron en v5.13
+    (los parámetros se conservan para no tocar las llamadas)."""
+    nota = (f'<div style="font-size:0.72rem; color:{_TXT}; margin-top:4px;">{esc(delta)}</div>'
+            if delta else "")
+    tam = 1.5 if len(str(valor)) <= 12 else 1.12
     return (
-        f'<div style="background:linear-gradient(135deg,{color_a} 0%,{color_b} 100%); '
-        f'border-radius:14px; padding:15px 12px 13px; min-height:112px; '
-        f'box-shadow:0 2px 10px rgba(17,24,39,0.10); display:flex; flex-direction:column; '
-        f'align-items:center; justify-content:center; text-align:center;">'
-        f'<div style="font-size:1.25rem; line-height:1; opacity:0.95;">{icono}</div>'
-        f'<div style="font-size:{1.45 if len(str(valor)) <= 12 else 1.12}rem; font-weight:800; color:#fff; margin-top:4px; '
-        f'font-family:{_FUENTE}; letter-spacing:-0.01em;">{esc(str(valor))}</div>'
-        f'<div style="font-size:0.64rem; font-weight:700; letter-spacing:0.05em; '
-        f'text-transform:uppercase; color:rgba(255,255,255,0.92); margin-top:3px;">{esc(label)}</div>'
-        f'{delta_html}'
-        f'</div>'
+        f'<div style="background:#FFFFFF; border:1px solid {_REJILLA}; border-left:3px solid #0C447C; '
+        f'border-radius:8px; padding:12px 14px; min-height:104px; display:flex; flex-direction:column; '
+        f'justify-content:center;">'
+        f'<div style="font-size:0.66rem; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; '
+        f'color:{_TXT};">{esc(label)}</div>'
+        f'<div style="font-size:{tam}rem; font-weight:700; color:{_TXT_FUERTE}; margin-top:4px; '
+        f'font-family:{_FUENTE}; letter-spacing:-0.01em; line-height:1.15;">{esc(str(valor))}</div>'
+        f'{nota}</div>'
     )
 
 
@@ -408,6 +407,76 @@ def _mensual_historico(historico: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(filas, columns=columnas)
 
 
+LLEGADA_CONFIRMADA = "Confirmada"
+LLEGADA_PROGRAMADA = "Por llegar"
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _llegadas_mensuales(activos: pd.DataFrame, historico: pd.DataFrame) -> pd.DataFrame:
+    """Un renglón por embarque con el MES en que llegó (o llegará) a puerto/aeropuerto.
+    Es la base del comportamiento de las importaciones: cuánto entra cada mes.
+
+    - Histórico: siempre llegada confirmada; mes de Fecha_Llegada_Puerto (o el ETA
+      si esa columna está vacía en filas viejas).
+    - Activos con '¿Llegó?' = SI: confirmada, en el mes del ETA (que ya es la llegada
+      real, decisión #4).
+    - Activos sin confirmar: «Por llegar», en el mes del ETA. Si el ETA ya pasó sin
+      confirmación, se cuenta en el mes en curso: sigue esperándose ahora, no en un
+      mes que ya cerró.
+    Sin fecha legible, el embarque no entra (no se inventa un mes)."""
+    columnas = ["Mes", "Anio", "Estado", "Via", "Categoria", "Pais"]
+    mes_actual = date(hoy_rd().year, hoy_rd().month, 1)
+    filas = []
+
+    def _via(via_cruda, categoria):
+        via_cruda = str(via_cruda or "").strip()
+        return VIA_AEREA if (es_aereo(via_cruda) or (not via_cruda and categoria == CATEGORIA_NO_PRODUCTO)) \
+            else VIA_MARITIMA
+
+    if historico is not None and not historico.empty:
+        paises = unificar_paises(historico[COL_PAIS]) if COL_PAIS in historico.columns \
+            else pd.Series([""] * len(historico))
+        for (_, r), pais in zip(historico.iterrows(), paises):
+            mes = _mes_de(r.get(COL_FECHA_LLEGADA_PUERTO, "")) or _mes_de(r.get(COL_ETA, ""))
+            if not mes:
+                continue
+            cat = r.get("Categoria_Origen", "") or NO_ESPECIFICADO
+            filas.append({"Mes": mes, "Estado": LLEGADA_CONFIRMADA, "Via": _via(r.get(COL_VIA, ""), cat),
+                          "Categoria": cat, "Pais": pais or NO_ESPECIFICADO})
+    if activos is not None and not activos.empty and COL_ETA in activos.columns:
+        llego = activos[COL_LLEGO] if COL_LLEGO in activos.columns else pd.Series([""] * len(activos),
+                                                                                 index=activos.index)
+        for (_, r), ll in zip(activos.iterrows(), llego):
+            mes = _mes_de(r.get(COL_ETA, ""))
+            if not mes:
+                continue
+            confirmada = es_llego_si(ll)
+            cat = r.get("Categoria", "") or NO_ESPECIFICADO
+            filas.append({"Mes": mes if confirmada else max(mes, mes_actual),
+                          "Estado": LLEGADA_CONFIRMADA if confirmada else LLEGADA_PROGRAMADA,
+                          "Via": _via(r.get(COL_VIA, ""), cat), "Categoria": cat,
+                          "Pais": (r.get(COL_PAIS, "") or NO_ESPECIFICADO)})
+    if not filas:
+        return pd.DataFrame(columns=columnas)
+    df = pd.DataFrame(filas)
+    df["Anio"] = [m.year for m in df["Mes"]]
+    return df[columnas]
+
+
+def _rango_meses(desde: date, hasta: date) -> list:
+    """Todos los meses entre dos fechas (inclusive): un mes sin llegadas es un 0,
+    no un hueco que la línea salte."""
+    meses, m = [], date(desde.year, desde.month, 1)
+    while m <= hasta:
+        meses.append(m)
+        m = date(m.year + (m.month == 12), m.month % 12 + 1, 1)
+    return meses
+
+
+def _etiqueta_mes(m: date) -> str:
+    return f"{MESES_ES_CORTO[m.month]} {m.year % 100:02d}"
+
+
 def _aplicar_filtros(df: pd.DataFrame, anios_sel: list, paises_sel: list, cats_sel: list) -> pd.DataFrame:
     """Vacío en cualquier filtro significa 'todos'."""
     if df.empty:
@@ -503,7 +572,7 @@ def _figura_paises(universo: pd.DataFrame) -> go.Figure | None:
     unidad = "embarque(s)"
     fig = go.Figure(data=[go.Bar(
         x=serie.values, y=serie.index, orientation="h",
-        marker=dict(color=_ACCENT_AZUL, cornerradius=5, line=dict(width=0)),
+        marker=dict(color=_ACCENT_AZUL, cornerradius=4, line=dict(width=0)),
         text=[f"{v:,.0f}" for v in serie.values], textposition="outside", cliponaxis=False,
         textfont=dict(size=12, color=_TXT, family=_FUENTE),
         hovertemplate=f"<b>%{{y}}</b><br>%{{x:,.0f}} {unidad}<extra></extra>",
@@ -520,28 +589,25 @@ def _figura_paises(universo: pd.DataFrame) -> go.Figure | None:
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def _figura_categorias(universo: pd.DataFrame) -> go.Figure | None:
+    """Embarques por categoría, en barras horizontales (antes una dona: comparar
+    longitudes es más preciso que comparar ángulos). Clic en una barra = filtro."""
     if universo.empty:
         return None
     base = universo[universo["Categoria"] != CATEGORIA_NO_PRODUCTO]
-    serie = _conteo_por(base, "Categoria")
+    serie = _conteo_por(base, "Categoria").sort_values()
     if serie.empty:
         return None
     total = int(serie.sum())
-    unidad = "embarque(s)"
-    fig = go.Figure(data=[go.Pie(
-        labels=serie.index, values=serie.values, hole=0.62, sort=False,
-        marker=dict(colors=[PALETA_BI[i % len(PALETA_BI)] for i in range(len(serie))],
-                   line=dict(color="#FFFFFF", width=2)),
-        textinfo="percent", textfont=dict(size=11.5, family=_FUENTE, color="#fff"),
-        insidetextorientation="radial",
-        hovertemplate=f"<b>%{{label}}</b><br>%{{value:,.0f}} {unidad} · %{{percent}}<extra></extra>",
+    fig = go.Figure(data=[go.Bar(
+        x=serie.values, y=serie.index, orientation="h",
+        marker=dict(color=_ACCENT, cornerradius=4, line=dict(width=0)),
+        text=[f"{v:,.0f} · {v / total:.0%}" for v in serie.values], textposition="outside", cliponaxis=False,
+        textfont=dict(size=12, color=_TXT, family=_FUENTE),
+        hovertemplate="<b>%{y}</b><br>%{x:,.0f} embarque(s)<extra></extra>",
     )])
-    fig.add_annotation(text=f"<b>{total:,}</b><br><span style='font-size:11px;'>embarques</span>",
-                       x=0.5, y=0.5, showarrow=False,
-                       font=dict(size=17, family=_FUENTE, color=_TXT_FUERTE))
-    fig.update_layout(**{**_LAYOUT_BASE, "showlegend": True}, height=360,
-                      legend=dict(orientation="h", y=-0.12,
-                                  font=dict(size=11, family=_FUENTE, color=_TXT)))
+    layout = {**_LAYOUT_BASE, "margin": {**_LAYOUT_BASE["margin"], "l": _margen_izquierdo(serie.index)}}
+    fig.update_layout(**layout, height=max(250, 42 * len(serie)), xaxis=_eje_valores(), yaxis=_eje_categorias())
+    fig.update_xaxes(range=[0, serie.max() * 1.3])
     return fig
 
 
@@ -600,7 +666,7 @@ def _figura_top_productos(universo: pd.DataFrame, n: int = 10) -> go.Figure | No
         return None
     fig = go.Figure(data=[go.Bar(
         x=serie.values, y=serie.index, orientation="h",
-        marker=dict(color=_ACCENT_VERDE, cornerradius=5, line=dict(width=0)),
+        marker=dict(color=_ACCENT_VERDE, cornerradius=4, line=dict(width=0)),
         text=serie.values, textposition="outside", cliponaxis=False,
         textfont=dict(size=12, color=_TXT, family=_FUENTE),
         hovertemplate="<b>%{y}</b><br>%{x} embarque(s)<extra></extra>",
@@ -615,32 +681,32 @@ def _figura_top_productos(universo: pd.DataFrame, n: int = 10) -> go.Figure | No
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def _figura_tendencia_mensual(mensual: pd.DataFrame, meses: int = 24) -> go.Figure | None:
+def _figura_tendencia_mensual(mensual: pd.DataFrame, meses: int = 18) -> go.Figure | None:
+    """Embarques recibidos en almacén por mes, en barras (meses sin recepciones
+    cuentan como 0). Línea gris = promedio de los meses cerrados."""
     if mensual.empty:
         return None
-    conteo = mensual["Mes"].value_counts().sort_index().tail(meses)
+    conteo = mensual["Mes"].value_counts().sort_index()
     if conteo.empty:
         return None
-    etiquetas = [f"{MESES_ES_CORTO[m.month]} {m.year}" for m in conteo.index]
-    fig = go.Figure(data=[go.Scatter(
-        x=etiquetas, y=conteo.values, mode="lines+markers+text",
-        line=dict(color=_ACCENT_AZUL, width=3, shape="spline", smoothing=0.4),
-        marker=dict(size=7, color="#FFFFFF", line=dict(color=_ACCENT_AZUL, width=2.5)),
-        fill="tozeroy", fillcolor=_AZUL_SUAVE,
-        text=conteo.values, textposition="top center",
-        textfont=dict(size=11, color=_TXT, family=_FUENTE),
-        hovertemplate="<b>%{x}</b><br>%{y} embarque(s) recibido(s)<extra></extra>",
+    meses_v = _rango_meses(conteo.index[0], conteo.index[-1])[-meses:]
+    conteo = conteo.reindex(meses_v, fill_value=0)
+    actual = date(hoy_rd().year, hoy_rd().month, 1)
+    fig = go.Figure(data=[go.Bar(
+        x=[_etiqueta_mes(m) for m in meses_v], y=conteo.values,
+        marker=dict(color=[_ACCENT if m < actual else _ACCENT_CLARO for m in meses_v], cornerradius=3,
+                    line=dict(width=0)),
+        hovertemplate="%{x}: %{y} recibido(s)<extra></extra>",
     )])
-    fig.update_layout(**_LAYOUT_BASE, height=300,
-                      xaxis=_eje_categorias(tickangle=-45,
-                                            tickfont=dict(size=11, color=_TXT_SUAVE)),
-                      yaxis=_eje_valores())
-    fig.update_yaxes(range=[0, conteo.max() * 1.25 + 1])
+    fig.update_layout(**_LAYOUT_BASE, height=310,
+                      xaxis=_eje_categorias(tickfont=dict(size=11, color=_TXT_SUAVE)),
+                      yaxis=_eje_valores(range=[0, conteo.max() * 1.25 + 1]))
     prom = _promedio_mensual(mensual)
     if prom is not None:
-        fig.add_hline(y=prom, line=dict(color=_ACCENT_AMBAR, width=2, dash="dash"),
-                      annotation_text=f"promedio {prom:.1f}/mes", annotation_position="top left",
-                      annotation_font=dict(size=11, color="#B45309", family=_FUENTE))
+        fig.add_hline(y=prom, line=dict(color=_GRIS_REF, width=1, dash="dash"),
+                      annotation_text=f"Promedio {prom:.1f}", annotation_position="top right",
+                      annotation_bgcolor="rgba(255,255,255,0.9)",
+                      annotation_font=dict(size=11, color=_TXT, family=_FUENTE))
     return fig
 
 
@@ -657,7 +723,7 @@ def _figura_tiempo_puerto_categoria(dias_real: pd.DataFrame) -> go.Figure | None
         return None
     fig = go.Figure(data=[go.Bar(
         x=agg["promedio"].values, y=agg.index, orientation="h",
-        marker=dict(color=[_ACCENT_AMBAR if n >= 2 else "#FBD99B" for n in agg["n"]], cornerradius=5, line=dict(width=0)),
+        marker=dict(color=[_ACCENT if n >= 2 else _ACCENT_CLARO for n in agg["n"]], cornerradius=4, line=dict(width=0)),
         text=[f"{v:.0f} d · n={n}" for v, n in zip(agg["promedio"], agg["n"])],
         textposition="outside", cliponaxis=False,
         textfont=dict(size=12, color=_TXT, family=_FUENTE),
@@ -695,7 +761,7 @@ def _figura_ciclo_etapas(dias_df: pd.DataFrame, dias_real: pd.DataFrame) -> go.F
         return None
     fig = go.Figure(data=[go.Bar(
         x=etapas, y=valores,
-        marker=dict(color=colores, cornerradius=7, line=dict(width=0)),
+        marker=dict(color=colores, cornerradius=4, line=dict(width=0)),
         text=[f"{v:.0f} d · n={n}" for v, n in zip(valores, notas)], textposition="outside", cliponaxis=False,
         textfont=dict(size=12.5, color=_TXT_FUERTE, family=_FUENTE),
         customdata=medianas,
@@ -708,7 +774,7 @@ def _figura_ciclo_etapas(dias_df: pd.DataFrame, dias_real: pd.DataFrame) -> go.F
     return fig
 
 
-_ESCALA_AZULES = [[0.0, "#F8FAFC"], [0.3, "#DBEAFE"], [0.65, "#93C5FD"], [1.0, "#2563EB"]]
+_ESCALA_AZULES = [[0.0, "#F4F8FD"], [0.25, "#CDE2FB"], [0.6, "#6DA7EC"], [1.0, "#1C5CAB"]]
 
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
@@ -756,6 +822,149 @@ def _figura_heatmap_pais_categoria(universo: pd.DataFrame, top_paises: int = 8, 
     return fig
 
 
+_HOVER_LINEA = dict(hovermode="x unified", hoverlabel=dict(bgcolor="#FFFFFF", bordercolor=_REJILLA,
+                                                          font=dict(color=_TXT_FUERTE, size=12, family=_FUENTE)))
+_LEYENDA = dict(orientation="h", x=0, xanchor="left", y=1.02, yanchor="bottom",
+                font=dict(size=11.5, family=_FUENTE, color=_TXT))
+
+
+def _ventana_meses(llegadas: pd.DataFrame, atras: int = 18, adelante: int = 3) -> list:
+    """Meses a mostrar: hasta `atras` meses cerrados con datos + el actual + los
+    próximos con llegadas programadas (máx. `adelante`)."""
+    if llegadas.empty:
+        return []
+    actual = date(hoy_rd().year, hoy_rd().month, 1)
+    primero = max(min(llegadas["Mes"]), _rango_meses(date(actual.year - 2, actual.month, 1), actual)[-atras - 1])
+    tope = _rango_meses(actual, date(actual.year + 1, actual.month, 1))[adelante]
+    ultimo = min(max(max(llegadas["Mes"]), actual), tope)
+    return _rango_meses(primero, ultimo)
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _figura_llegadas_mes(llegadas: pd.DataFrame) -> go.Figure | None:
+    """Línea principal del panel: embarques que llegan a puerto/aeropuerto cada
+    mes. Confirmadas en línea continua; lo que viene en camino (por ETA) sigue
+    la misma línea, punteada. La línea gris es el promedio de los meses cerrados."""
+    meses = _ventana_meses(llegadas)
+    if len(meses) < 2:
+        return None
+    actual = date(hoy_rd().year, hoy_rd().month, 1)
+    conf = llegadas[llegadas["Estado"] == LLEGADA_CONFIRMADA]["Mes"].value_counts().reindex(meses, fill_value=0)
+    prog = llegadas[llegadas["Estado"] == LLEGADA_PROGRAMADA]["Mes"].value_counts().reindex(meses, fill_value=0)
+    x = [_etiqueta_mes(m) for m in meses]
+    pasados = [m <= actual for m in meses]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=[e for e, p in zip(x, pasados) if p], y=[int(v) for v, p in zip(conf.values, pasados) if p],
+        name="Llegadas confirmadas", mode="lines+markers",
+        line=dict(color=_ACCENT, width=2), marker=dict(size=8, color="#FFFFFF", line=dict(color=_ACCENT, width=2)),
+        hovertemplate="%{y} confirmada(s)<extra></extra>"))
+    total_prog = conf.add(prog)
+    desde = [i for i, m in enumerate(meses) if m >= actual]
+    if desde and prog.sum() > 0:
+        fig.add_trace(go.Scatter(
+            x=[x[i] for i in desde], y=[int(total_prog.iloc[i]) for i in desde],
+            name="Incluyendo lo que viene en camino (ETA)", mode="lines+markers",
+            line=dict(color=_ACCENT, width=2, dash="dot"),
+            marker=dict(size=8, color="#FFFFFF", line=dict(color=_ACCENT, width=2), symbol="circle-open"),
+            customdata=[int(prog.iloc[i]) for i in desde],
+            hovertemplate="%{y} en total · %{customdata} por llegar<extra></extra>"))
+    cerrados = [int(conf[m]) for m in meses if m < actual]
+    if len(cerrados) >= 2:
+        prom = sum(cerrados) / len(cerrados)
+        fig.add_hline(y=prom, line=dict(color=_GRIS_REF, width=1, dash="dash"),
+                      annotation_text=f"Promedio meses cerrados: {prom:.1f}", annotation_position="top right",
+                      annotation_bgcolor="rgba(255,255,255,0.9)",
+                      annotation_font=dict(size=11, color=_TXT, family=_FUENTE))
+    tope = max(int(total_prog.max()), int(conf.max()), 1)
+    fig.update_layout(**{**_LAYOUT_BASE, **_HOVER_LINEA, "showlegend": True}, height=330, legend=_LEYENDA,
+                      xaxis=_eje_categorias(tickfont=dict(size=11, color=_TXT_SUAVE)),
+                      yaxis=_eje_valores(range=[0, tope * 1.2 + 1], title=dict(
+                          text="Embarques", font=dict(size=11, color=_TXT_SUAVE))))
+    return fig
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _figura_llegadas_via_mes(llegadas: pd.DataFrame) -> go.Figure | None:
+    """Barras apiladas: llegadas confirmadas por mes, Marítimo y Aéreo."""
+    actual = date(hoy_rd().year, hoy_rd().month, 1)
+    conf = llegadas[(llegadas["Estado"] == LLEGADA_CONFIRMADA)] if not llegadas.empty else llegadas
+    meses = [m for m in _ventana_meses(llegadas) if m <= actual]
+    if conf.empty or len(meses) < 2:
+        return None
+    x = [_etiqueta_mes(m) for m in meses]
+    fig = go.Figure()
+    for via, color in ((VIA_MARITIMA, COLOR_MARITIMO), (VIA_AEREA, COLOR_AEREO)):
+        serie = conf[conf["Via"] == via]["Mes"].value_counts().reindex(meses, fill_value=0)
+        if serie.sum() == 0:
+            continue
+        fig.add_trace(go.Bar(x=x, y=serie.values, name=via,
+                             marker=dict(color=color, line=dict(color="#FFFFFF", width=1.5), cornerradius=3),
+                             hovertemplate=f"{via}: %{{y}}<extra></extra>"))
+    if not fig.data:
+        return None
+    fig.update_layout(**{**_LAYOUT_BASE, **_HOVER_LINEA, "showlegend": True}, barmode="stack", height=310,
+                      legend={**_LEYENDA, "traceorder": "normal"}, xaxis=_eje_categorias(tickfont=dict(size=11, color=_TXT_SUAVE)),
+                      yaxis=_eje_valores())
+    return fig
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _figura_tiempo_mensual(dias_real: pd.DataFrame, meses: int = 18) -> go.Figure | None:
+    """Promedio mensual de días puerto → almacén, una línea por vía (mes de
+    almacén, solo fecha de almacén real). Mediana y n en el tooltip."""
+    if dias_real.empty or "Mes" not in dias_real.columns:
+        return None
+    base = dias_real.dropna(subset=["Mes", "dias_total"])
+    meses_disp = sorted(base["Mes"].unique())[-meses:] if not base.empty else []
+    if len(meses_disp) < 2:
+        return None
+    meses_disp = _rango_meses(meses_disp[0], meses_disp[-1])
+    x = [_etiqueta_mes(m) for m in meses_disp]
+    fig = go.Figure()
+    for via, color in ((VIA_MARITIMA, COLOR_MARITIMO), (VIA_AEREA, COLOR_AEREO)):
+        g = base[base["Via"] == via]
+        if g.empty:
+            continue
+        agg = g.groupby("Mes")["dias_total"].agg(["mean", "median", "count"]).reindex(meses_disp)
+        fig.add_trace(go.Scatter(
+            x=x, y=agg["mean"].values, name=via, mode="lines+markers", connectgaps=True,
+            line=dict(color=color, width=2), marker=dict(size=8, color="#FFFFFF", line=dict(color=color, width=2)),
+            customdata=list(zip(agg["median"].fillna(0), agg["count"].fillna(0).astype(int))),
+            hovertemplate=f"{via}: %{{y:.0f}} d (mediana %{{customdata[0]:.0f}} · n=%{{customdata[1]}})<extra></extra>"))
+    if not fig.data:
+        return None
+    fig.update_layout(**{**_LAYOUT_BASE, **_HOVER_LINEA, "showlegend": True}, height=310, legend=_LEYENDA,
+                      xaxis=_eje_categorias(tickfont=dict(size=11, color=_TXT_SUAVE)),
+                      yaxis=_eje_valores(title=dict(text="Días (promedio)", font=dict(size=11, color=_TXT_SUAVE))))
+    return fig
+
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def _figura_via_barras(dias_real: pd.DataFrame) -> go.Figure | None:
+    """Respaldo de la línea mensual cuando hay menos de 2 meses: promedio de
+    días puerto → almacén por vía, en barras."""
+    if dias_real.empty:
+        return None
+    filas = []
+    for via, color in ((VIA_MARITIMA, COLOR_MARITIMO), (VIA_AEREA, COLOR_AEREO)):
+        prom, med, n = _promedio_n(dias_real.loc[dias_real["Via"] == via, "dias_total"])
+        if prom is not None:
+            filas.append((via, prom, med, n, color))
+    if not filas:
+        return None
+    fig = go.Figure(data=[go.Bar(
+        x=[f[0] for f in filas], y=[f[1] for f in filas],
+        marker=dict(color=[f[4] for f in filas], cornerradius=4, line=dict(width=0)),
+        text=[f"{f[1]:.0f} d · n={f[3]}" for f in filas], textposition="outside", cliponaxis=False,
+        textfont=dict(size=12, color=_TXT_FUERTE, family=_FUENTE),
+        customdata=[f[2] for f in filas],
+        hovertemplate="%{x}: promedio %{y:.1f} d · mediana %{customdata:.0f} d<extra></extra>")])
+    fig.update_layout(**_LAYOUT_BASE, height=300, xaxis=_eje_categorias(), yaxis=_eje_valores())
+    fig.update_yaxes(range=[0, max(f[1] for f in filas) * 1.25])
+    return fig
+
+
 def _promedio_mensual(mensual: pd.DataFrame):
     """Promedio de embarques recibidos por mes. Solo meses COMPLETOS (el mes en
     curso se excluye: un mes a medias bajaría el promedio); si no queda
@@ -784,7 +993,7 @@ def _figura_tiempo_por_pais(dias_real: pd.DataFrame, minimo: int = 2, top: int =
         return None
     fig = go.Figure(data=[go.Bar(
         x=agg["promedio"].values, y=agg.index, orientation="h",
-        marker=dict(color=_ACCENT_AMBAR, cornerradius=5, line=dict(width=0)),
+        marker=dict(color=_ACCENT_AMBAR, cornerradius=4, line=dict(width=0)),
         text=[f"{v:.0f} d · n={n}" for v, n in zip(agg["promedio"], agg["n"])],
         textposition="outside", cliponaxis=False,
         textfont=dict(size=12, color=_TXT, family=_FUENTE),
@@ -821,7 +1030,7 @@ def _tarjeta_ahora(en_puerto: int, en_aeropuerto: int, espera: tuple = (None, No
     if en_puerto == 0 and en_aeropuerto == 0:
         return ""
     tope = max(en_puerto, en_aeropuerto, 1)
-    piezas = ['<div class="paises"><div class="atttl">⚓✈️ Llegó, sin declarar todavía, ahora mismo</div>']
+    piezas = ['<div class="paises"><div class="atttl">Ahora mismo: llegado y sin declarar</div>']
     for etiqueta, valor, color in (("En puerto", en_puerto, COLOR_MARITIMO),
                                    ("En aeropuerto", en_aeropuerto, COLOR_AEREO)):
         ancho = max(4.0, (valor / tope) * 100.0)
@@ -837,113 +1046,6 @@ def _tarjeta_ahora(en_puerto: int, en_aeropuerto: int, espera: tuple = (None, No
                       f'· la más antigua, {maximo:.0f} d (n={n})</div>')
     piezas.append("</div>")
     return "".join(piezas)
-
-
-def _tarjeta_via(dias_real: pd.DataFrame) -> str:
-    """Aéreo vs Marítimo: promedio llegada → almacén (fecha de almacén real),
-    con la mediana y el n al lado."""
-    if dias_real.empty or dias_real["Via"].nunique() < 2:
-        return ""
-    stats = {}
-    for via, grupo in dias_real.groupby("Via"):
-        prom, med, n = _promedio_n(grupo["dias_total"])
-        if prom is not None:
-            stats[via] = (prom, med, n)
-    if VIA_AEREA not in stats or VIA_MARITIMA not in stats:
-        return ""
-    piezas = ['<div class="paises"><div class="atttl">✈️🚢 Puerto → almacén, promedio: '
-              'Aéreo vs Marítimo</div>']
-    tope = max(stats[VIA_AEREA][0], stats[VIA_MARITIMA][0]) or 1
-    for etiqueta, color in ((VIA_AEREA, COLOR_AEREO), (VIA_MARITIMA, COLOR_MARITIMO)):
-        prom, med, n = stats[etiqueta]
-        ancho = max(4.0, (prom / tope) * 100.0)
-        piezas.append(
-            f'<div class="pfila" style="grid-template-columns:minmax(96px,26%) 1fr 112px;">'
-            f'<div class="pnom">{esc(etiqueta)} (n={n})</div>'
-            f'<div class="pbarra"><span style="width:{ancho:.1f}%;background:{color};border-radius:6px;"></span></div>'
-            f'<div class="pval" style="white-space:nowrap;">{prom:.0f} d <span style="font-weight:500;'
-            f'color:{_TXT_SUAVE};">· med. {med:.0f}</span></div></div>'
-        )
-    piezas.append("</div>")
-    return "".join(piezas)
-
-
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def _figura_distribucion_via(dias_df: pd.DataFrame) -> go.Figure | None:
-    """Respaldo de _figura_tendencia_via_mensual para cuando no hay 2+ meses
-    de datos: hoy los embarques cerrados con ciclo completo se concentran en
-    muy pocos meses, así que ninguna tendencia mensual es posible todavía --
-    no es un bug, es que la fecha de almacén recién se empezó a capturar bien.
-    Esto muestra la distribución real de cada embarque cerrado en vez de nada:
-    además de la mediana (que ya da _tarjeta_via), se ve cuánto varía el ciclo
-    dentro de cada vía -- un embarque atípico salta a la vista en vez de
-    perderse en un promedio. Funciona con tan solo 1 embarque por vía; cuando
-    haya 2+ meses reales, el panel vuelve a preferir la tendencia mensual
-    sobre esto."""
-    if dias_df.empty or "dias_total" not in dias_df.columns:
-        return None
-    base = dias_df.dropna(subset=["dias_total"])
-    if base.empty or base["Via"].nunique() < 2:
-        return None
-    fig = go.Figure()
-    for via, color in ((VIA_AEREA, COLOR_AEREO), (VIA_MARITIMA, COLOR_MARITIMO)):
-        grupo = base[base["Via"] == via]
-        if grupo.empty:
-            continue
-        rgb = "37,99,235" if via == VIA_AEREA else "16,185,129"
-        fig.add_trace(go.Box(
-            y=grupo["dias_total"], name=f"{via} (n={len(grupo)})",
-            marker=dict(color=color, size=6, opacity=0.75), line=dict(color=color, width=2),
-            fillcolor=f"rgba({rgb},0.14)", boxpoints="all", pointpos=0, jitter=0.45,
-            hovertemplate="%{y:.0f} días<extra></extra>",
-        ))
-    if not fig.data:
-        return None
-    fig.update_layout(**{**_LAYOUT_BASE, "showlegend": False}, height=320,
-                      xaxis=_eje_categorias(),
-                      yaxis=_eje_valores(title=dict(text="Días", font=dict(size=11, color=_TXT_SUAVE))))
-    return fig
-
-
-@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
-def _figura_tendencia_via_mensual(dias_df: pd.DataFrame, meses: int = 18) -> go.Figure | None:
-    """La pregunta real detrás de 'Aéreo vs Marítimo': no solo cuánto tarda
-    cada uno AHORA, sino si esa brecha se está cerrando o abriendo mes a mes.
-    Mediana mensual por vía, sobre el ciclo completo."""
-    if dias_df.empty or "Mes" not in dias_df.columns or "dias_total" not in dias_df.columns:
-        return None
-    base = dias_df.dropna(subset=["Mes", "dias_total"])
-    if base.empty or base["Via"].nunique() < 2:
-        return None
-    meses_disp = sorted(base["Mes"].unique())[-meses:]
-    if len(meses_disp) < 2:
-        return None
-    etiquetas = [f"{MESES_ES_CORTO[m.month]} {m.year}" for m in meses_disp]
-    fig = go.Figure()
-    for via, color in ((VIA_AEREA, COLOR_AEREO), (VIA_MARITIMA, COLOR_MARITIMO)):
-        grupo = base[base["Via"] == via]
-        if grupo.empty:
-            continue
-        por_mes = grupo.groupby("Mes")["dias_total"]
-        serie = por_mes.median().reindex(meses_disp)
-        conteo = por_mes.count().reindex(meses_disp).fillna(0).astype(int)
-        fig.add_trace(go.Scatter(
-            x=etiquetas, y=serie.values, mode="lines+markers", name=via, connectgaps=True,
-            line=dict(color=color, width=3, shape="spline", smoothing=0.3),
-            marker=dict(size=7, color="#FFFFFF", line=dict(color=color, width=2.5)),
-            customdata=conteo.values,
-            hovertemplate=f"<b>{via}</b> · %{{x}}<br>%{{y:.0f}} días (mediana) · n=%{{customdata}}<extra></extra>",
-        ))
-    if not fig.data:
-        return None
-    fig.update_layout(**{**_LAYOUT_BASE, "showlegend": True}, height=320,
-                      legend=dict(orientation="h", y=-0.28,
-                                  font=dict(size=11.5, family=_FUENTE, color=_TXT)),
-                      xaxis=_eje_categorias(tickangle=-45,
-                                            tickfont=dict(size=11, color=_TXT_SUAVE)),
-                      yaxis=_eje_valores(title=dict(text="Días (mediana)",
-                                                    font=dict(size=11, color=_TXT_SUAVE))))
-    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -975,15 +1077,16 @@ def _chips_filtros(anios_sel: list, paises_menu: list, cats_menu: list,
 
 @st.fragment
 def panel_analitica(datos: dict):
-    st.subheader("📊 Analítica de importaciones")
-    st.caption("Se arma sola con lo que ya está en tránsito y en el histórico. Los filtros de arriba y el clic "
-              "sobre las barras de País o las porciones de Categoría actualizan todo el panel.")
+    st.subheader("Analítica de importaciones")
+    st.caption("Comportamiento de las importaciones del Grupo a partir de los embarques en tránsito y del "
+               "histórico. Los filtros y el clic sobre las barras de País o Categoría actualizan todo el panel.")
 
     activos_crudo, historico = datos.get("activos"), datos.get("historico")
     activos = _enriquecer_cacheado(activos_crudo)
     universo = _universo(activos_crudo, historico)
     dias_df = _ciclo_historico(historico)
     mensual = _mensual_historico(historico)
+    llegadas = _llegadas_mensuales(activos_crudo, historico)
 
     if universo.empty and (historico is None or historico.empty):
         st.info("Todavía no hay suficientes embarques (activos o recibidos) para armar analítica.")
@@ -998,7 +1101,7 @@ def panel_analitica(datos: dict):
     # cualquier filtro de menú, y los valores que ya no existen en la data se
     # descartan aquí en vez de filtrar en silencio.
     paises_click = _clics_vigentes("an_paises", "y", paises_disp)
-    cats_click = _clics_vigentes("an_categorias", "label", cats_disp)
+    cats_click = _clics_vigentes("an_categorias", "y", cats_disp)
 
     f1, f2, f3 = st.columns([1, 1.4, 1.6])
     with f1:
@@ -1033,6 +1136,7 @@ def panel_analitica(datos: dict):
     universo_f = _aplicar_filtros(universo, anios_sel, paises_sel, cats_sel)
     dias_f = _aplicar_filtros(dias_df, anios_sel, paises_sel, cats_sel)
     mensual_f = _aplicar_filtros(mensual, anios_sel, paises_sel, cats_sel)
+    llegadas_f = _aplicar_filtros(llegadas, anios_sel, paises_sel, cats_sel)
     dias_real = _ciclo_real(dias_f)
     en_puerto, en_aeropuerto = _en_puerto_ahora(activos, paises_sel, cats_sel)
     espera = _espera_actual(activos, paises_sel, cats_sel)
@@ -1069,85 +1173,65 @@ def panel_analitica(datos: dict):
     with st.container(key="bikpirow"):
         cols = st.columns(6)
         tarjetas = [
-            ("⚓", "Puerto → almacén (promedio)", _d(ciclo_prom), "#B45309", "#F59E0B",
-             f"mediana {_d(ciclo_med)} · n={ciclo_n}" if ciclo_n else ""),
-            ("✈️🚢", "Aéreo / Marítimo (promedio)",
-             (f"{por_via[VIA_AEREA][0]:.0f} / {por_via[VIA_MARITIMA][0]:.0f} d"
-              if por_via[VIA_AEREA][0] is not None and por_via[VIA_MARITIMA][0] is not None else "—"), "#1D4ED8", "#2563EB",
-             f"n={por_via[VIA_AEREA][2]} / {por_via[VIA_MARITIMA][2]}"),
-            ("📦", "Embarques recibidos", str(len(mensual_f)), "#059669", "#10B981",
-             _flecha(tendencias["conteo"])),
-            ("📅", "Embarques por mes (promedio)",
-             f"{prom_mes:.1f}" if prom_mes is not None else "—", "#5C6BC0", "#7986CB",
-             f"{meses_n} mes(es) completos" if prom_mes is not None else ""),
-            ("🌍", "País principal", pais_nombre, "#0284C7", "#38BDF8", pais_pct),
-            ("🏷️", "Categoría principal", cat_nombre, "#1E3A5F", "#0C4A6E", cat_pct),
+            ("Embarques recibidos", str(len(mensual_f)), _flecha(tendencias["conteo"])),
+            ("Promedio mensual", f"{prom_mes:.1f}" if prom_mes is not None else "—",
+             f"{meses_n} mes(es) cerrados" if prom_mes is not None else ""),
+            ("Puerto → almacén", _d(ciclo_prom), f"mediana {_d(ciclo_med)} · n={ciclo_n}" if ciclo_n else ""),
+            ("Marítimo / Aéreo",
+             (f"{por_via[VIA_MARITIMA][0]:.0f} / {por_via[VIA_AEREA][0]:.0f} d"
+              if por_via[VIA_AEREA][0] is not None and por_via[VIA_MARITIMA][0] is not None else "—"),
+             f"n={por_via[VIA_MARITIMA][2]} / {por_via[VIA_AEREA][2]}"),
+            ("País principal", pais_nombre, pais_pct),
+            ("Categoría principal", cat_nombre, cat_pct),
         ]
-        for col, (icono, label, valor, ca, cb, delta) in zip(cols, tarjetas):
+        for col, (label, valor, nota) in zip(cols, tarjetas):
             with col:
-                st.markdown(_tarjeta_kpi_bi(icono, label, valor, ca, cb, delta), unsafe_allow_html=True)
-    nota_aprox = (f" {n_aprox} embarque(s) archivados sin fecha de almacén real quedan fuera de estos promedios "
-                  "(usaban la fecha de recepción, que suele coincidir con la de llegada y baja el número)."
+                st.markdown(_tarjeta_kpi_bi("", label, valor, delta=nota), unsafe_allow_html=True)
+    nota_aprox = (f" {n_aprox} embarque(s) archivados sin fecha de almacén real quedan fuera de estos promedios."
                   if n_aprox else "")
-    st.caption("Puerto → almacén: días desde la llegada confirmada a puerto/aeropuerto hasta la fecha de almacén, "
-               "solo con fecha de almacén real." + nota_aprox + " Flecha en Embarques recibidos: mes más "
-               "reciente vs el anterior (solo volumen).")
+    st.caption("Puerto → almacén: días promedio desde la llegada confirmada hasta la entrada a almacén, solo con "
+               "fecha de almacén real." + nota_aprox + " La tendencia de «Embarques recibidos» compara el mes "
+               "más reciente con el anterior.")
 
-    # ---------------- TIEMPOS ----------------
-    _titulo_seccion("Tiempos: dónde se va el tiempo")
-    t1, t2 = st.columns(2)
-    with t1:
-        with st.container(border=True):
-            _encabezado_grafica("🔄", "El viaje completo, por etapa",
-                                "Promedio de días en cada tramo · tránsito, puerto y trámite final")
-            fig = _figura_ciclo_etapas(dias_f, dias_real)
-            if fig:
-                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_ciclo")
-            else:
-                st.caption("Todavía no hay suficientes embarques con fechas completas para partir el ciclo.")
-    with t2:
-        with st.container(border=True):
-            _encabezado_grafica("⚓", "Puerto → almacén por categoría",
-                                "Promedio de días · barra clara = un solo embarque, no es un promedio todavía")
-            fig = _figura_tiempo_puerto_categoria(dias_real)
-            if fig:
-                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tiempo_visible")
-            else:
-                st.caption("Todavía no hay embarques con fecha de almacén real para medir esto.")
+    # ---------------- VOLUMEN ----------------
+    _titulo_seccion("Volumen de importaciones")
+    with st.container(border=True):
+        _encabezado_grafica("", "Llegadas a puerto y aeropuerto por mes",
+                            "Embarques que llegaron cada mes · la línea punteada suma lo que viene en camino "
+                            "según su ETA")
+        fig = _figura_llegadas_mes(llegadas_f)
+        if fig:
+            st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_llegadas")
+            st.caption("Los embarques que ya pasaron su ETA sin confirmar la llegada se cuentan en el mes en curso.")
+        else:
+            st.caption("Todavía no hay al menos dos meses con llegadas para ver una tendencia.")
 
-    v1, v2 = st.columns(2)
-    with v1:
+    a1, a2 = st.columns(2)
+    with a1:
         with st.container(border=True):
-            _encabezado_grafica("🌍", "Puerto → almacén por país de origen",
-                                "Promedio de días · países con 2 o más embarques con fecha de almacén real")
-            fig = _figura_tiempo_por_pais(dias_real)
+            _encabezado_grafica("", "Llegadas por vía", "Confirmadas por mes · Marítimo y Aéreo")
+            fig = _figura_llegadas_via_mes(llegadas_f)
             if fig:
-                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tiempo_pais")
+                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_llegadas_via")
             else:
-                st.caption("Todavía no hay países con 2 o más embarques con fecha de almacén real.")
-    with v2:
+                st.caption("Todavía no hay al menos dos meses con llegadas confirmadas.")
+    with a2:
         with st.container(border=True):
-            html_via = _tarjeta_via(dias_real)
-            if html_via:
-                st.markdown(html_via, unsafe_allow_html=True)
+            _encabezado_grafica("", "Embarques recibidos en almacén por mes",
+                                "Cierre del ciclo · la línea gris es el promedio de los meses cerrados")
+            fig = _figura_tendencia_mensual(mensual_f)
+            if fig:
+                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tendencia")
             else:
-                st.caption("Falta variedad de Vía (Aéreo/Marítimo) con fecha de almacén real para comparar.")
-        with st.container(border=True):
-            html_ahora = _tarjeta_ahora(en_puerto, en_aeropuerto, espera)
-            if html_ahora:
-                st.markdown(html_ahora, unsafe_allow_html=True)
-                st.caption("Llegada confirmada, todavía sin declarar ante Aduanas. Foto del presente: "
-                           "no cambia con el filtro de Año.")
-            else:
-                st.caption("Nada llegado a puerto o aeropuerto esperando declarar en este momento.")
+                st.caption("Todavía no hay suficiente histórico mes a mes con estos filtros.")
 
-    # ---------------- QUÉ SE IMPORTA Y DE DÓNDE ----------------
-    _titulo_seccion("Qué se importa y de dónde (embarques)")
+    # ---------------- ORIGEN Y MEZCLA ----------------
+    _titulo_seccion("Origen y mezcla de la carga")
     c1, c2 = st.columns(2)
     with c1:
         with st.container(border=True):
-            _encabezado_grafica("🌍", "País de origen",
-                                "De dónde viene la carga · clic en una barra para filtrar el panel")
+            _encabezado_grafica("", "Embarques por país de origen",
+                                "Los 10 orígenes principales · clic en una barra para filtrar el panel")
             fig_paises = _figura_paises(universo_menu)
             if fig_paises:
                 st.plotly_chart(fig_paises, width="stretch", config=_config_interactiva(),
@@ -1156,49 +1240,79 @@ def panel_analitica(datos: dict):
                 st.caption("Sin datos de país todavía.")
     with c2:
         with st.container(border=True):
-            _encabezado_grafica("🏷️", "Categoría",
-                                "Qué tipo de carga se mueve más · clic en una porción para filtrar")
+            _encabezado_grafica("", "Embarques por categoría",
+                                "Cantidad y participación · clic en una barra para filtrar el panel")
             fig_cats = _figura_categorias(universo_menu)
             if fig_cats:
                 st.plotly_chart(fig_cats, width="stretch", config=_config_interactiva(),
                                 on_select="rerun", selection_mode="points", key="an_categorias")
             else:
                 st.caption("Sin datos de categoría todavía.")
-    st.caption("'Aéreos' no aparece en la categoría: es un modo de transporte, no un tipo de producto; "
-               "se ve en la comparación Aéreo vs Marítimo y en 'llegó, sin declarar'.")
+    st.caption("«Aéreos» no figura como categoría: es un modo de transporte, no un tipo de producto; "
+               "se analiza en las gráficas por vía.")
 
-    # ---------------- RITMO ----------------
-    _titulo_seccion("Ritmo")
+    # ---------------- TIEMPOS ----------------
+    _titulo_seccion("Tiempos del ciclo")
+    t1, t2 = st.columns(2)
+    with t1:
+        with st.container(border=True):
+            fig = _figura_tiempo_mensual(dias_real)
+            if fig:
+                _encabezado_grafica("", "Días de puerto a almacén, por mes",
+                                    "Promedio mensual por vía · mes de entrada a almacén")
+                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_via_tendencia")
+            else:
+                _encabezado_grafica("", "Días de puerto a almacén, por vía",
+                                    "Promedio · hacen falta dos meses con datos para ver la evolución")
+                fig = _figura_via_barras(dias_real)
+                if fig:
+                    st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_via_barras")
+                else:
+                    st.caption("Todavía no hay embarques con fecha de almacén real para medir esto.")
+    with t2:
+        with st.container(border=True):
+            _encabezado_grafica("", "Días por etapa del ciclo",
+                                "Promedio de cada tramo · tránsito, puerto y trámite final")
+            fig = _figura_ciclo_etapas(dias_f, dias_real)
+            if fig:
+                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_ciclo")
+            else:
+                st.caption("Todavía no hay suficientes embarques con fechas completas para partir el ciclo.")
+
+    v1, v2 = st.columns(2)
+    with v1:
+        with st.container(border=True):
+            _encabezado_grafica("", "Puerto → almacén por categoría",
+                                "Promedio de días · barra clara = un solo embarque, todavía no es un promedio")
+            fig = _figura_tiempo_puerto_categoria(dias_real)
+            if fig:
+                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tiempo_visible")
+            else:
+                st.caption("Todavía no hay embarques con fecha de almacén real para medir esto.")
+    with v2:
+        with st.container(border=True):
+            _encabezado_grafica("", "Puerto → almacén por país de origen",
+                                "Promedio de días · países con 2 o más embarques con fecha de almacén real")
+            fig = _figura_tiempo_por_pais(dias_real)
+            if fig:
+                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tiempo_pais")
+            else:
+                st.caption("Todavía no hay países con 2 o más embarques con fecha de almacén real.")
+
     with st.container(border=True):
-        _encabezado_grafica("📈", "Embarques recibidos por mes",
-                            "Cómo se comporta el volumen, mes a mes")
-        fig = _figura_tendencia_mensual(mensual_f)
-        if fig:
-            st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_tendencia")
+        html_ahora = _tarjeta_ahora(en_puerto, en_aeropuerto, espera)
+        if html_ahora:
+            st.markdown(html_ahora, unsafe_allow_html=True)
+            st.caption("Llegada confirmada, todavía sin declarar ante Aduanas. Foto del presente: "
+                       "no cambia con el filtro de Año.")
         else:
-            st.caption("Todavía no hay suficiente histórico mes a mes con estos filtros.")
+            st.caption("Nada llegado a puerto o aeropuerto esperando declarar en este momento.")
 
     # ---------------- DETALLE (colapsado) ----------------
     st.write("")
-    with st.expander("📂 Más detalle: tendencia por vía, país × categoría, productos", expanded=False):
+    with st.expander("Más detalle: país × categoría y productos", expanded=False):
         with st.container(border=True):
-            fig = _figura_tendencia_via_mensual(dias_real)
-            if fig:
-                _encabezado_grafica("📉", "Tendencia mensual por vía",
-                                    "Si la brecha Aéreo vs Marítimo se cierra o se abre (promedio mensual)")
-                st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_via_tendencia")
-            else:
-                fig = _figura_distribucion_via(dias_real)
-                if fig:
-                    _encabezado_grafica("📦", "Distribución del ciclo por embarque",
-                                        "Cada punto es un embarque cerrado · un atípico se ve al instante")
-                    st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_via_distribucion")
-                else:
-                    st.caption("Todavía no hay embarques cerrados de ambas vías para comparar.")
-
-        st.write("")
-        with st.container(border=True):
-            _encabezado_grafica("🗺️", "Qué categoría viene de qué país",
+            _encabezado_grafica("", "Qué categoría viene de qué país",
                                 "Cruce de origen y tipo de carga · dónde se concentra la operación")
             fig = _figura_heatmap_pais_categoria(universo_f)
             if fig:
@@ -1208,8 +1322,8 @@ def panel_analitica(datos: dict):
 
         st.write("")
         with st.container(border=True):
-            _encabezado_grafica("📦", "Los 10 productos más importados",
-                                "Familias de producto por volumen de embarques")
+            _encabezado_grafica("", "Los 10 productos más importados",
+                                "Familias de producto por cantidad de embarques")
             fig = _figura_top_productos(universo_f)
             if fig:
                 st.plotly_chart(fig, width="stretch", config=_config_interactiva(), key="an_productos")

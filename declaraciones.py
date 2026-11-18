@@ -244,8 +244,9 @@ def _clasificar(items: pd.DataFrame) -> pd.DataFrame:
     tipos = [tipo_equipo(p, d) for p, d in zip(items["Partida"], items["Descripcion"])]
     items = items.assign(Tipo=tipos)
     items["Familia"] = items["Tipo"].map(FAMILIA_DE)
-    items["Marca"] = [marca(d, t) if t else None for d, t in zip(items["Descripcion"], items["Tipo"])]
-    items["Cat"] = [categoria(t, p) for t, p in zip(items["Tipo"], items["Partida"])]
+    # Se usa la lista `tipos` (None puro) y no la columna: con pandas 3 la columna guarda NaN, que es "verdadero".
+    items["Marca"] = [marca(d, t) if t else None for d, t in zip(items["Descripcion"], tipos)]
+    items["Cat"] = [categoria(t, p) for t, p in zip(tipos, items["Partida"])]
     return items
 
 

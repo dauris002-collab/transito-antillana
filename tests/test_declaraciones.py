@@ -40,6 +40,15 @@ def test_marca_y_categoria():
     assert D.categoria(None, "3820.00.00") == "Otros"
 
 
+def test_clasificar_no_marca_repuestos_como_equipos():
+    """Regresión: con pandas 3 la columna Tipo guarda NaN (verdadero) y todo salía «Equipos»."""
+    import pandas as pd
+    x = D._clasificar(pd.DataFrame({"Partida": ["8421.23.00", "8427.20.00", "3820.00.00"],
+                                    "Descripcion": ["FILTRO DE ACEITE", "MONTACARGAS YALE GP050VX", "COOLANT"]}))
+    assert list(x.Cat) == ["Repuestos", "Equipos", "Otros"]
+    assert x.Marca.iloc[1] == "Yale" and pd.isna(x.Marca.iloc[0])
+
+
 def test_pais_y_ids():
     assert D._pais("ESTADOS UNIDOS") == "Estados Unidos"
     assert D._pais("COREA DEL SUR") == "Corea del Sur"

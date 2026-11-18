@@ -56,22 +56,66 @@ def _correr(**params):
     return at
 
 
-@pytest.mark.parametrize("v", ["1", "2", "3", "4", "5", "6"])
-def test_vistas_sin_errores(v):
+@pytest.mark.parametrize("v", ["1", "2", "3", "4"])
+def test_paginas_sin_errores(v):
     _correr(v=v)
 
 
+def test_elevadores_son_fujihd():
+    assert D.marca("ELEVADOR DE PASAJEROS 8 PERSONAS NO APLICA", "Elevadores") == "FUJIHD"
+    assert D.marca("ESCALERA ELECTRICA", "Escaleras eléctricas") == "FUJIHD"
+    assert D.marca("MONTACARGAS YALE GP050VX", "Montacargas") == "Yale"
+    at = _correr(v="2", **{"s.dsg_cat": "Elevadores"})
+    assert not at.exception
+
+
+@pytest.mark.parametrize("filtros", [
+    {"s.dsg_paises": "China"}, {"s.dsg_marca": "Yale"}, {"s.dsg_fam": "Generadores"}, {"s.dsg_adm": "Caucedo"},
+    {"s.dsg_carga": "Aérea"}, {"s.dsg_trae": "Repuestos"}, {"s.dsg_emp": "Tecnicaribe"}, {"s.dsg_desde": "2024"},
+    {"s.dsg_partida": "8428", "s.dsg_paises": "India|China"}, {"s.dsg_desc": "filtro aceite", "s.dsg_trae": "Equipos"},
+    {"s.dsg_paises": "Brasil", "s.dsg_marca": "Hitachi", "s.dsg_carga": "Aérea"},
+])
+@pytest.mark.parametrize("v", ["1", "2", "3", "4"])
+def test_filtros_globales_no_rompen_ninguna_pagina(v, filtros):
+    """Combinaciones que dejan pocos datos: cada página debe mostrar algo o el aviso, nunca una excepción."""
+    _correr(v=v, **filtros)
+
+
+def test_filtros_se_aplican_a_todo():
+    import pandas as pd
+    P = D._preparar("t")
+    base = dict(empresa="Todo el Grupo", desde=P["anio_min"], adm=[], carga=[], trae="Todo", fam=[], marca=[],
+                paises=[], partida="", texto="")
+    todo = D._filtrar(P, base)
+    chi = D._filtrar(P, {**base, "paises": ["China"]})
+    assert 0 < len(chi.decl) < len(todo.decl) and set(chi.items.Pais) == {"China"}
+    assert set(chi.decl.i) == set(chi.items.i)                      # solo declaraciones que traen ítems de China
+    assert set(chi.cont.i) <= set(chi.decl.i)
+    aereo = D._filtrar(P, {**base, "carga": ["Aérea"]})
+    assert set(aereo.decl.Carga) == {"Aérea"} and set(aereo.items.Carga) == {"Aérea"}
+    assert all(m == "FUJIHD" for m in D._filtrar(P, {**base, "fam": ["Elevadores"]}).eqn.Marca)
+
+
+def test_panel_de_copia_no_interpreta_html(monkeypatch):
+    capturado = {}
+    monkeypatch.setattr(D.st, "iframe", lambda doc, **k: capturado.update(doc=doc))
+    D._panel_copia([("Copiar", "a</script><script>alert(1)</script>")], [("Campo", "<img src=x onerror=alert(1)>")])
+    doc = capturado["doc"]
+    assert "</script><script>alert" not in doc and "<img src=x" not in doc
+    assert "\\u003c" in doc
+
+
 def test_buscador_filtra_y_muestra_ficha():
-    at = _correr(v="6", desc="montacargas yale", partida="8427")
-    assert any("Declaración" in s.label for s in at.selectbox)
+    at = _correr(v="4", **{"s.dsg_desc": "montacargas yale", "s.dsg_partida": "8427", "s.dsg_modo": "Por ítem"})
     tablas = at.dataframe
     assert tablas, "debe mostrar la tabla de resultados"
     assert all(str(p).startswith("8427") for p in tablas[0].value["Partida"])
 
 
 def test_buscador_por_numero():
-    at = _correr(v="6", q="BL0000005")
-    assert at.dataframe and len(at.dataframe[0].value) >= 1
+    at = _correr(v="4", **{"s.dsg_q": "BL0000005"})
+    assert at.dataframe and len(at.dataframe[0].value) == 1
+    assert len(at.dataframe) >= 2, "con un solo resultado se abre la ficha (tabla de ítems)"
 
 
 def test_error_de_lectura_no_tumba():

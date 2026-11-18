@@ -66,10 +66,13 @@ if st.query_params.get("error"):
     D.cargar_historico = lambda: {"tablas": None, "hora": None, "error": "Sheet no compartido (prueba)"}
 else:
     D.cargar_historico = lambda: {"tablas": tablas(), "hora": datetime(2026, 11, 17, 21, 0)}
+# ?v=<1-4> abre una página; ?s.<clave>=<valor> fija un widget (listas con "|")
 v = st.query_params.get("v")
-if v and "dsg_vista" not in st.session_state:
-    st.session_state["dsg_vista"] = D.VISTAS[int(v) - 1]
-for k in ("q", "partida", "desc"):
-    if st.query_params.get(k) and f"dsg_{k}" not in st.session_state:
-        st.session_state[f"dsg_{k}"] = st.query_params.get(k)
+if v and "dsg_pagina" not in st.session_state:
+    st.session_state["dsg_pagina"] = D.PAGINAS[int(v) - 1]
+for k in list(st.query_params):
+    if k.startswith("s.") and k[2:] not in st.session_state:
+        x = st.query_params.get(k)
+        st.session_state[k[2:]] = (x.split("|") if k[2:] in ("dsg_adm", "dsg_carga", "dsg_fam", "dsg_marca", "dsg_paises")
+                                   else int(x) if k[2:] == "dsg_desde" else x)
 D.panel_declaraciones(es_admin=True)

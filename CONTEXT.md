@@ -44,6 +44,7 @@ Columnas: la fuente de verdad son las constantes de `sheets_io.py` (`REQUIRED_CO
 - Sheet aparte, solo lectura (cuenta de servicio como Lector). Pestañas `Declaraciones`, `Items`, `Contenedores`, `Vehiculos`, `Control`; columnas mínimas en `sheets_io.PESTANAS_HISTORICO`.
 - Actualización mensual: correr `scripts/generar_historico_plataforma.py` en la carpeta de los PDF (`pip install pymupdf openpyxl`), luego en el Sheet: Archivo → Importar → Subir el Excel → «Reemplazar hoja de cálculo». En la app, admin: «↻ Recargar histórico» (o esperar 24 h).
 - Una sola llamada `values_batch_get` (4 pestañas, ~990.000 celdas) con caché de 24 h.
+- Interfaz (v5.16): 4 páginas con filtros globales en `declaraciones.py` (`_filtros`, `_filtrar`, `PAGINAS`). Botones de copiar con `st.iframe` (`_panel_copia`). Las pruebas del tablero de 6 vistas de v5.15 ya no aplican: `tests/verificar.sh` paso 5 las reporta como fallo esperado contra `origin/main` hasta que este cambio entre.
 
 ## Lectura y escritura [L]
 

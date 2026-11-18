@@ -22,8 +22,11 @@ Capa: como taller.py (importa de sheets_io hacia abajo; nada importa este módul
 from __future__ import annotations
 
 import html
+import json
+import logging
 import re
 import unicodedata
+import zlib
 from types import SimpleNamespace
 
 import pandas as pd
@@ -204,6 +207,7 @@ MARCAS = [  # (nombre, palabras que la identifican en la descripción)
 ]
 
 
+MARCA_FIJA = {"Elevadores": "FUJIHD", "Escaleras eléctricas": "FUJIHD"}
 _CUMMINS_MODELO = re.compile(r"\bC\s?\d{2,4}\s?D\s?\d|\bC\d{2,4}\s?N\d|\bDQ[A-Z]{2}\b|\bQSK\d|\bQSX\d")
 _YALE_MODELO = re.compile(r"\b(GP|GLP|GDP|ERC|ERP|ESC|NDR|NR|NSS|MSL|MPB|MPE|MPC|MPW)\s?-?\d{2,3}")
 
@@ -211,6 +215,8 @@ _YALE_MODELO = re.compile(r"\b(GP|GLP|GDP|ERC|ERP|ESC|NDR|NR|NSS|MSL|MPB|MPE|MPC
 def marca(desc: str, tipo=None):
     """Marca leída en la descripción. Además, el modelo identifica la marca en dos casos:
     generadores C30D6/C150D6 (Cummins) y montacargas GP050VX/ERC045 (Yale)."""
+    if tipo in MARCA_FIJA:        # decisión de Logística: todo elevador y escalera que importa el Grupo es FUJIHD
+        return MARCA_FIJA[tipo]
     d = " " + re.sub(r"[^A-Z0-9\- ]", " ", (desc or "").upper()) + " "
     for nombre, pals in MARCAS:
         if any(re.search(r"(?<![A-Z0-9])" + re.escape(p.strip()) + r"(?![A-Z0-9])", d) for p in pals):
@@ -276,7 +282,7 @@ def _preparar(_clave: str) -> dict:
     d = d[d["Anio"] > 0]
     d["Adm"] = d["Administracion"].astype(str)
     d["Carga"] = d["Tipo_Carga"].astype(str)
-    base = d[["i", "Empresa", "Anio", "Mes", "Adm"]]
+    base = d[["i", "Empresa", "Anio", "Mes", "Adm", "Carga"]]
 
     it = t["Items"].copy()
     it["i"] = it["Declaracion"].astype(str)
@@ -307,16 +313,88 @@ def _preparar(_clave: str) -> dict:
             "anio_min": int(d["Anio"].min())}
 
 
+# ============================== copiar al portapapeles ==============================
+def _plano(h) -> str:
+    return html.unescape(re.sub(r"<[^>]+>", "", str(h))).replace("\t", " ").replace("\n", " ").strip()
+
+
+def _panel_copia(botones=(), campos=(), titulo="", detalle=""):
+    """Un solo iframe con botones "Copiar" y, si hay, una ficha de campos que se copian con un clic.
+    Todo el texto viaja como JSON y se pinta con textContent: nada de lo que venga del Sheet se interpreta
+    como HTML. botones = [(etiqueta, texto)], campos = [(etiqueta, valor)]."""
+    datos = json.dumps({"b": [[e, t] for e, t in botones], "c": [[e, v] for e, v in campos], "t": titulo, "d": detalle},
+                       ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    doc = """<style>
+*{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;color:#0B0B0B;background:transparent}
+.fila{display:flex;flex-wrap:nowrap;overflow-x:auto;gap:8px;align-items:center;margin:2px 0 4px;padding-bottom:6px}
+button{white-space:nowrap;flex:0 0 auto}
+button{font:600 12.5px system-ui,sans-serif;color:#0C447C;background:#EAF2FC;border:1px solid #C9DDF5;border-radius:8px;padding:7px 12px;cursor:pointer}
+button:hover{background:#DCEAFA} button.ok{background:#E6F6EC;border-color:#A9DDBB;color:#1B7F3B}
+.ficha{border:1px solid #D9DCE1;border-radius:10px;background:#fff;padding:14px 18px;margin-bottom:8px}
+.tit{font-size:1.15rem;font-weight:700;color:#0C447C;letter-spacing:-.01em;word-break:break-all}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px 18px;margin-top:12px}
+.c{cursor:pointer;border-radius:6px;padding:3px 5px;margin:-3px -5px} .c:hover{background:#F2F7FD}
+.l{font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#52514E;display:flex;justify-content:space-between}
+.l i{font-style:normal;opacity:0;color:#2A78D6} .c:hover .l i{opacity:1}
+.v{font-size:14px;margin-top:2px;word-break:break-word}
+.det{font-size:12px;color:#52514E;margin-top:12px;border-top:1px solid #ECEDEF;padding-top:8px;word-break:break-word}
+@media(max-width:760px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+</style><div id="r"></div><script>
+const D=%s;
+function copiar(t,el,txt){
+  const fin=()=>{const a=el.dataset.t;el.classList.add('ok');if(el.tagName=='BUTTON')el.textContent='\u2713 Copiado';
+    setTimeout(()=>{el.classList.remove('ok');if(el.tagName=='BUTTON')el.textContent=a},1400)};
+  const viejo=()=>{const x=document.createElement('textarea');x.value=t;x.style.position='fixed';x.style.opacity=0;
+    document.body.appendChild(x);x.select();try{document.execCommand('copy')}catch(e){}document.body.removeChild(x);fin()};
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t).then(fin).catch(viejo)}else{viejo()}
+}
+const r=document.getElementById('r');
+if(D.c.length){
+  const f=document.createElement('div');f.className='ficha';
+  if(D.t){const h=document.createElement('div');h.className='tit';h.textContent=D.t;f.appendChild(h)}
+  const g=document.createElement('div');g.className='grid';
+  D.c.forEach(([e,v])=>{const c=document.createElement('div');c.className='c';c.title='Clic para copiar';
+    const l=document.createElement('div');l.className='l';const a=document.createElement('span');a.textContent=e;
+    const i=document.createElement('i');i.textContent='\u29c9 copiar';l.append(a,i);
+    const x=document.createElement('div');x.className='v';x.textContent=v||'\u2014';c.append(l,x);
+    c.dataset.t='';c.onclick=()=>{copiar(v||'',c)};g.appendChild(c)});
+  f.appendChild(g);
+  if(D.d){const d=document.createElement('div');d.className='det';d.textContent=D.d;f.appendChild(d)}
+  r.appendChild(f);
+}
+const fila=document.createElement('div');fila.className='fila';
+D.b.forEach(([e,t])=>{const b=document.createElement('button');b.textContent='\u29c9 '+e;b.dataset.t=b.textContent;
+  b.onclick=()=>copiar(t,b);fila.appendChild(b)});
+if(D.b.length)r.appendChild(fila);
+function ajusta(){try{window.frameElement.style.height=(Math.ceil(r.getBoundingClientRect().height)+10)+'px'}catch(e){}}
+new ResizeObserver(ajusta).observe(r);ajusta();window.addEventListener('load',ajusta);setTimeout(ajusta,300);setTimeout(ajusta,1200);
+</script>""" % datos
+    st.iframe(doc, height=(300 if campos else 48))
+
+
+def _tsv(df: pd.DataFrame, n=2000) -> str:
+    x = df.head(n).astype(object).where(df.head(n).notna(), "").astype(str).replace({r"[\t\r\n]+": " "}, regex=True)
+    return "\n".join(["\t".join(map(str, x.columns))] + ["\t".join(r) for r in x.values.tolist()])
+
+
+
 # ============================== estilo ==============================
 NAVY, AZ, AZ2, GR, GR2, TX, TX2, LN = "#0C447C", "#2A78D6", "#9EC5F4", "#C9CED6", "#E9ECF0", "#0B0B0B", "#52514E", "#E1E0D9"
 NAR, VER, AMB = "#EB6834", "#1BAF7A", "#EDA100"
 UP, DN = "#1B7F3B", "#B42318"
 FUENTE = "system-ui, -apple-system, Segoe UI, sans-serif"
 _CSS = f"""<style>
-.dsg-cab{{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid {NAVY};padding-bottom:8px;margin:4px 0 12px}}
-.dsg-cab h2{{font-family:{FUENTE};font-size:1.4rem;font-weight:700;color:{TX};margin:0;padding:0}}
-.dsg-cab .sub{{font-size:.8rem;color:{TX2};margin-top:3px}}
-.dsg-cab .meta{{text-align:right;font-size:.72rem;color:{TX2};line-height:1.5}}
+.dsg-cab{{display:flex;justify-content:space-between;align-items:flex-end;gap:18px;background:linear-gradient(115deg,{NAVY} 0%,#1B63B0 100%);
+  border-radius:12px;padding:18px 24px;margin:2px 0 12px;color:#fff}}
+.dsg-cab h2{{font-family:{FUENTE};font-size:1.45rem;font-weight:700;color:#fff !important;margin:0;padding:0;letter-spacing:-.01em}}
+.dsg-cab .sub{{font-size:.8rem;color:#CFE0F5;margin-top:4px}}
+.dsg-cab .meta{{text-align:right;font-size:.72rem;color:#DCE8F7;line-height:1.55}} .dsg-cab .meta b{{color:#fff}}
+.dsg-pag{{margin:14px 0 2px}} .dsg-pag .n{{font-size:.66rem;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:{AZ}}}
+.dsg-pag h3{{font-family:{FUENTE};font-size:1.3rem;font-weight:700;color:{TX};margin:2px 0 0;padding:0;letter-spacing:-.01em}}
+.dsg-pag p{{font-size:.84rem;color:{TX2};margin:2px 0 8px}}
+.dsg-chips{{margin:0 0 4px;min-height:6px}}
+.dsg-chip{{display:inline-block;background:#EAF2FC;color:{NAVY};border:1px solid #C9DDF5;border-radius:999px;padding:2px 11px;font-size:.74rem;margin:2px 6px 2px 0}}
+.dsg-chip b{{font-weight:700}} .dsg-sinf{{font-size:.74rem;color:#898781}}
 .dsg-sec{{font-family:{FUENTE};font-size:1.05rem;font-weight:700;color:{TX};margin:22px 0 2px}}
 .dsg-ssub{{font-size:.8rem;color:{TX2};margin-bottom:10px}}
 .dsg-q{{font-family:{FUENTE};font-size:.98rem;font-weight:650;color:{TX};margin:0}}
@@ -325,10 +403,10 @@ _CSS = f"""<style>
 .dsg-hall{{background:#F7F9FC;border:1px solid #DCE4EE;border-left:4px solid {NAVY};border-radius:8px;padding:14px 18px;margin:12px 0 4px}}
 .dsg-hall .t{{font-size:.68rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:{NAVY};margin-bottom:8px}}
 .dsg-hall ol{{margin:0;padding-left:18px}} .dsg-hall li{{font-size:.86rem;color:{TX};margin:5px 0;line-height:1.45}}
-.dsg-kpis{{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));border:1px solid #D9DCE1;border-radius:10px;background:#fff;overflow:hidden}}
-.dsg-kpi{{padding:14px 18px;border-left:1px solid #E6E8EC}} .dsg-kpi:first-child{{border-left:none}}
+.dsg-kpis{{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}}
+.dsg-kpi{{background:#fff;border:1px solid #D9DCE1;border-top:3px solid {NAVY};border-radius:10px;padding:13px 16px;box-shadow:0 1px 2px rgba(12,68,124,.06)}}
 .dsg-kpi .l{{font-size:.64rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:{TX2}}}
-.dsg-kpi .v{{font-family:{FUENTE};font-size:1.8rem;font-weight:700;color:{NAVY};letter-spacing:-.02em;margin-top:6px;line-height:1.1}}
+.dsg-kpi .v{{font-family:{FUENTE};font-size:1.8rem;font-weight:700;color:{NAVY};letter-spacing:-.02em;margin-top:6px;line-height:1.1;font-variant-numeric:tabular-nums}}
 .dsg-kpi .v small{{font-size:.78rem;font-weight:600;color:{TX2};margin-left:3px}}
 .dsg-kpi .d{{font-size:.74rem;margin-top:5px;color:{TX2}}}
 .dsg-up{{color:{UP};font-weight:700}} .dsg-dn{{color:{DN};font-weight:700}} .dsg-eq{{color:{TX2};font-weight:700}}
@@ -348,6 +426,9 @@ table.dsg-rk .pos{{color:#898781;width:28px}}
 .dsg-ficha{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px 18px;border:1px solid #D9DCE1;border-radius:10px;padding:14px 18px;background:#fff}}
 .dsg-ficha .l{{font-size:.62rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:{TX2}}}
 .dsg-ficha .v{{font-size:.88rem;color:{TX};margin-top:2px;word-break:break-word}}
+@media (max-width:640px){{.st-key-dsg_f1 [data-testid="stHorizontalBlock"],.st-key-dsg_f2 [data-testid="stHorizontalBlock"]{{flex-wrap:wrap !important;gap:.5rem !important}}
+  .st-key-dsg_f1 [data-testid="stColumn"]{{min-width:calc(50% - .5rem) !important;flex:1 1 calc(50% - .5rem) !important}}
+  .st-key-dsg_f2 [data-testid="stColumn"]{{min-width:100% !important}} .dsg-kpi .v{{font-size:1.4rem}} .dsg-cab h2{{font-size:1.15rem}} .dsg-cab{{padding:14px 16px}}}}
 @media (max-width:900px){{.dsg-kpis{{grid-template-columns:repeat(2,1fr)}} .dsg-mult{{grid-template-columns:1fr}}
   .dsg-ficha{{grid-template-columns:repeat(2,1fr)}} .dsg-cab{{display:block}} .dsg-cab .meta{{text-align:left;margin-top:6px}}}}
 </style>"""
@@ -436,7 +517,7 @@ def _graf(fig, h, leyenda=False):
     st.plotly_chart(fig, width="stretch", config=_CFG)
 
 
-def ranking(filas, columnas, n_barra, ancho=110):
+def ranking(filas, columnas, n_barra, ancho=110, copiar=True):
     """columnas = [(clave, título, clase)]; "#" = posición; "_barra" = barra de participación."""
     tope = max((f[n_barra] for f in filas), default=1) or 1
     th = "".join(f'<th class="{c}">{t}</th>' for _, t, c in columnas)
@@ -452,6 +533,14 @@ def ranking(filas, columnas, n_barra, ancho=110):
                 tds.append(f'<td class="{c}">{f[k]}</td>')
         trs.append("<tr>" + "".join(tds) + "</tr>")
     _md(f'<div class="dsg-tw"><table class="dsg-rk"><thead><tr>{th}</tr></thead><tbody>{"".join(trs)}</tbody></table></div>')
+    if copiar:
+        cols, ult = [], ""
+        for k, t, _ in columnas:
+            ult = _plano(t) or ult
+            if k not in ("#", "_barra") and any(_plano(f[k]) for f in filas):
+                cols.append((k, ult))
+        txt = "\n".join(["\t".join(t for _, t in cols)] + ["\t".join(_plano(f[k]) for k, _ in cols) for f in filas])
+        _panel_copia([("Copiar tabla (Excel)", txt)])
 
 
 def kpis(cajas):
@@ -761,6 +850,7 @@ def v_origen(F):
         pregunta("¿De dónde importamos?",
                  f"En {F.act}, <b>{filas[0]['p']}</b> aparece en el {filas[0]['sh']} de las declaraciones; luego "
                  f"{filas[1]['p']} ({filas[1]['sh']}) y {filas[2]['p']} ({filas[2]['sh']})." if len(filas) > 2 else "")
+        _barras_clic(pd.Series({f["p"]: f["n"] for f in filas}), "dsg_paises", "declaraciones")
         ranking(filas, [("#", "#", "l"), ("p", "País", "l nom"), ("_barra", f"{_periodo(F)} {F.act}", "l"), ("b", "", ""),
                         ("sh", "Part.", ""), ("a", f"{_periodo(F)} {F.ant}", ""), ("d", "Variación", ""),
                         ("t", f"{F.anios[0]}–{F.ant}", ""), ("h", "Total", "")], "n", ancho=90)
@@ -799,6 +889,7 @@ def v_origen(F):
         filas = sorted(filas, key=lambda f: -f["n"])[:10]
         pregunta("¿Qué marcas mueven el volumen?",
                  ", ".join(f"{f['m']} ({f['sh']})" for f in filas[:4]) + " son las cuatro principales." if filas else "")
+        _barras_clic(pd.Series({f["m"]: f["n"] for f in filas}), "dsg_marca", "unidades", color=NAR)
         ranking(filas, [("#", "#", "l"), ("m", "Marca", "l nom"), ("cat", "Categoría principal", "l"),
                         ("_barra", f"Unidades {F.anios[0]}–{F.act}", "l"), ("t", "", ""), ("sh", "Part.", ""),
                         ("a", f"{_periodo(F)} {F.ant}", ""), ("b", f"{_periodo(F)} {F.act}", ""),
@@ -877,7 +968,58 @@ def v_logistica(F):
         pie("HC = high cube. Contenedores tal como aparecen en la sección Furgones de cada liquidación.")
 
 
-# ============================== buscador ==============================
+# ============================== gráficas con clic (filtro cruzado) ==============================
+def _barras_clic(serie: pd.Series, filtro: str, unidad: str, color=AZ, alto_fila=30):
+    """Barras horizontales. Un clic en una barra filtra TODO el tablero por ese valor: deja el valor en
+    session_state[filtro] en la siguiente corrida (los widgets ya existen, no se pueden tocar aquí)."""
+    s = serie[serie > 0].sort_values()
+    if s.empty:
+        return
+    actual = st.session_state.get(filtro) or []
+    key = f"dsg_ch_{filtro}_{st.session_state.get('_dsg_gen', 0)}_{zlib.crc32(repr(actual).encode())}"
+    tot = serie.sum() or 1
+    fig = go.Figure(go.Bar(
+        x=s.values, y=list(s.index), orientation="h", marker=dict(color=color, cornerradius=3),
+        text=[f"{v:,.0f} · {v / tot:.0%}" for v in s.values], textposition="outside", cliponaxis=False,
+        textfont=dict(size=11, color=TX2), hovertemplate=f"%{{y}}: %{{x:,.0f}} {unidad}<extra></extra>"))
+    fig.update_xaxes(visible=False, range=[0, s.max() * 1.35])
+    fig.update_yaxes(showgrid=False, tickfont=dict(size=11.5, color=TX), automargin=True)
+    fig.update_layout(**{**_LAYOUT, "margin": dict(t=4, b=4, l=4, r=10), "height": max(110, alto_fila * len(s) + 14)})
+    ev = st.plotly_chart(fig, key=key, on_select="rerun", selection_mode="points", width="stretch", config=_CFG)
+    try:
+        pts = ev["selection"]["points"]
+    except (KeyError, TypeError):
+        pts = []
+    if pts:
+        v = pts[0].get("y")
+        if v is not None and [v] != list(actual):
+            st.session_state["_dsg_pend"] = {filtro: [v]}
+            st.rerun()
+    pie("Clic en una barra para filtrar todo el tablero por ese valor.")
+
+
+def _treemap(F):
+    g = F.eqn.groupby(["Familia", "Tipo"]).Cant.sum().reset_index()
+    g = g[g.Cant > 0]
+    if g.empty:
+        return
+    fam = g.groupby("Familia").Cant.sum()
+    cols = dict(zip([f for f in FAMS if f in fam.index], [AZ, NAR, VER, AMB, "#7A5AF8", NAVY]))
+    ids = list(fam.index) + [f"{a}/{b}" for a, b in zip(g.Familia, g.Tipo)]
+    fig = go.Figure(go.Treemap(
+        ids=ids, labels=list(fam.index) + list(g.Tipo), parents=[""] * len(fam) + list(g.Familia),
+        values=list(fam.values) + list(g.Cant), branchvalues="total", sort=True,
+        marker=dict(colors=[cols.get(f, GR) for f in fam.index] + [cols.get(f, GR) for f in g.Familia],
+                    line=dict(color="#fff", width=2)),
+        texttemplate="<b>%{label}</b><br>%{value:,.0f}", textfont=dict(family=FUENTE, size=13, color="#fff"),
+        
+        hovertemplate="%{label}: %{value:,.0f} unidades<extra></extra>", tiling=dict(pad=3), pathbar=dict(visible=False)))
+    fig.update_layout(**{**_LAYOUT, "margin": dict(t=4, b=4, l=4, r=4), "height": 340},
+                      uniformtext=dict(minsize=10, mode="hide"))
+    st.plotly_chart(fig, width="stretch", config=_CFG)
+
+
+# ============================== buscador de declaraciones ==============================
 _LIMITE_TABLA = 3000
 
 
@@ -896,62 +1038,79 @@ def _indices(_clave: str) -> dict:
             "chasis": pd.Series(v["Chasis"].astype(str).map(_norm_id).values, index=v["i"].values)}
 
 
-def _ficha(d: pd.Series):
-    def campo(etq, col, f=lambda x: x):
+def _unir(s):
+    v = [x for x in dict.fromkeys(s) if isinstance(x, str) and x and x != "Sin dato"]
+    return ", ".join(v[:3]) + (" …" if len(v) > 3 else "")
+
+
+def _por_declaracion(F, it: pd.DataFrame) -> pd.DataFrame:
+    """Una fila por declaración, con lo que trae, para buscar sin abrir ítem por ítem."""
+    g = it.groupby("i", sort=False)
+    primero = it.assign(_o=it.Tipo.isna()).sort_values(["_o", "Item"]).drop_duplicates("i").set_index("i")
+    ag = pd.DataFrame({"Ítems": g.size(), "Partidas": g.Partida.agg(_unir), "Países": g.Pais.agg(_unir),
+                       "Tipos de equipo": g.Tipo.agg(_unir),
+                       "Equipos (unid.)": it.assign(_u=it.Cant.where(it.Tipo.notna(), 0)).groupby("i")._u.sum()})
+    ag["Descripción principal"] = primero.Descripcion.str.replace(" NO APLICA", "", regex=False).str.slice(0, 120)
+    d = F.decl.set_index("i")
+    ag = ag.join(d[["Fecha_Declaracion", "Empresa", "Adm", "Carga", "BL"]], how="inner")
+    ag = ag.rename(columns={"Fecha_Declaracion": "Fecha", "Adm": "Administración", "Carga": "Tipo de carga", "BL": "BL / guía"})
+    ag.index.name = "Declaración"
+    ag = ag.reset_index().sort_values(["Fecha", "Declaración"], ascending=[False, True])
+    return ag[["Declaración", "Fecha", "Empresa", "Administración", "Tipo de carga", "BL / guía", "Ítems", "Partidas", "Países",
+               "Descripción principal", "Tipos de equipo", "Equipos (unid.)"]]
+
+
+def _ficha(F, elegido: str):
+    d = F.decl_todas[F.decl_todas.i == elegido].iloc[0]
+
+    def c(col, f=lambda x: x):
         v = d.get(col, "")
         v = "" if pd.isna(v) else str(v).strip()
-        return f'<div><div class="l">{etq}</div><div class="v">{html.escape(f(v)) if v else "—"}</div></div>'
-    _md('<div class="dsg-ficha">' + "".join([
-        campo("Declaración", "Declaracion"), campo("Empresa", "Empresa"), campo("Fecha de declaración", "Fecha_Declaracion"),
-        campo("Llegada", "Fecha_Llegada"), campo("Administración", "Administracion"), campo("Tipo de carga", "Tipo_Carga"),
-        campo("Despacho", "Despacho"), campo("BL / guía", "BL"), campo("Manifiesto", "Manifiesto"),
-        campo("Consignatario", "Consignatario"), campo("Agencia", "Agencia"),
-        campo("Peso bruto (kg)", "Peso_Bruto_KG", lambda x: f"{float(x):,.2f}" if re.fullmatch(r"[\d.]+", x) else x),
-    ]) + "</div>")
-    det = str(d.get("Detalle_Manifiesto", "") or "").strip()
-    if det:
-        pie(f"Detalle del manifiesto: {html.escape(det)}")
+        return f(v) if v else ""
+    campos = [("Declaración", c("Declaracion")), ("Empresa", c("Empresa")), ("Fecha de declaración", c("Fecha_Declaracion")),
+              ("Llegada", c("Fecha_Llegada")), ("Administración", c("Administracion")), ("Tipo de carga", c("Tipo_Carga")),
+              ("Despacho", c("Despacho")), ("BL / guía", c("BL")), ("Manifiesto", c("Manifiesto")),
+              ("Consignatario", c("Consignatario")), ("Agencia", c("Agencia")),
+              ("Peso bruto (kg)", c("Peso_Bruto_KG", lambda x: f"{float(x):,.2f}" if re.fullmatch(r"[\d.]+", x) else x))]
+    det = c("Detalle_Manifiesto")
+    todos = F.items_todos[F.items_todos.i == elegido]
+    todos = todos.iloc[pd.to_numeric(todos.Item, errors="coerce").argsort(kind="stable")]
+    vista = todos[["Item", "Partida", "Descripcion", "Pais", "Cant", "Unidad", "Tipo", "Marca"]].fillna("").rename(
+        columns={"Item": "Ítem", "Descripcion": "Descripción", "Pais": "País", "Cant": "Cantidad",
+                 "Tipo": "Tipo de equipo"})
+    completa = "\n".join(f"{e}: {v}" for e, v in campos if v) + (f"\nDetalle del manifiesto: {det}" if det else "")
+    completa += "\n\nÍtems:\n" + _tsv(vista)
+    _panel_copia([("Copiar ficha completa", completa), ("Copiar ítems (Excel)", _tsv(vista))], campos,
+                 titulo=f"Declaración {elegido}", detalle=f"Detalle del manifiesto: {det}" if det else "")
+    st.dataframe(vista, hide_index=True, width="stretch", column_config={
+        "Cantidad": st.column_config.NumberColumn(format="%.2f"), "Descripción": st.column_config.TextColumn(width="large")})
+    co = F.cont_todos[F.cont_todos.i == elegido]
+    ve = F.veh[F.veh.i == elegido]
+    a, b = st.columns(2)
+    if len(co):
+        with a:
+            st.caption(f"Contenedores ({len(co)})")
+            st.dataframe(co[[x for x in ("Contenedor", "Tam", "Tipo_Empaque", "Sello_1") if x in co]].rename(
+                columns={"Tam": "Tamaño", "Tipo_Empaque": "Tipo de empaque", "Sello_1": "Sello"}), hide_index=True, width="stretch")
+    if len(ve):
+        with b:
+            st.caption(f"Vehículos ({len(ve)})")
+            st.dataframe(ve[[x for x in ("Chasis", "Anio_Vehiculo", "Marca", "Color", "Tipo") if x in ve]].rename(
+                columns={"Anio_Vehiculo": "Año"}), hide_index=True, width="stretch")
 
 
-def v_buscar(F, clave):
-    _md('<div class="dsg-a">Busca una declaración por su número, BL, contenedor o chasis, o filtra los ítems por partida, '
-        'país de origen y descripción. Los filtros se combinan.</div>')
-    q = st.text_input("Número de declaración, BL, contenedor o chasis", key="dsg_q",
+def p_declaraciones(F, clave):
+    q = st.text_input("Buscar por número de declaración, BL, contenedor o chasis", key="dsg_q",
                       placeholder="10030-IC01-2507-…   ·   MSCU1234567   ·   1T0310LX…")
-    c1, c2, c3, c4 = st.columns([1, 1.4, 1.6, 1])
-    partida = c1.text_input("Partida o capítulo", key="dsg_partida", placeholder="8428.10 · 8428 · 84")
-    paises = c2.multiselect("País de origen", sorted(F.items.Pais.unique()), key="dsg_paises", placeholder="Todos")
-    texto = c3.text_input("La descripción contiene", key="dsg_desc", placeholder="montacargas yale · filtro aceite")
-    tipo = c4.selectbox("Qué trae", ["Todo", "Equipos", "Repuestos", "Otros"], key="dsg_cat_b")
     it = F.items
-    activo = False
     if q.strip():
-        activo = True
         x = _norm_id(q)
-        idx = _indices(clave)
         hits = set()
-        for serie in idx.values():
+        for serie in _indices(clave).values():
             hits |= set(serie.index[serie.str.contains(re.escape(x), regex=True, na=False)])
         it = it[it.i.isin(hits)]
-    if partida.strip():
-        activo = True
-        p = re.sub(r"[^\d]", "", partida)
-        it = it[it.Partida.str.replace(".", "", regex=False).str.startswith(p)]
-    if paises:
-        activo = True
-        it = it[it.Pais.isin(paises)]
-    if texto.strip():
-        activo = True
-        for w in _sin_acentos(texto).split():
-            it = it[it._desc.str.contains(re.escape(w), regex=True, na=False)]
-    if tipo != "Todo":
-        activo = True
-        it = it[it.Cat == tipo]
-    if not activo:
-        pie(f"{len(F.decl):,} declaraciones y {len(F.items):,} ítems disponibles con la empresa y el período elegidos arriba.")
-        return
     if it.empty:
-        st.info("No hay ítems con esos criterios. Prueba con menos filtros o revisa la empresa y el período de arriba.")
+        st.info("No hay declaraciones con esos criterios. Quita algún filtro o revisa la búsqueda.")
         return
     n_decl = it.i.nunique()
     unidades = it[it.Unidad.astype(str).str.startswith("Unid")].Cant.sum()
@@ -960,50 +1119,172 @@ def v_buscar(F, clave):
           ("Unidades", fmt(unidades), "solo ítems medidos en unidades"),
           ("Países de origen", fmt(it.Pais.nunique()), it.Pais.value_counts().index[0]),
           ("Partidas distintas", fmt(it.Partida.nunique()), it.Partida.value_counts().index[0])])
-    fechas = F.decl.set_index("i")["Fecha_Declaracion"]
-    tabla = it.assign(Fecha=it.i.map(fechas)).sort_values(["Fecha", "i", "Item"], ascending=[False, True, True])
-    vista = tabla[["i", "Fecha", "Empresa", "Adm", "Item", "Partida", "Descripcion", "Pais", "Cant", "Unidad", "Tipo"]].rename(
-        columns={"i": "Declaración", "Adm": "Administración", "Item": "Ítem", "Descripcion": "Descripción",
-                 "Pais": "País", "Cant": "Cantidad", "Tipo": "Tipo de equipo"})
-    st.dataframe(vista.head(_LIMITE_TABLA), hide_index=True, width="stretch", height=420,
-                 column_config={"Cantidad": st.column_config.NumberColumn(format="%.2f"),
-                                "Descripción": st.column_config.TextColumn(width="large")})
-    extra = f" Se muestran las primeras {_LIMITE_TABLA:,}; la descarga trae todas." if len(vista) > _LIMITE_TABLA else ""
-    pie(f"{len(vista):,} ítems ordenados del más reciente al más antiguo.{extra}")
-    st.download_button("Descargar resultado (CSV)", vista.to_csv(index=False).encode("utf-8-sig"),
+    F2 = SimpleNamespace(**{**vars(F), "decl": F.decl[F.decl.i.isin(set(it.i))]})
+    por_decl = _por_declaracion(F2, it)
+    vista_items = it.assign(Fecha=it.i.map(F.decl.set_index("i")["Fecha_Declaracion"])).sort_values(
+        ["Fecha", "i", "Item"], ascending=[False, True, True])[
+        ["i", "Fecha", "Empresa", "Adm", "Item", "Partida", "Descripcion", "Pais", "Cant", "Unidad", "Tipo", "Marca"]].rename(
+        columns={"i": "Declaración", "Adm": "Administración", "Item": "Ítem", "Descripcion": "Descripción", "Pais": "País",
+                 "Cant": "Cantidad", "Tipo": "Tipo de equipo"})
+    seccion("Resultados", "Marca una fila (cuadro a la izquierda) para abrir su ficha. Ctrl+C copia las celdas que selecciones.")
+    modo = selector_modo()
+    tabla = por_decl if modo == "Por declaración" else vista_items
+    firma = zlib.crc32(repr((q, modo, len(tabla), str(tabla.iloc[0, 0]))).encode())
+    _panel_copia([(f"Copiar {n_decl:,} número{'s' if n_decl != 1 else ''} de declaración", "\n".join(por_decl["Declaración"])),
+                  ("Copiar la tabla (Excel)", _tsv(tabla))])
+    cfg = {"Cantidad": st.column_config.NumberColumn(format="%.2f"),
+           "Descripción": st.column_config.TextColumn(width="large"),
+           "Descripción principal": st.column_config.TextColumn(width="large"),
+           "Equipos (unid.)": st.column_config.NumberColumn(format="%.0f")}
+    ev = st.dataframe(tabla.head(_LIMITE_TABLA), hide_index=True, width="stretch", height=int(min(420, 40 + 35 * len(tabla))),
+                      column_config=cfg,
+                      key=f"dsg_tbl_{firma}", on_select="rerun", selection_mode="single-row")
+    extra = f" Se muestran las primeras {_LIMITE_TABLA:,}; copiar y descargar traen más." if len(tabla) > _LIMITE_TABLA else ""
+    pie(f"{len(tabla):,} filas, de la más reciente a la más antigua.{extra} Copiar la tabla incluye hasta 2,000 filas; "
+        "la descarga CSV trae todas.")
+    st.download_button("Descargar resultado (CSV)", tabla.to_csv(index=False).encode("utf-8-sig"),
                        file_name="busqueda_declaraciones.csv", mime="text/csv", key="dsg_csv")
-
-    seccion("Ver una declaración", "Encabezado, ítems, contenedores y vehículos tal como están en la liquidación (sin montos)")
-    opciones = list(dict.fromkeys(tabla.i))
-    elegido = st.selectbox("Declaración", opciones, key="dsg_ver",
-                           format_func=lambda d: f"{d} · {fechas.get(d, '')} · {tabla[tabla.i == d].Empresa.iloc[0]}")
+    try:
+        filas = list(ev["selection"]["rows"])
+    except (KeyError, TypeError):
+        filas = []
+    elegido = str(tabla.iloc[filas[0]]["Declaración"]) if filas and filas[0] < len(tabla) else (
+        str(por_decl.iloc[0]["Declaración"]) if n_decl == 1 else None)
     if elegido:
-        d = F.decl[F.decl.i == elegido].iloc[0]
-        _ficha(d)
-        todos = F.items[F.items.i == elegido].sort_values("Item")
-        st.dataframe(todos[["Item", "Partida", "Descripcion", "Pais", "Cant", "Unidad", "Tipo", "Marca"]].rename(
-            columns={"Item": "Ítem", "Descripcion": "Descripción", "Pais": "País", "Cant": "Cantidad",
-                     "Tipo": "Tipo de equipo"}), hide_index=True, width="stretch",
-            column_config={"Cantidad": st.column_config.NumberColumn(format="%.2f")})
-        co = F.cont_todos[F.cont_todos.i == elegido]
-        ve = F.veh[F.veh.i == elegido]
-        a, b = st.columns(2)
-        if len(co):
-            with a:
-                st.caption(f"Contenedores ({len(co)})")
-                st.dataframe(co[[c for c in ("Contenedor", "Tam", "Tipo_Empaque", "Sello_1") if c in co]].rename(
-                    columns={"Tam": "Tamaño", "Tipo_Empaque": "Tipo de empaque", "Sello_1": "Sello"}), hide_index=True,
-                    width="stretch")
-        if len(ve):
-            with b:
-                st.caption(f"Vehículos ({len(ve)})")
-                st.dataframe(ve[[c for c in ("Chasis", "Anio_Vehiculo", "Marca", "Color", "Tipo") if c in ve]].rename(
-                    columns={"Anio_Vehiculo": "Año"}), hide_index=True, width="stretch")
+        seccion("Ficha de la declaración", "Encabezado, ítems, contenedores y vehículos tal como están en la liquidación (sin montos)")
+        _ficha(F, elegido)
 
 
-# ============================== panel ==============================
-VISTAS = ["Panorama", "Qué importamos", "Una categoría a fondo", "Origen y marcas", "Cómo y cuándo llega",
-          "Buscar declaración"]
+def selector_modo():
+    from ui_componentes import selector_horizontal
+    return selector_horizontal("Ver por", ["Por declaración", "Por ítem"], key="dsg_modo", ancho="content")
+
+
+# ============================== páginas ==============================
+PAGINAS = ["1 · Resumen", "2 · Qué importamos", "3 · Origen y logística", "4 · Declaraciones"]
+_TEXTO_PAG = [
+    ("¿Cómo vamos?", "Volumen, ritmo y mezcla de lo que importa el Grupo, frente a años anteriores."),
+    ("¿Qué traemos?", "Las seis categorías de equipo, los tipos que las componen y las marcas."),
+    ("¿De dónde y cómo llega?", "Países de origen, marcas, aduanas, tipo de carga y meses de más movimiento."),
+    ("La evidencia", "Cada declaración detrás de los números: busca, filtra, abre la ficha y copia lo que necesites."),
+]
+
+
+def p_resumen(F, clave):
+    v_panorama(F)
+
+
+def p_que(F, clave):
+    seccion("Qué hay dentro de cada categoría", f"Unidades declaradas desde {F.anios[0]} · tamaño = unidades")
+    with st.container(border=True):
+        _treemap(F)
+    v_que(F)
+    seccion("A fondo: una categoría", "Evolución, tipos, marcas y países de la categoría que elijas")
+    v_categoria(F)
+
+
+def p_origen(F, clave):
+    v_origen(F)
+    v_logistica(F)
+
+
+PAGINA_FN = [p_resumen, p_que, p_origen, p_declaraciones]
+_DEFAULTS = {"dsg_emp": "Todo el Grupo", "dsg_adm": [], "dsg_carga": [], "dsg_trae": "Todo", "dsg_fam": [],
+             "dsg_marca": [], "dsg_paises": [], "dsg_partida": "", "dsg_desc": "", "dsg_q": ""}
+
+
+def _limpiar():
+    for k, v in _DEFAULTS.items():
+        st.session_state[k] = v if not isinstance(v, list) else []
+    st.session_state["_dsg_gen"] = st.session_state.get("_dsg_gen", 0) + 1
+
+
+def _aplicar_pendiente():
+    """Cambios pedidos por un clic en una gráfica o por «Siguiente»: se aplican antes de crear los widgets."""
+    for k, v in (st.session_state.pop("_dsg_pend", None) or {}).items():
+        st.session_state[k] = v
+
+
+def _filtros(P, pagina_actual: str) -> dict:
+    d, it = P["decl"], P["items"]
+    act = P["act"]
+    anios = list(range(P["anio_min"], act + 1))
+    cont1 = st.container(key="dsg_f1")
+    c = cont1.columns(5)
+    f = {"empresa": c[0].selectbox("Empresa", ["Todo el Grupo"] + EMPRESAS, key="dsg_emp"),
+         "desde": c[1].selectbox("Desde", anios[:-2] or anios, key="dsg_desde", format_func=lambda y: f"Desde {y}"),
+         "adm": c[2].multiselect("Administración", sorted(d.Adm.unique()), key="dsg_adm", placeholder="Todas"),
+         "carga": c[3].multiselect("Tipo de carga", sorted(d.Carga.unique()), key="dsg_carga", placeholder="Todos"),
+         "trae": c[4].selectbox("Qué trae", ["Todo", "Equipos", "Repuestos", "Otros"], key="dsg_trae")}
+    marcas = sorted(m for m in it.Marca.dropna().unique())
+    sin_estado = [k for k in ("dsg_fam", "dsg_marca", "dsg_paises", "dsg_partida", "dsg_desc") if st.session_state.get(k)]
+    with st.expander("Más filtros: categoría, marca, país, partida y descripción",
+                     expanded=bool(sin_estado) or pagina_actual == PAGINAS[3]):
+        c = st.container(key="dsg_f2").columns([1.2, 1.2, 1.6, 1, 1.6])
+        f["fam"] = c[0].multiselect("Categoría de equipo", FAMS + ["Energía solar"], key="dsg_fam", placeholder="Todas")
+        f["marca"] = c[1].multiselect("Marca", marcas, key="dsg_marca", placeholder="Todas")
+        f["paises"] = c[2].multiselect("País de origen", sorted(it.Pais.unique()), key="dsg_paises", placeholder="Todos")
+        f["partida"] = c[3].text_input("Partida o capítulo", key="dsg_partida", placeholder="8428.10 · 8428 · 84")
+        f["texto"] = c[4].text_input("La descripción contiene", key="dsg_desc", placeholder="montacargas yale · filtro")
+    return f
+
+
+def _chips(f: dict) -> list:
+    out = []
+    if f["empresa"] != "Todo el Grupo":
+        out.append(("Empresa", f["empresa"]))
+    for k, e in (("adm", "Administración"), ("carga", "Carga"), ("fam", "Categoría"), ("marca", "Marca"), ("paises", "País")):
+        if f[k]:
+            out.append((e, ", ".join(f[k])))
+    if f["trae"] != "Todo":
+        out.append(("Trae", f["trae"]))
+    if f["partida"].strip():
+        out.append(("Partida", f["partida"].strip()))
+    if f["texto"].strip():
+        out.append(("Descripción", f["texto"].strip()))
+    return out
+
+
+def _filtrar(P, f: dict):
+    """Filtros de Power BI: los de declaración (empresa, aduana, carga, año) recortan todo; los de ítem (categoría,
+    marca, país, partida, descripción, qué trae) recortan los ítems y dejan solo las declaraciones que los traen."""
+    def base(df):
+        if f["empresa"] != "Todo el Grupo":
+            df = df[df.Empresa == f["empresa"]]
+        df = df[df.Anio >= f["desde"]]
+        if f["adm"]:
+            df = df[df.Adm.isin(f["adm"])]
+        if f["carga"]:
+            df = df[df.Carga.isin(f["carga"])]
+        return df
+    d, it, co = base(P["decl"]), base(P["items"]), base(P["cont"])
+    de_item = False
+    if f["trae"] != "Todo":
+        it, de_item = it[it.Cat == f["trae"]], True
+    if f["fam"]:
+        it, de_item = it[it.Familia.isin(f["fam"])], True
+    if f["marca"]:
+        it, de_item = it[it.Marca.isin(f["marca"])], True
+    if f["paises"]:
+        it, de_item = it[it.Pais.isin(f["paises"])], True
+    if f["partida"].strip():
+        p = re.sub(r"[^\d]", "", f["partida"])
+        it, de_item = it[it.Partida.str.replace(".", "", regex=False).str.startswith(p)], True
+    if f["texto"].strip():
+        de_item = True
+        for w in _sin_acentos(f["texto"]).split():
+            it = it[it._desc.str.contains(re.escape(w), regex=True, na=False)]
+    if de_item:
+        ids = set(it.i)
+        d, co = d[d.i.isin(ids)], co[co.i.isin(ids)]
+    eq = it[it.Tipo.notna()]
+    act = P["act"]
+    desde = f["desde"]
+    return SimpleNamespace(
+        decl=d, items=it, eq=eq, eqn=eq[eq.Familia != "Energía solar"],
+        cats=it[["i", "Cat", "Pais", "Empresa", "Anio", "Mes"]].drop_duplicates(["i", "Cat", "Pais"]),
+        cont=co, cont_todos=P["cont"], veh=P["veh"], decl_todas=P["decl"], items_todos=P["items"], act=act, ant=act - 1,
+        corte=P["corte"], anios=list(range(desde, act + 1)), cerrados=list(range(desde, act)))
 
 
 def panel_declaraciones(es_admin: bool = False):
@@ -1017,37 +1298,38 @@ def panel_declaraciones(es_admin: bool = False):
     P = _preparar(clave)
     d, it = P["decl"], P["items"]
     act, corte = P["act"], P["corte"]
+    _aplicar_pendiente()
     parcial = (f" · {MES[P['parcial'][0]]} {act} incompleto ({P['parcial'][1]} declaración"
                f"{'es' if P['parcial'][1] != 1 else ''}), fuera de las comparaciones" if P["parcial"] else "")
     _md(f'<div class="dsg-cab"><div><h2>Comportamiento de las importaciones</h2><div class="sub">Grupo Antillana · '
         f'declaraciones de importación SIGA · sin montos</div></div><div class="meta">Período: <b>{MES[1]} '
         f'{P["anio_min"]} – {MES[corte]} {act}</b>{parcial}<br>{len(d):,} declaraciones · {len(it):,} ítems<br>'
         f'Comparaciones: ene–{MES[corte]} de cada año</div></div>')
-    c1, c2, c3 = st.columns([3.6, 1, 1])
-    with c1:
-        vista = selector_horizontal("Vista", VISTAS, key="dsg_vista", ancho="content")
-    empresa = c2.selectbox("Empresa", ["Todo el Grupo"] + EMPRESAS, key="dsg_emp", label_visibility="collapsed")
-    anios_todos = list(range(P["anio_min"], act + 1))
-    desde = c3.selectbox("Desde", anios_todos[:-2] or anios_todos, key="dsg_desde", label_visibility="collapsed",
-                         format_func=lambda y: f"Desde {y}")
-
-    def filtra(df):
-        if empresa != "Todo el Grupo":
-            df = df[df.Empresa == empresa]
-        return df[df.Anio >= desde]
-
-    items = filtra(it)
-    eq = items[items.Tipo.notna()]
-    F = SimpleNamespace(
-        decl=filtra(d), items=items, eq=eq, eqn=eq[eq.Familia != "Energía solar"],
-        cats=items[["i", "Cat", "Pais", "Empresa", "Anio", "Mes"]].drop_duplicates(["i", "Cat", "Pais"]),
-        cont=filtra(P["cont"]), cont_todos=P["cont"], veh=P["veh"], act=act, ant=act - 1, corte=corte,
-        anios=list(range(desde, act + 1)), cerrados=list(range(desde, act)))
+    pagina = selector_horizontal("Página", PAGINAS, key="dsg_pagina", ancho="content")
+    n = PAGINAS.index(pagina)
+    f = _filtros(P, pagina)
+    chips = _chips(f)
+    a, b = st.columns([5, 1])
+    a.markdown('<div class="dsg-chips">' + ("".join(f'<span class="dsg-chip">{e}: <b>{html.escape(v)}</b></span>' for e, v in chips)
+                                           or '<span class="dsg-sinf">Sin filtros: se ve todo el Grupo.</span>') + "</div>",
+               unsafe_allow_html=True)
+    if chips:
+        b.button("Limpiar filtros", key="dsg_limpiar", on_click=_limpiar, width="stretch")
+    F = _filtrar(P, f)
+    q, bajada = _TEXTO_PAG[n]
+    _md(f'<div class="dsg-pag"><div class="n">Página {n + 1} de {len(PAGINAS)}</div><h3>{q}</h3><p>{bajada}</p></div>')
     if F.decl.empty or len(F.cerrados) < 2:
-        st.info("No hay datos suficientes con esa empresa y ese período.")
-        return
-    {"Panorama": v_panorama, "Qué importamos": v_que, "Una categoría a fondo": v_categoria,
-     "Origen y marcas": v_origen, "Cómo y cuándo llega": v_logistica}.get(vista, lambda F: v_buscar(F, clave))(F)
+        st.info("No hay declaraciones con esos filtros. Quita alguno con «Limpiar filtros».")
+    else:
+        try:
+            PAGINA_FN[n](F, clave)
+        except (IndexError, KeyError, ValueError, ZeroDivisionError):
+            logging.getLogger(__name__).exception("Declaraciones: página %s con filtros %s", pagina, chips)
+            st.info("Con esta combinación de filtros no hay datos suficientes para esta página. "
+                    "Amplía los filtros o usa «Limpiar filtros».")
+    if n < len(PAGINAS) - 1 and st.button(f"Siguiente: {PAGINAS[n + 1]} →", key="dsg_sig"):
+        st.session_state["_dsg_pend"] = {"dsg_pagina": PAGINAS[n + 1]}
+        st.rerun()
     st.divider()
     a, b = st.columns([4, 1])
     a.caption(f"Datos del Sheet del histórico, leídos {r['hora']:%d/%m/%Y %H:%M}. Se vuelven a leer una vez al día. "

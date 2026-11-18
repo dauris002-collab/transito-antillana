@@ -9,6 +9,7 @@ Repo PÚBLICO: aquí no van credenciales, PINs, correos de cuentas de servicio n
 
 App Streamlit (v5.0 [L]) sobre un Google Sheet vía gspread. Secciones: Dashboard (tránsito), Analítica (solo lectura), Histórico, Estatus de Pago y, solo para admin, Agregar, Editar, Carga masiva y Herramientas.
 Despliegue: Streamlit Community Cloud, gratis, rama `main` [D]. No hay README.
+- OJO (17 nov 2026): al subir a `main`, Community Cloud recarga los módulos cambiados en caliente y puede quedarse con la versión VIEJA de `sheets_io.py` en memoria. Si un módulo nuevo importa nombres nuevos de `sheets_io`, la app cae con ImportError hasta reiniciarla: después de un push así, Reboot desde share.streamlit.io (pasó con la v5.15, ~4 min caída).
 
 ## Capas (los imports solo van hacia abajo) [L]
 

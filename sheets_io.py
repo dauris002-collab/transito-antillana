@@ -2752,3 +2752,89 @@ def sincronizar_pagos_con_transito(activos: pd.DataFrame, historico: pd.DataFram
         filas = [_fila_desde_dict(headers, n) for n in nuevas]
         _con_reintento(lambda: ws.append_rows(filas, value_input_option="RAW"))
         return True, f"{len(nuevas)} expediente(s) agregado(s) a Pagos desde tránsito."
+
+
+# --- Histórico de declaraciones SIGA (Sheet aparte, solo lectura) ------------
+# Sheet independiente con su propio secret HISTORICO_SHEET_ID (decisión #36). Lo llena
+# Logística una vez al mes importando el Excel que genera generar_historico_plataforma.py
+# a partir de los PDF de liquidación; NO trae montos. Se lee con su propia llamada y una
+# caché de 24 h: son ~90.000 filas y no cambian durante el mes. Un fallo aquí no toca
+# Tránsito, Pagos ni Taller.
+PESTANAS_HISTORICO = {
+    "Declaraciones": ["Declaracion", "Empresa", "Anio", "Mes", "Fecha_Declaracion", "Fecha_Llegada",
+                      "Administracion", "Tipo_Carga", "BL"],
+    "Items": ["Declaracion", "Item", "Partida", "Descripcion", "Unidad", "Pais_Origen", "Cantidad"],
+    "Contenedores": ["Declaracion", "Contenedor", "Tamano_Pies", "High_Cube"],
+    "Vehiculos": ["Declaracion", "Chasis"],
+}
+TTL_HISTORICO = 24 * 3600
+
+
+def historico_configurado() -> bool:
+    """True si existe el secret HISTORICO_SHEET_ID. Sin él, Analítica se ve como siempre."""
+    try:
+        return bool(str(st.secrets.get("HISTORICO_SHEET_ID", "") or "").strip())
+    except Exception:
+        return False
+
+
+@st.cache_resource
+def get_spreadsheet_historico():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
+    return gspread.authorize(creds).open_by_key(str(st.secrets["HISTORICO_SHEET_ID"]).strip())
+
+
+def _mensaje_historico(e) -> str:
+    codigo = _codigo_api(e)
+    if codigo == 403:
+        return ("El Sheet del histórico de declaraciones rechazó el acceso. Verifica que esté compartido "
+                "con la cuenta de servicio de la app.")
+    if codigo == 404:
+        return "No se encontró el Sheet del histórico. Verifica el ID en el secret HISTORICO_SHEET_ID."
+    if codigo == 400:
+        return ("Falta una pestaña en el Sheet del histórico. Debe tener: "
+                + ", ".join(PESTANAS_HISTORICO) + ".")
+    if codigo == 429:
+        return "Google Sheets está limitando las peticiones. Espera un minuto y vuelve a abrir la sección."
+    return f"Google Sheets no respondió al leer el histórico de declaraciones ({e})."
+
+
+@st.cache_data(ttl=TTL_HISTORICO, show_spinner="Cargando el histórico de declaraciones (una vez al día)…")
+def _cargar_historico_remoto() -> dict:
+    """UNA llamada a la API para las cuatro pestañas. No atrapa errores para que el fallo
+    no quede cacheado. Números sin formato; fechas como texto (el Excel las trae aaaa-mm-dd)."""
+    try:
+        ss = get_spreadsheet_historico()
+        resp = ss.values_batch_get(list(PESTANAS_HISTORICO),
+                                   params={"valueRenderOption": "UNFORMATTED_VALUE",
+                                           "dateTimeRenderOption": "FORMATTED_STRING"})
+    except gspread.exceptions.APIError as e:
+        raise RuntimeError(_mensaje_historico(e)) from e
+    except gspread.exceptions.SpreadsheetNotFound as e:
+        raise RuntimeError("No se encontró el Sheet del histórico o no está compartido con la cuenta de "
+                           "servicio de la app. Verifica el ID en HISTORICO_SHEET_ID.") from e
+    tablas, faltan = {}, []
+    for nombre, rango in zip(PESTANAS_HISTORICO, resp.get("valueRanges", [])):
+        valores = rango.get("values", [])
+        cab = [str(c).strip() for c in (valores[0] if valores else [])]
+        filas = [f + [""] * (len(cab) - len(f)) for f in valores[1:]]
+        df = pd.DataFrame([f[:len(cab)] for f in filas], columns=cab)
+        faltan += [f"{nombre}.{c}" for c in PESTANAS_HISTORICO[nombre] if c not in df.columns]
+        tablas[nombre] = df
+    if faltan:
+        raise RuntimeError("Al Sheet del histórico le faltan columnas: " + ", ".join(faltan)
+                           + ". Vuelve a importar el Excel que genera el script.")
+    return {"tablas": tablas, "hora": ahora_rd()}
+
+
+def cargar_historico() -> dict:
+    """Lectura cacheada del histórico. El fracaso vuelve en "error" y nunca sube como excepción."""
+    try:
+        return _cargar_historico_remoto()
+    except Exception as e:  # noqa: BLE001 - se muestra en la sección, no tumba la app
+        return {"tablas": None, "hora": None, "error": str(e)}
+
+
+def invalidar_historico():
+    _cargar_historico_remoto.clear()

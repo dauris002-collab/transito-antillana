@@ -38,6 +38,12 @@ Columnas: la fuente de verdad son las constantes de `sheets_io.py` (`REQUIRED_CO
 - Pagos: una fila por BL; 13 conceptos con moneda fija por columna; además `Empresa`, `Estado_Pago`, `Prioridad`, `Fecha_SinMora`, `Fecha_PagoRealizado`, `PagoRealizado_USD/DOP`, `Llegada`.
 - [?] Fila 1 real de cada pestaña: no se puede leer desde el código. Pegarla aquí.
 
+## Sheet del histórico de declaraciones (decisión #36)
+
+- Sheet aparte, solo lectura (cuenta de servicio como Lector). Pestañas `Declaraciones`, `Items`, `Contenedores`, `Vehiculos`, `Control`; columnas mínimas en `sheets_io.PESTANAS_HISTORICO`.
+- Actualización mensual: correr `scripts/generar_historico_plataforma.py` en la carpeta de los PDF (`pip install pymupdf openpyxl`), luego en el Sheet: Archivo → Importar → Subir el Excel → «Reemplazar hoja de cálculo». En la app, admin: «↻ Recargar histórico» (o esperar 24 h).
+- Una sola llamada `values_batch_get` (4 pestañas, ~990.000 celdas) con caché de 24 h.
+
 ## Lectura y escritura [L]
 
 - Lectura: UNA llamada `values_batch_get` trae todas las pestañas (`A1:AZ20000`), con caché de 45 s (`CACHE_TTL`). Un error de lectura no se cachea. Tope de 20.000 filas por pestaña, con aviso.
@@ -49,7 +55,7 @@ Columnas: la fuente de verdad son las constantes de `sheets_io.py` (`REQUIRED_CO
 ## Acceso [L]
 
 - Login por PIN de 4 dígitos. Roles `admin` (8 secciones) y `viewer` (Dashboard, Analítica, Histórico, Estatus de Pago).
-- Secrets esperados (solo nombres): `gcp_service_account`, `SHEET_ID`, tabla `pins` (por PIN: nombre y rol; respaldo: `ADMIN_PIN` / `VIEWER_PIN`), `sla` (opcional: `llegada_a_puerto`, `recepcion_y_declaracion`, `retraso`).
+- Secrets esperados (solo nombres): `gcp_service_account`, `SHEET_ID`, `TALLER_SHEET_ID` (opcional), `HISTORICO_SHEET_ID` (opcional, decisión #36), tabla `pins` (por PIN: nombre y rol; respaldo: `ADMIN_PIN` / `VIEWER_PIN`), `sla` (opcional: `llegada_a_puerto`, `recepcion_y_declaracion`, `retraso`).
 - Sesión: token en la URL cuyo contenido vive en el servidor, atado a una huella del navegador. Vida 120 min (admin) / 720 min (viewer), con ventana deslizante.
 - Sin bloqueo por intentos fallidos, solo 1 s de espera por intento (ver DECISIONS.md).
 

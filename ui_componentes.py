@@ -44,7 +44,7 @@ from logica import (
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------------------------
-VERSION_APP = "5.14"
+VERSION_APP = "5.15"
 
 
 VISTA_EN_PROCESO_PUERTO = "Puerto/Aeropuerto · Estatus"

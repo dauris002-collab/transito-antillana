@@ -92,6 +92,8 @@ from vistas_admin import (
 )
 from pagos import panel_pagos
 from analitica import panel_analitica
+from declaraciones import panel_declaraciones
+from sheets_io import historico_configurado
 
 
 st.set_page_config(
@@ -332,7 +334,17 @@ def main():
     if seccion == "Dashboard":
         mostrar_dashboard(datos)
     elif seccion == "Analítica":
-        panel_analitica(datos)
+        # Con el Sheet del histórico configurado, Analítica tiene dos vistas (decisión #36).
+        # Sin el secret HISTORICO_SHEET_ID se ve exactamente como antes.
+        if historico_configurado():
+            fuente = selector_horizontal("Analítica de", ["Embarques en tránsito", "Declaraciones SIGA"],
+                                         key="analitica_fuente", ancho="content")
+            if fuente == "Declaraciones SIGA":
+                panel_declaraciones(es_admin)
+            else:
+                panel_analitica(datos)
+        else:
+            panel_analitica(datos)
     elif seccion == "Agregar":
         form_alta_manual(datos)
     elif seccion == "Editar":

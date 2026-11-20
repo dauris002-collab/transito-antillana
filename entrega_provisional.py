@@ -33,7 +33,6 @@ Pagos.
 from __future__ import annotations
 
 from html import escape as _esc
-from datetime import date
 from numbers import Real
 
 import gspread
@@ -271,23 +270,6 @@ def dias_de_retraso(limite, pago, hoy):
     return (hoy - limite).days
 
 
-def _fecha_ep(valor):
-    """Como `parsear_fecha`, pero un TEXTO ambiguo (día y mes ambos <= 12, p. ej. «12/02/2026») se lee
-    mes/día, igual que el Sheet (configuración regional US): es lo que Sheets haría al teclearlo, y
-    así coincide con las fechas reales de la misma pestaña. Con un número > 12 no hay duda y no cambia
-    nada: «26/11/2026» es 26 nov. Seriales, fechas reales, ISO y mes en letras no cambian."""
-    f = parsear_fecha(valor)
-    if f is not None and isinstance(valor, str):
-        t = sio._interpretar_tokens(sio._tokenizar_fecha(valor.strip()))
-        if t and t[3]:                       # ambigua: parsear_fecha asumió día/mes
-            dia, mes, anio, _ = t
-            try:
-                return date(anio, dia, mes)  # intercambiados: el primer número es el MES
-            except ValueError:
-                return f
-    return f
-
-
 def enriquecer_ep(df: pd.DataFrame, hoy):
     """Devuelve (DataFrame limpio, avisos sobre los datos del Sheet)."""
     filas, avisos, vistas = [], [], {}
@@ -298,7 +280,7 @@ def enriquecer_ep(df: pd.DataFrame, hoy):
             continue  # fila preparada y todavía en blanco
         n = int(r["FilaSheet"])
         lim_crudo, pag_crudo = _plano(r.get(COL_LIMITE)), _plano(r.get(COL_PAGADO))
-        limite, pago = _fecha_ep(lim_crudo), _fecha_ep(pag_crudo)
+        limite, pago = parsear_fecha(lim_crudo), parsear_fecha(pag_crudo)
         if limite is None:
             avisos.append(f"Fila {n}: " + (f"fecha de vencimiento '{_texto(lim_crudo)}' no válida; no se cuentan días."
                                            if _texto(lim_crudo) else "sin fecha de vencimiento; no se cuentan días."))
@@ -313,7 +295,7 @@ def enriquecer_ep(df: pd.DataFrame, hoy):
         else:
             vistas[decl] = n
         llegada_crudo = _plano(r.get(COL_LLEGADA))
-        llegada = _fecha_ep(llegada_crudo)
+        llegada = parsear_fecha(llegada_crudo)
         if llegada is None and _texto(llegada_crudo):
             avisos.append(f"Fila {n}: llegada '{_texto(llegada_crudo)}' no válida.")
         filas.append({"Fila": n, "Empresa": EMPRESA_ANTILLANA, "Declaracion": decl, "BL": bl,
@@ -383,6 +365,11 @@ def _fd(d) -> str:
     return "—" if d is None or pd.isna(d) else f"{d.day:02d} {MESES_ES_CORTO[d.month]} {d.year}"
 
 
+def _fn(d) -> str:
+    """Fecha de vencimiento / pago en número: 26/11/2026 (como se escribe en el Sheet)."""
+    return "—" if d is None or pd.isna(d) else f"{d.day:02d}/{d.month:02d}/{d.year}"
+
+
 def _dop(x) -> str:
     return "—" if x is None or pd.isna(x) else f"RD$ {x:,.2f}"
 
@@ -407,7 +394,7 @@ def _tabla_pendientes(df: pd.DataFrame) -> str:
     for r in df.itertuples():
         dias = "" if pd.isna(r.Dias) else int(r.Dias)
         celdas = [_celda(r.Empresa), _celda(r.Declaracion), _celda(r.BL), _celda(r.Descripcion),
-                  _celda(_fd(r.Limite) if _hay(r.Limite) else ""),
+                  _celda(_fn(r.Limite) if _hay(r.Limite) else ""),
                   _celda(dias, "rojo" if _rojo(r.Dias) else "d"),
                   _celda(_dop(r.DOP) if not pd.isna(r.DOP) else "")]
         filas.append("<tr>" + "".join(celdas) + "</tr>")
@@ -428,10 +415,10 @@ def _tarjeta(r) -> str:
     totales = [
         f'<div><span class="ep-etq">{"Monto pagado RD$" if pagado else "Total a pagar RD$"}</span>'
         f'<span class="ep-val">{_dop(r.DOP)}</span></div>',
-        f'<div><span class="ep-etq">Fecha de vencimiento</span><span class="ep-val f">{_fd(r.Limite)}</span></div>',
+        f'<div><span class="ep-etq">Fecha de vencimiento</span><span class="ep-val f">{_fn(r.Limite)}</span></div>',
     ]
     if pagado:
-        totales.append(f'<div><span class="ep-etq">Pagado el</span><span class="ep-val f">{_fd(r.Pago)}</span></div>')
+        totales.append(f'<div><span class="ep-etq">Pagado el</span><span class="ep-val f">{_fn(r.Pago)}</span></div>')
     totales.append(f'<div><span class="ep-etq">Días de retraso</span><span class="ep-val{clase_dias}">{dias}</span></div>')
     estado = ('<span class="ep-estado" style="background:#2E7D32;">Pagado</span>' if pagado
               else '<span class="ep-estado" style="background:#B45309;">Pendiente</span>')

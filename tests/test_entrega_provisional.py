@@ -256,13 +256,16 @@ def test_en_pantalla_dice_fecha_de_vencimiento_y_el_sheet_acepta_ese_encabezado(
     assert ep._canonizar_encabezados(["Fecha de Vencimiento"]) == [ep.COL_LIMITE]
 
 
-def test_texto_ambiguo_se_lee_mes_dia_y_el_claro_no_cambia():
-    assert ep._fecha_ep("12/02/2026") == date(2026, 12, 2)
-    assert ep._fecha_ep("01/05/2027") == date(2027, 1, 5)
-    assert ep._fecha_ep("01/12/2027") == date(2027, 1, 12)
-    assert ep._fecha_ep("26/11/2026") == date(2026, 11, 26)
-    assert ep._fecha_ep("17/10/2026") == date(2026, 10, 17)
-    assert ep._fecha_ep("12-dic-2026") == date(2026, 12, 12)
-    assert ep._fecha_ep("2026-02-12") == date(2026, 2, 12)
-    assert ep._fecha_ep(serial(date(2026, 12, 2))) == date(2026, 12, 2)
-    assert ep._fecha_ep("") is None and ep._fecha_ep("basura") is None
+def test_vencimiento_en_pantalla_como_numero_y_texto_dia_mes(libros):
+    assert ep._fn(date(2026, 11, 26)) == "26/11/2026" and ep._fn(None) == "—"
+    filas = [ep.COLUMNAS_EP,
+             ["Antillana Comercial", "D-1", "BL-1", "GRÚA", 1, "26/10/2026", "12/02/2026", 3159249.26, ""],
+             ["Antillana Comercial", "D-2", "BL-2", "X", 1, "", "01/05/2027", 100, ""],
+             ["Antillana Comercial", "D-3", "BL-3", "Y", 1, "", "26/11/2026", 100, ""]]
+    libros.LIBRO.agregar(ep.NOMBRE_EP, filas)
+    at = _ir("1111")
+    sin_errores(at)
+    html = _html(at)
+    for esperado in ("12/02/2026", "01/05/2027", "26/11/2026"):
+        assert esperado in html, esperado
+    assert "26 nov 2026" not in html and "12 feb 2026" not in html

@@ -33,7 +33,6 @@ Pagos.
 from __future__ import annotations
 
 from html import escape as _esc
-from datetime import date
 from numbers import Real
 
 import gspread
@@ -271,23 +270,6 @@ def dias_de_retraso(limite, pago, hoy):
     return (hoy - limite).days
 
 
-def _fecha_ep(valor):
-    """Como `parsear_fecha`, pero un TEXTO ambiguo (día y mes ambos <= 12, p. ej. «12/02/2026») se lee
-    mes/día, igual que el Sheet (configuración regional US): es lo que Sheets haría al teclearlo, y
-    así coincide con las fechas reales de la misma pestaña. Con un número > 12 no hay duda y no cambia
-    nada: «26/11/2026» es 26 nov. Seriales, fechas reales, ISO y mes en letras no cambian."""
-    f = parsear_fecha(valor)
-    if f is not None and isinstance(valor, str):
-        t = sio._interpretar_tokens(sio._tokenizar_fecha(valor.strip()))
-        if t and t[3]:                       # ambigua: parsear_fecha asumió día/mes
-            dia, mes, anio, _ = t
-            try:
-                return date(anio, dia, mes)  # intercambiados: el primer número es el MES
-            except ValueError:
-                return f
-    return f
-
-
 def enriquecer_ep(df: pd.DataFrame, hoy):
     """Devuelve (DataFrame limpio, avisos sobre los datos del Sheet)."""
     filas, avisos, vistas = [], [], {}
@@ -298,7 +280,7 @@ def enriquecer_ep(df: pd.DataFrame, hoy):
             continue  # fila preparada y todavía en blanco
         n = int(r["FilaSheet"])
         lim_crudo, pag_crudo = _plano(r.get(COL_LIMITE)), _plano(r.get(COL_PAGADO))
-        limite, pago = _fecha_ep(lim_crudo), _fecha_ep(pag_crudo)
+        limite, pago = parsear_fecha(lim_crudo), parsear_fecha(pag_crudo)
         if limite is None:
             avisos.append(f"Fila {n}: " + (f"fecha de vencimiento '{_texto(lim_crudo)}' no válida; no se cuentan días."
                                            if _texto(lim_crudo) else "sin fecha de vencimiento; no se cuentan días."))
@@ -313,7 +295,7 @@ def enriquecer_ep(df: pd.DataFrame, hoy):
         else:
             vistas[decl] = n
         llegada_crudo = _plano(r.get(COL_LLEGADA))
-        llegada = _fecha_ep(llegada_crudo)
+        llegada = parsear_fecha(llegada_crudo)
         if llegada is None and _texto(llegada_crudo):
             avisos.append(f"Fila {n}: llegada '{_texto(llegada_crudo)}' no válida.")
         filas.append({"Fila": n, "Empresa": EMPRESA_ANTILLANA, "Declaracion": decl, "BL": bl,

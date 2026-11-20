@@ -254,15 +254,3 @@ def test_en_pantalla_dice_fecha_de_vencimiento_y_el_sheet_acepta_ese_encabezado(
     assert "Fecha de Vencimiento" in html and "Fecha de vencimiento" in html
     assert "Fecha de Pago" not in html and "Fecha de pago" not in html
     assert ep._canonizar_encabezados(["Fecha de Vencimiento"]) == [ep.COL_LIMITE]
-
-
-def test_texto_ambiguo_se_lee_mes_dia_y_el_claro_no_cambia():
-    assert ep._fecha_ep("12/02/2026") == date(2026, 12, 2)
-    assert ep._fecha_ep("01/05/2027") == date(2027, 1, 5)
-    assert ep._fecha_ep("01/12/2027") == date(2027, 1, 12)
-    assert ep._fecha_ep("26/11/2026") == date(2026, 11, 26)
-    assert ep._fecha_ep("17/10/2026") == date(2026, 10, 17)
-    assert ep._fecha_ep("12-dic-2026") == date(2026, 12, 12)
-    assert ep._fecha_ep("2026-02-12") == date(2026, 2, 12)
-    assert ep._fecha_ep(serial(date(2026, 12, 2))) == date(2026, 12, 2)
-    assert ep._fecha_ep("") is None and ep._fecha_ep("basura") is None

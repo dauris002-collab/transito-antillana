@@ -32,7 +32,7 @@ from sheets_io import (
     COL_PAGOREAL_USD, COL_PRIORIDAD, CONCEPTOS_PAGO, EMPRESA_ANTILLANA, EMPRESAS_PAGO,
     ESTADO_PAGO_PAGADO, ESTADO_PAGO_PENDIENTE, MESES_ES_CORTO, MONEDA_CONCEPTO,
     PRIORIDADES_PAGO, NOMBRE_TALLER, invalidar_taller, ORDEN_SIN_PRIORIDAD, PRIORIDAD_MAX,
-    color_prioridad,
+    color_prioridad, taller_configurado,
     _norm, a_numero, aplicar_selectores_pagos, fecha_llegada_fila, fijar_prioridad_pago,
     formato_eta,
     guardar_pago, hoy_rd, invalidar_caches, marcar_estado_pago,
@@ -699,26 +699,43 @@ def _plan_captura(enriquecido: pd.DataFrame):
             st.info("El plan está vacío: apaga la vista de captura y agrega expedientes.")
 
 
-_ORIGENES = ["Embarques", NOMBRE_TALLER]
+# Mismo valor que entrega_provisional.NOMBRE_EP (una prueba lo comprueba). Se repite aquí a
+# propósito: pagos.py no debe importar ese módulo al cargarse, para que un fallo de la vista
+# nueva nunca tumbe Pagos de embarques (igual que Repuesto y Taller, que se importa al usarse).
+_NOMBRE_EP = "Entrega Provisional"
+
+
+def _opciones_origen() -> list:
+    """Embarques, Entrega Provisional (debajo de Embarques) y, solo si Taller está
+    configurado, Repuesto y Taller."""
+    return ["Embarques", _NOMBRE_EP] + ([NOMBRE_TALLER] if taller_configurado() else [])
 
 
 def _origen_actual() -> str:
     """Origen elegido. 'pago_origen' es el widget; Streamlit lo borra cuando una corrida
     termina en st.rerun() antes de dibujarlo (botones ↻ Actualizar), por eso se guarda
     también en 'pago_origen_ult', que no es un widget y sobrevive."""
-    return st.session_state.get("pago_origen") or st.session_state.get("pago_origen_ult") or _ORIGENES[0]
+    return st.session_state.get("pago_origen") or st.session_state.get("pago_origen_ult") or "Embarques"
 
 
 def _al_cambiar_origen():
-    """Elegir Repuesto y Taller en el filtro vuelve a leer su Sheet (sin esperar la caché)."""
-    if st.session_state.get("pago_origen") == NOMBRE_TALLER:
+    """Elegir Repuesto y Taller o Entrega Provisional vuelve a leer su hoja (sin esperar la caché)."""
+    elegido = st.session_state.get("pago_origen")
+    if elegido == NOMBRE_TALLER:
         invalidar_taller()
+    elif elegido == _NOMBRE_EP:
+        try:
+            from entrega_provisional import invalidar_ep
+            invalidar_ep()
+        except Exception:  # noqa: BLE001 - la vista avisa si no pudo cargarse
+            pass
 
 
 def _selector_origen():
-    """Filtro 'Origen' (Embarques / Repuesto y Taller). Solo existe si Taller está configurado."""
+    """Filtro 'Origen' (Embarques / Entrega Provisional / Repuesto y Taller si está configurado)."""
+    opciones = _opciones_origen()
     ult = st.session_state.get("pago_origen_ult")
-    st.selectbox("Origen", _ORIGENES, index=_ORIGENES.index(ult) if ult in _ORIGENES else 0,
+    st.selectbox("Origen", opciones, index=opciones.index(ult) if ult in opciones else 0,
                  key="pago_origen", on_change=_al_cambiar_origen)
     st.session_state["pago_origen_ult"] = st.session_state["pago_origen"]
 
@@ -744,6 +761,30 @@ def _mostrar_taller(escribe: bool) -> bool:
         if not dibujado:
             _selector_origen()
         st.error(f"Error en la vista de Repuesto y Taller: {e}")
+    return True
+
+
+def _mostrar_entrega_provisional(es_admin: bool) -> bool:
+    """Dibuja la vista de Entrega Provisional. Devuelve False si no pudo cargarse (se vuelve a
+    Embarques): un fallo de esta vista nunca debe tumbar Pagos de embarques."""
+    try:
+        from entrega_provisional import panel_entrega_provisional
+    except Exception as e:  # noqa: BLE001
+        st.session_state["pago_origen"] = "Embarques"   # el widget aún no existe en esta pasada
+        st.error(f"La vista de Entrega Provisional no pudo cargarse: {e}")
+        return False
+    dibujado = []
+
+    def selector():
+        dibujado.append(True)
+        _selector_origen()
+
+    try:
+        panel_entrega_provisional(es_admin, selector)
+    except Exception as e:  # noqa: BLE001
+        if not dibujado:
+            _selector_origen()
+        st.error(f"Error en la vista de Entrega Provisional: {e}")
     return True
 
 
@@ -1239,8 +1280,11 @@ def _encabezado_pagos(sello_info: dict):
 
 @st.fragment
 def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
-    """taller_escribe: None = Taller no disponible (sin filtro Origen); True/False =
-    disponible, y si el rol puede escribir en él."""
+    """taller_escribe: None = Taller no disponible (el filtro Origen ofrece solo Embarques y
+    Entrega Provisional); True/False = disponible, y si el rol puede escribir en él."""
+    if _origen_actual() == _NOMBRE_EP:
+        if _mostrar_entrega_provisional(es_admin):
+            return
     if taller_escribe is not None and _origen_actual() == NOMBRE_TALLER:
         if _mostrar_taller(bool(taller_escribe)):
             return
@@ -1293,7 +1337,7 @@ def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
 
     enriquecido = _enriquecer_pagos_cacheado(df_pagos, activos, historico)
 
-    mostrar_dashboard_pagos(enriquecido, es_admin, con_origen=taller_escribe is not None)
+    mostrar_dashboard_pagos(enriquecido, es_admin, con_origen=True)
 
     if not es_admin:
         return

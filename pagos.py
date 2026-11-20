@@ -1315,9 +1315,6 @@ def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
     (datos en caché). taller_escribe: None = Taller no disponible; True/False = disponible, y si el
     rol puede escribir en él."""
     nombres = ["Embarques", _NOMBRE_EP] + ([NOMBRE_TALLER] if taller_escribe is not None else [])
-    # Sin la línea gris que cruza todo el ancho bajo las pestañas (se conserva el subrayado de la activa).
-    st.markdown('<style>[data-baseweb="tab-border"]{background:transparent !important;}</style>',
-                unsafe_allow_html=True)
     pestanas = st.tabs(nombres)
     with pestanas[0]:
         _panel_embarques(datos, es_admin)

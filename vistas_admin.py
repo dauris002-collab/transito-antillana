@@ -710,7 +710,6 @@ def _historico_vista(df: pd.DataFrame, rol: str, sfx: str, arch: str):
     k3.markdown(tarjeta_kpi(f"Acumulado {hoy.year}", n_anio, COLOR_TOTAL, f"{len(df)} en todo el histórico"),
                 unsafe_allow_html=True)
     st.write("")
-    st.divider()
 
     anios = sorted(df["Anio"].unique(), reverse=True)
     idx_anio = anios.index(hoy.year) if hoy.year in anios else 0

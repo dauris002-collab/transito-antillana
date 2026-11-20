@@ -30,6 +30,7 @@ def api_error(code):
 class FakeWorksheet:
     def __init__(self, libro, title, filas=None, cols=None, rows=1000, ident=0):
         self.libro, self.title, self.id = libro, title, ident
+        self.spreadsheet = libro
         self.celdas = {}      # (fila, col) -> valor real
         self.pantalla = {}    # (fila, col) -> texto mostrado (si difiere)
         filas = filas or []
@@ -193,9 +194,12 @@ class FakeSpreadsheet:
                 return h
         raise gspread.exceptions.WorksheetNotFound(titulo)
 
-    def add_worksheet(self, title, rows=1000, cols=26):
+    def add_worksheet(self, title, rows=1000, cols=26, index=None):
         ws = FakeWorksheet(self, title, [], cols=cols, rows=rows, ident=len(self.hojas) + 1)
-        self.hojas.append(ws)
+        if index is None:
+            self.hojas.append(ws)
+        else:
+            self.hojas.insert(index, ws)
         return ws
 
     def _hoja_de_rango(self, rango):

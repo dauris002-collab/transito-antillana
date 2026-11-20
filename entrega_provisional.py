@@ -366,8 +366,8 @@ def _fd(d) -> str:
 
 
 def _fn(d) -> str:
-    """Fecha de vencimiento / pago en número: 26/11/2026 (como se escribe en el Sheet)."""
-    return "—" if d is None or pd.isna(d) else f"{d.day:02d}/{d.month:02d}/{d.year}"
+    """Fecha de vencimiento / pago con el mes en letras en el medio: 26/nov/2026 (sin ambigüedad)."""
+    return "—" if d is None or pd.isna(d) else f"{d.day:02d}/{MESES_ES_CORTO[d.month]}/{d.year}"
 
 
 def _dop(x) -> str:

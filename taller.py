@@ -472,17 +472,14 @@ def _diagnostico(crudo: pd.DataFrame) -> None:
                 st.write(f"Fila {int(r['FilaSheet'])} → {v!r} → " + (str(_fecha_celda(v)) if _fecha_celda(v) else "no se entiende como fecha"))
 
 
-def panel_taller(puede_escribir: bool, selector_origen):
-    """Vista de Taller dentro de Estatus de Pagos. selector_origen() dibuja el filtro
-    'Origen' (lo provee pagos.py) en la primera columna de la fila de filtros."""
+def panel_taller(puede_escribir: bool):
+    """Vista de Taller: contenido de la pestaña «Repuesto y Taller» de Estatus de Pagos."""
     st.markdown(_CSS, unsafe_allow_html=True)
     with st.spinner("Leyendo Repuesto y Taller…"):
         datos = cargar_taller()
     _encabezado(datos["hora"] if datos["hora"] else ahora_rd())
     df, avisos = enriquecer_taller(datos["df"], hoy_rd()) if not datos["error"] else (pd.DataFrame(), [])
-    c0, c1, c2, c3 = st.columns(4)
-    with c0:
-        selector_origen()
+    c1, c2, c3 = st.columns(3)
     if datos["error"]:
         st.error(datos["error"])
         return

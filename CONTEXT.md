@@ -28,7 +28,7 @@ Otros archivos: `tests/` (pruebas; Streamlit Cloud no las usa), `VERIFICAR.md`, 
 
 Pestañas que usa la app [L]:
 - 9 categorías de embarques activos: Montacargas, Construcción y Minería, Agrícola, Elevadores, Generadores, General, Aéreos, Carga Suelta, Consolidados.
-- `Recibido (Mes)` (histórico), `Entrega Provisional` (decisión #29; se crea sola, antes de Pagos, cuando un admin abre ese Origen), `Pagos` y `Log` (bitácora). Pagos y Log se crean solas si no existen.
+- `Recibido (Mes)` (histórico), `Entrega Provisional` (decisión #29; se crea sola, antes de Pagos, cuando un admin abre esa pestaña de Estatus de Pago), `Pagos` y `Log` (bitácora). Pagos y Log se crean solas si no existen.
 - Aéreo vs. marítimo es un dato de la FILA (`Via_Transporte`), no de la pestaña; vacío se trata como marítimo.
 - Existe una pestaña vacía "En Puerto" en el Sheet que el código no usa [D]. [?] ¿se borra?
 

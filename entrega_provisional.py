@@ -365,9 +365,13 @@ def _fd(d) -> str:
     return "—" if d is None or pd.isna(d) else f"{d.day:02d} {MESES_ES_CORTO[d.month]} {d.year}"
 
 
+_MESES_COMPLETOS = ("Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre",
+                    "Octubre", "Noviembre", "Diciembre")
+
+
 def _fn(d) -> str:
-    """Fecha de vencimiento / pago con el mes en letras en el medio: 26/nov/2026 (sin ambigüedad)."""
-    return "—" if d is None or pd.isna(d) else f"{d.day:02d}/{MESES_ES_CORTO[d.month]}/{d.year}"
+    """Fecha de vencimiento / pago con el mes completo: 01 Diciembre 2027 (sin ambigüedad)."""
+    return "—" if d is None or pd.isna(d) else f"{d.day:02d} {_MESES_COMPLETOS[d.month - 1]} {d.year}"
 
 
 def _dop(x) -> str:

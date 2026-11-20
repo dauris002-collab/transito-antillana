@@ -365,6 +365,11 @@ def _fd(d) -> str:
     return "—" if d is None or pd.isna(d) else f"{d.day:02d} {MESES_ES_CORTO[d.month]} {d.year}"
 
 
+def _fn(d) -> str:
+    """Fecha de vencimiento / pago en número: 26/11/2026 (como se escribe en el Sheet)."""
+    return "—" if d is None or pd.isna(d) else f"{d.day:02d}/{d.month:02d}/{d.year}"
+
+
 def _dop(x) -> str:
     return "—" if x is None or pd.isna(x) else f"RD$ {x:,.2f}"
 
@@ -389,7 +394,7 @@ def _tabla_pendientes(df: pd.DataFrame) -> str:
     for r in df.itertuples():
         dias = "" if pd.isna(r.Dias) else int(r.Dias)
         celdas = [_celda(r.Empresa), _celda(r.Declaracion), _celda(r.BL), _celda(r.Descripcion),
-                  _celda(_fd(r.Limite) if _hay(r.Limite) else ""),
+                  _celda(_fn(r.Limite) if _hay(r.Limite) else ""),
                   _celda(dias, "rojo" if _rojo(r.Dias) else "d"),
                   _celda(_dop(r.DOP) if not pd.isna(r.DOP) else "")]
         filas.append("<tr>" + "".join(celdas) + "</tr>")
@@ -410,10 +415,10 @@ def _tarjeta(r) -> str:
     totales = [
         f'<div><span class="ep-etq">{"Monto pagado RD$" if pagado else "Total a pagar RD$"}</span>'
         f'<span class="ep-val">{_dop(r.DOP)}</span></div>',
-        f'<div><span class="ep-etq">Fecha de vencimiento</span><span class="ep-val f">{_fd(r.Limite)}</span></div>',
+        f'<div><span class="ep-etq">Fecha de vencimiento</span><span class="ep-val f">{_fn(r.Limite)}</span></div>',
     ]
     if pagado:
-        totales.append(f'<div><span class="ep-etq">Pagado el</span><span class="ep-val f">{_fd(r.Pago)}</span></div>')
+        totales.append(f'<div><span class="ep-etq">Pagado el</span><span class="ep-val f">{_fn(r.Pago)}</span></div>')
     totales.append(f'<div><span class="ep-etq">Días de retraso</span><span class="ep-val{clase_dias}">{dias}</span></div>')
     estado = ('<span class="ep-estado" style="background:#2E7D32;">Pagado</span>' if pagado
               else '<span class="ep-estado" style="background:#B45309;">Pendiente</span>')

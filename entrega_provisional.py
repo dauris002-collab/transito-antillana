@@ -180,13 +180,27 @@ def _formato_pestana(ws) -> None:
         formato(i[COL_MONTO], "NUMBER", "#,##0.00"),
     ]
     for col in (COL_LLEGADA, COL_LIMITE, COL_PAGADO):
+        # Sin validación de fecha: la app lee cualquier forma (17/10/2026, 17-oct-26, 2026-10-17, fecha
+        # real de Sheets...) y DATE_IS_VALID marcaba con triángulo rojo las escritas como texto.
         peticiones.append(formato(i[col], "DATE", "dd/mm/yyyy"))
-        peticiones.append({"setDataValidation": {"range": rango(i[col]), "rule": {
-            "condition": {"type": "DATE_IS_VALID"}, "showCustomUi": True, "strict": False}}})
     peticiones.append({"setDataValidation": {"range": rango(i[COL_EMPRESA]), "rule": {
         "condition": {"type": "ONE_OF_LIST", "values": [{"userEnteredValue": EMPRESA_ANTILLANA}]},
         "showCustomUi": True, "strict": False}}})
     ws.spreadsheet.batch_update({"requests": peticiones})
+
+
+def quitar_validacion_fechas(ws=None) -> None:
+    """Pestañas ya creadas con la validación de fecha vieja: la quita de las 3 columnas de fecha
+    (los triángulos rojos). Mejor esfuerzo, idempotente, sin efecto en los datos."""
+    if ws is None:
+        ws = sio.get_spreadsheet().worksheet(NOMBRE_EP)
+    peticiones = []
+    for col in (COL_LLEGADA, COL_LIMITE, COL_PAGADO):
+        n = COLUMNAS_EP.index(col)
+        peticiones.append({"setDataValidation": {"range": {
+            "sheetId": ws.id, "startRowIndex": 1, "endRowIndex": 1000,
+            "startColumnIndex": n, "endColumnIndex": n + 1}}})   # sin "rule" = quita la validación
+    _con_reintento(lambda: ws.spreadsheet.batch_update({"requests": peticiones}))
 
 
 def crear_pestana() -> tuple:
@@ -460,6 +474,12 @@ def panel_entrega_provisional(es_admin: bool, token: str = ""):
             st.info(f"La pestaña '{NOMBRE_EP}' todavía no existe en el Sheet. Un administrador la crea "
                     "al abrir esta vista.")
         return
+    if es_admin and not st.session_state.get("ep_validacion_quitada"):
+        st.session_state["ep_validacion_quitada"] = True   # una vez por sesión, sin reintentos
+        try:
+            quitar_validacion_fechas()
+        except Exception:  # noqa: BLE001 - cosmético
+            pass
     if datos["aviso"]:
         st.warning(datos["aviso"])
 

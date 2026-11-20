@@ -216,3 +216,32 @@ def test_sin_taller_solo_dos_pestanas(libros, monkeypatch):
     at.secrets["TALLER_SHEET_ID"] = ""
     ir(at, "Estatus de Pago")
     assert [t.label for t in at.tabs] == ["Embarques", "Entrega Provisional"]
+
+
+def test_fechas_en_cualquier_forma_se_leen_igual(libros):
+    """Texto dd/mm/aaaa (lo que Sheets deja como texto en configuración regional US), mes en letras,
+    ISO, fecha real (serie) y año de 2 dígitos: todas dan la misma fecha y ningún aviso."""
+    objetivo = date(2026, 11, 26)
+    formas = ["26/11/2026", " 26/11/2026 ", "26-11-2026", "26/11/26", "26 nov 2026", "26-nov-26",
+              "26 de noviembre de 2026", "2026-11-26", serial(objetivo), float(serial(objetivo)), str(serial(objetivo))]
+    filas = [ep.COLUMNAS_EP] + [["Antillana Comercial", f"D-{n}", f"BL-{n}", "X", 1, f, f, 100, ""]
+                                for n, f in enumerate(formas)]
+    libros.LIBRO.agregar(ep.NOMBRE_EP, filas)
+    df = ep.cargar_ep("t")["df"]
+    out, avisos = ep.enriquecer_ep(df, HOY())
+    assert set(out["Limite"]) == {objetivo} and set(out["Llegada"]) == {objetivo}, out[["Limite", "Llegada"]]
+    assert not [a for a in avisos if "no válida" in a], avisos
+
+
+def test_admin_quita_la_validacion_de_fechas_una_vez_y_el_viewer_no(libros):
+    _datos(libros)
+    peticiones = []
+    original = libros.LIBRO.batch_update
+    libros.LIBRO.batch_update = lambda body, *a, **k: (peticiones.append(body), original(body, *a, **k))[1]
+    _ir("1111")
+    quitadas = [r for b in peticiones for r in b.get("requests", []) if "setDataValidation" in r
+                and "rule" not in r["setDataValidation"]]
+    assert len(quitadas) == 3, quitadas
+    peticiones.clear()
+    _ir("2222")
+    assert not peticiones, "el viewer nunca escribe"

@@ -705,90 +705,41 @@ def _plan_captura(enriquecido: pd.DataFrame):
 _NOMBRE_EP = "Entrega Provisional"
 
 
-def _opciones_origen() -> list:
-    """Embarques, Entrega Provisional (debajo de Embarques) y, solo si Taller está
-    configurado, Repuesto y Taller."""
-    return ["Embarques", _NOMBRE_EP] + ([NOMBRE_TALLER] if taller_configurado() else [])
-
-
-def _origen_actual() -> str:
-    """Origen elegido. 'pago_origen' es el widget; Streamlit lo borra cuando una corrida
-    termina en st.rerun() antes de dibujarlo (botones ↻ Actualizar), por eso se guarda
-    también en 'pago_origen_ult', que no es un widget y sobrevive."""
-    return st.session_state.get("pago_origen") or st.session_state.get("pago_origen_ult") or "Embarques"
-
-
-def _selector_origen():
-    """Filtro 'Origen' (Embarques / Entrega Provisional / Repuesto y Taller si está configurado)."""
-    opciones = _opciones_origen()
-    ult = st.session_state.get("pago_origen_ult")
-    st.selectbox("Origen", opciones, index=opciones.index(ult) if ult in opciones else 0,
-                 key="pago_origen")
-    st.session_state["pago_origen_ult"] = st.session_state["pago_origen"]
-
-
-def _mostrar_taller(escribe: bool) -> bool:
-    """Dibuja la vista de Repuesto y Taller. Devuelve False si no pudo cargarse (se vuelve a
-    Embarques): un fallo de Repuesto y Taller nunca debe tumbar Pagos de embarques."""
-    try:
-        from taller import panel_taller
-    except Exception as e:  # noqa: BLE001
-        st.session_state["pago_origen"] = "Embarques"   # el widget aún no existe en esta pasada
-        st.error(f"La vista de Repuesto y Taller no pudo cargarse: {e}")
-        return False
-    dibujado = []
-
-    def selector():
-        dibujado.append(True)
-        _selector_origen()
-
-    try:
-        panel_taller(escribe, selector)
-    except Exception as e:  # noqa: BLE001
-        if not dibujado:
-            _selector_origen()
-        st.error(f"Error en la vista de Repuesto y Taller: {e}")
-    return True
-
-
 def _token_lectura(datos: dict) -> str:
     """Hora de la última lectura del Sheet principal: parte la caché de Entrega Provisional, así
     ↻ Actualizar y cada recarga de Tránsito también la recargan, sin tocar sheets_io."""
     return str((datos or {}).get("hora") or "")
 
 
-def _mostrar_entrega_provisional(es_admin: bool, datos: dict) -> bool:
-    """Dibuja la vista de Entrega Provisional. Devuelve False si no pudo cargarse (se vuelve a
-    Embarques): un fallo de esta vista nunca debe tumbar Pagos de embarques."""
+def _vista_taller(escribe: bool) -> None:
+    """Contenido de la pestaña Repuesto y Taller. Un fallo aquí se muestra dentro de su pestaña y
+    nunca tumba Pagos de embarques."""
+    try:
+        from taller import panel_taller
+    except Exception as e:  # noqa: BLE001
+        st.error(f"La vista de Repuesto y Taller no pudo cargarse: {e}")
+        return
+    try:
+        panel_taller(escribe)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Error en la vista de Repuesto y Taller: {e}")
+
+
+def _vista_entrega_provisional(es_admin: bool, datos: dict) -> None:
+    """Contenido de la pestaña Entrega Provisional, con el mismo aislamiento de fallos."""
     try:
         from entrega_provisional import panel_entrega_provisional
     except Exception as e:  # noqa: BLE001
-        st.session_state["pago_origen"] = "Embarques"   # el widget aún no existe en esta pasada
         st.error(f"La vista de Entrega Provisional no pudo cargarse: {e}")
-        return False
-    dibujado = []
-
-    def selector():
-        dibujado.append(True)
-        _selector_origen()
-
+        return
     try:
-        panel_entrega_provisional(es_admin, selector, _token_lectura(datos))
+        panel_entrega_provisional(es_admin, _token_lectura(datos))
     except Exception as e:  # noqa: BLE001
-        if not dibujado:
-            _selector_origen()
         st.error(f"Error en la vista de Entrega Provisional: {e}")
-    return True
 
 
-def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False,
-                            con_origen: bool = False):
-    if con_origen:
-        c0, c1, c2, c3 = st.columns(4)
-        with c0:
-            _selector_origen()
-    else:
-        c1, c2, c3 = st.columns(3)
+def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False):
+    c1, c2, c3 = st.columns(3)
     with c1:
         restaurar_filtro("pago_filtro_empresa", ["Todas"] + EMPRESAS_PAGO, "Todas")
         empresa_sel = st.selectbox("Empresa", ["Todas"] + EMPRESAS_PAGO, key="pago_filtro_empresa")
@@ -1271,15 +1222,8 @@ def _encabezado_pagos(sello_info: dict):
     st.markdown(encabezado_html("Estatus de Pagos", "pagos", anio, sello), unsafe_allow_html=True)
 
 
-def _panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
-    """taller_escribe: None = Taller no disponible (el filtro Origen ofrece solo Embarques y
-    Entrega Provisional); True/False = disponible, y si el rol puede escribir en él."""
-    if _origen_actual() == _NOMBRE_EP:
-        if _mostrar_entrega_provisional(es_admin, datos):
-            return
-    if taller_escribe is not None and _origen_actual() == NOMBRE_TALLER:
-        if _mostrar_taller(bool(taller_escribe)):
-            return
+def _panel_embarques(datos: dict, es_admin: bool):
+    """Pestaña «Embarques» de Estatus de Pagos (la vista de siempre)."""
     activos = datos.get("activos", pd.DataFrame())
     historico = datos.get("historico", pd.DataFrame())
     df_pagos = datos.get("pagos", pd.DataFrame())
@@ -1329,7 +1273,7 @@ def _panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
 
     enriquecido = _enriquecer_pagos_cacheado(df_pagos, activos, historico)
 
-    mostrar_dashboard_pagos(enriquecido, es_admin, con_origen=True)
+    mostrar_dashboard_pagos(enriquecido, es_admin)
 
     if not es_admin:
         return
@@ -1373,28 +1317,20 @@ def _panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
             (st.success if ok else st.error)(mensaje)
 
 
-def _precalentar_origenes(datos: dict, taller_escribe) -> None:
-    """Deja en caché Entrega Provisional y Repuesto y Taller DESPUÉS de dibujar la vista actual,
-    para que cambiar de Origen sea instantáneo en vez de esperar una lectura a Google (antes,
-    elegir Taller o Entrega Provisional invalidaba su caché y cada cambio costaba 1-3 s con la
-    pantalla anterior congelada). Si ya están en caché no cuesta nada; si no, cuesta una lectura
-    por pestaña cada ≤120 s. Nunca lanza: un fallo aquí no debe afectar la vista que ya se dibujó
-    (cada cargar_* devuelve el error como dato)."""
-    try:
-        from entrega_provisional import cargar_ep
-        cargar_ep(_token_lectura(datos))
-    except Exception:  # noqa: BLE001
-        pass
-    if taller_escribe is not None:
-        try:
-            from sheets_io import cargar_taller
-            cargar_taller()
-        except Exception:  # noqa: BLE001
-            pass
-
-
 @st.fragment
 def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
-    """Estatus de Pagos: la vista del Origen elegido y, después, el precalentado de los otros."""
-    _panel_pagos(datos, es_admin, taller_escribe)
-    _precalentar_origenes(datos, taller_escribe)
+    """Estatus de Pagos con una pestaña por origen: Embarques, Entrega Provisional y, si Taller
+    está configurado, Repuesto y Taller. Las pestañas cambian en el navegador, sin ida y vuelta al
+    servidor (con el desplegable «Origen» cada cambio esperaba una pasada completa y la pantalla
+    vieja quedaba atenuada ~0.5-1 s). Costo: las tres vistas se calculan en cada interacción
+    (datos en caché). taller_escribe: None = Taller no disponible; True/False = disponible, y si el
+    rol puede escribir en él."""
+    nombres = ["Embarques", _NOMBRE_EP] + ([NOMBRE_TALLER] if taller_escribe is not None else [])
+    pestanas = st.tabs(nombres)
+    with pestanas[0]:
+        _panel_embarques(datos, es_admin)
+    with pestanas[1]:
+        _vista_entrega_provisional(es_admin, datos)
+    if taller_escribe is not None:
+        with pestanas[2]:
+            _vista_taller(bool(taller_escribe))

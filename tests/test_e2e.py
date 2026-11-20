@@ -63,7 +63,6 @@ def test_viewer_nunca_escribe(libros):
     for s in VIEWER:
         ir(at, s)
     ver_puerto(ir(at, "Dashboard"))
-    at.session_state["pago_origen_ult"] = "Repuesto y Taller"
     ir(at, "Estatus de Pago")
     sin_errores(at)
     assert escrituras_fuera_de_log(libros.LIBRO) == antes
@@ -369,7 +368,6 @@ def test_pagos_sincroniza_una_sola_vez(libros):
 # ---------------------------------------------------------------- taller
 def _ir_taller(pin):
     at = abrir_app(pin)
-    at.session_state["pago_origen_ult"] = "Repuesto y Taller"
     return ir(at, "Estatus de Pago")
 
 
@@ -462,10 +460,8 @@ def test_taller_caido_no_tumba_pagos_de_embarques(libros):
     at = _ir_taller("1111")
     sin_errores(at)
     assert any("rechazó el acceso" in e.value for e in at.error)
-    at.session_state["pago_origen_ult"] = "Embarques"
-    at.selectbox(key="pago_origen").set_value("Embarques").run()
     sin_errores(at)
-    assert any("Pendientes por antigüedad" in m.value for m in at.markdown)
+    assert any("Pendientes por antigüedad" in m.value for m in at.markdown), "Embarques sigue en pie con Taller caído"
 
 
 # ------------------------------------------------------------- carga masiva
@@ -565,8 +561,7 @@ def test_con_datos_sucios_ninguna_seccion_se_cae(libros, semilla):
             at.session_state["categoria_activa"] = cat.rsplit(" · ", 1)[0]
             at.run()
             sin_errores(at)
-        at.session_state["pago_origen_ult"] = "Repuesto y Taller"
-        ir(at, "Estatus de Pago")
+            ir(at, "Estatus de Pago")
         sin_errores(at)
 
 

@@ -78,7 +78,6 @@ def test_el_nombre_del_origen_coincide_en_pagos():
 # ------------------------------------------------------------ vista completa
 def _ir(pin):
     at = abrir_app(pin)
-    at.session_state["pago_origen_ult"] = ep.NOMBRE_EP
     return ir(at, "Estatus de Pago")
 
 
@@ -95,8 +94,9 @@ def _datos(libros):
     libros.LIBRO.agregar(ep.NOMBRE_EP, filas)
 
 
-def _html(at):
-    return "\n".join(m.value for m in at.markdown)
+def _html(at, pestana=1):
+    """Markdown de UNA pestaña de Estatus de Pagos (0 Embarques, 1 Entrega Provisional, 2 Taller)."""
+    return "\n".join(m.value for m in at.tabs[pestana].markdown)
 
 
 def test_admin_crea_la_pestana_antes_de_pagos(libros):
@@ -146,8 +146,7 @@ def test_vista_con_datos_pendientes_total_y_rojo(libros):
 def test_filtro_pagado_y_pendiente_por_mes(libros):
     _datos(libros)
     at = _ir("1111")
-    assert not [x for x in at.selectbox if x.label == "Empresa"], "Entrega Provisional no tiene filtro Empresa"
-    assert not [x for x in at.selectbox if x.label == "Mes (Llegada)"]
+    assert [x.label for x in at.tabs[1].selectbox] == ["Estatus", "Pendiente por mes"], "sin filtro Empresa"
     at.selectbox(key="ep_estatus").set_value("Pagado").run()
     sin_errores(at)
     html = _html(at)
@@ -185,37 +184,35 @@ def test_alias_de_columnas_en_el_sheet_se_leen(libros):
     assert "X-1" in html and "RD$ 123.45" in html
 
 
-def test_pestana_caida_no_tumba_pagos_de_embarques(libros):
+def test_pestana_caida_no_tumba_las_otras_pestanas(libros):
     import fake_gspread
     _datos(libros)
-    original = libros.LIBRO.values_get
-    libros.LIBRO.values_get = lambda *a, **k: (_ for _ in ()).throw(fake_gspread.api_error(403))
+    libros.TALLER.values_get = lambda *a, **k: (_ for _ in ()).throw(fake_gspread.api_error(403))
     at = _ir("1111")
     sin_errores(at)
-    assert any("rechazó el acceso" in e.value for e in at.error)
-    libros.LIBRO.values_get = original
-    at.session_state["pago_origen_ult"] = "Embarques"
-    at.selectbox(key="pago_origen").set_value("Embarques").run()
-    sin_errores(at)
-    assert any("Pendientes por antigüedad" in m.value for m in at.markdown)
+    assert any("rechazó el acceso" in e.value for e in at.error), "Taller avisa dentro de su pestaña"
+    html = _html(at)
+    assert "Pendientes por antigüedad" in _html(at, 0), "Embarques sigue en pie"
+    assert 'Pendientes</div><div class="n">3</div>' in html, "Entrega Provisional sigue en pie"
 
 
-def test_opciones_de_origen_con_entrega_provisional_debajo_de_embarques(libros):
-    at = abrir_app("1111")
-    ir(at, "Estatus de Pago")
-    assert list(at.selectbox(key="pago_origen").options) == ["Embarques", "Entrega Provisional", "Repuesto y Taller"]
-
-
-def test_cambiar_de_origen_no_lee_google_otra_vez(libros):
-    """El cambio entre Embarques, Entrega Provisional y Repuesto y Taller sale de caché: ninguna
-    lectura nueva a Google (antes cada cambio invalidaba la caché y esperaba una lectura)."""
+def test_pestanas_de_origen_en_orden_y_todas_se_dibujan_en_una_pasada(libros):
+    """El cambio de origen es una pestaña del navegador (sin ida y vuelta al servidor): las tres
+    vistas ya están dibujadas en la misma pasada, con Entrega Provisional debajo de Embarques."""
     _datos(libros)
     at = abrir_app("1111")
-    ir(at, "Estatus de Pago")                      # Embarques; deja precalentados los otros dos
+    ir(at, "Estatus de Pago")
     sin_errores(at)
-    lecturas = (libros.LIBRO.lecturas, libros.TALLER.lecturas)
-    for destino in ("Entrega Provisional", "Repuesto y Taller", "Embarques", "Entrega Provisional"):
-        at.selectbox(key="pago_origen").set_value(destino).run()
-        sin_errores(at)
-        assert (libros.LIBRO.lecturas, libros.TALLER.lecturas) == lecturas, destino
-    assert any("Pendiente" in m.value for m in at.markdown)
+    assert [t.label for t in at.tabs][:3] == ["Embarques", "Entrega Provisional", "Repuesto y Taller"]
+    assert not [x for x in at.selectbox if x.label == "Origen"], "ya no hay desplegable Origen"
+    assert "Pendientes por antigüedad" in _html(at, 0)                      # Embarques
+    assert 'Pendientes</div><div class="n">3</div>' in _html(at, 1)          # Entrega Provisional
+    assert "Sheet de Repuesto y Taller leído" in _html(at, 2)                # Repuesto y Taller
+
+
+def test_sin_taller_solo_dos_pestanas(libros, monkeypatch):
+    import sheets_io
+    at = abrir_app("1111")
+    at.secrets["TALLER_SHEET_ID"] = ""
+    ir(at, "Estatus de Pago")
+    assert [t.label for t in at.tabs] == ["Embarques", "Entrega Provisional"]

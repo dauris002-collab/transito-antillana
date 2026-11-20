@@ -435,16 +435,13 @@ def _etiqueta_mes(clave: str, conteo: dict) -> str:
     return f"{MESES_ES_CORTO[int(clave[5:])]} {clave[:4]} · {n} {'entrega' if n == 1 else 'entregas'}"
 
 
-def panel_entrega_provisional(es_admin: bool, selector_origen, token: str = ""):
-    """Vista dentro de Estatus de Pagos. selector_origen() dibuja el filtro 'Origen' (lo
-    provee pagos.py) en la primera columna de la fila de filtros. `token`: hora de la última
-    lectura del Sheet principal (ver _cargar_ep_remoto)."""
+def panel_entrega_provisional(es_admin: bool, token: str = ""):
+    """Contenido de la pestaña «Entrega Provisional» de Estatus de Pagos. `token`: hora de la
+    última lectura del Sheet principal (ver _cargar_ep_remoto)."""
     st.markdown(_CSS, unsafe_allow_html=True)
     datos = cargar_ep(token)
     _encabezado(datos["hora"])
-    c0, c1, c2, _c3 = st.columns(4)     # 4 columnas como las otras vistas: Origen no cambia de lugar ni de ancho
-    with c0:
-        selector_origen()
+    c1, c2, _c3 = st.columns(3)     # 3 columnas como las otras pestañas: los filtros no saltan al cambiar
     if datos["error"]:
         st.error(datos["error"])
         return

@@ -824,11 +824,6 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False):
 
     con_montos = vista[vista["TieneMontos"]]
 
-    sin_transito = int(vista["BLSinTransito"].sum())
-    if sin_transito and es_admin:   # aviso de mantenimiento: el viewer no puede actuar sobre él
-        st.warning(f"{sin_transito} expediente(s) de Pagos ya no tienen un BL coincidente en tránsito "
-                   "(activo ni histórico) — puede que se hayan eliminado o cambiado de BL ahí.")
-
     # Avisos del cotejo por concepto (v5.4), solo para el administrador: son de
     # mantenimiento del Sheet y el viewer no puede actuar sobre ellos.
     if es_admin and "TodoCotejado" in vista.columns:
@@ -851,12 +846,6 @@ def mostrar_dashboard_pagos(enriquecido: pd.DataFrame, es_admin: bool = False):
 
     resumen = resumen_pagos(con_montos)
     filtro_activo = _tarjetas_resumen(resumen, st.session_state.get("pago_filtro_estado", "todos"))
-    if resumen["n_dias_pago"]:
-        st.caption(f"Tiempo promedio de pago: días entre la llegada y el pago realizado, "
-                   f"sobre {resumen['n_dias_pago']} expediente(s) pagados con ambas fechas"
-                   + (f"; {resumen['n_pagos_anticipados']} se pagaron antes de llegar y cuentan como 0 d."
-                      if resumen.get("n_pagos_anticipados") else "."))
-
     if con_montos.empty:
         st.info(f"Hay {len(vista)} expediente(s) en esta selección, pero ninguno tiene montos "
                 "cargados todavía. Se muestran aquí solo cuando tengan al menos un concepto lleno.")
@@ -1326,6 +1315,9 @@ def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
     (datos en caché). taller_escribe: None = Taller no disponible; True/False = disponible, y si el
     rol puede escribir en él."""
     nombres = ["Embarques", _NOMBRE_EP] + ([NOMBRE_TALLER] if taller_escribe is not None else [])
+    # Sin la línea gris que cruza todo el ancho bajo las pestañas (se conserva el subrayado de la activa).
+    st.markdown('<style>[data-baseweb="tab-border"]{background:transparent !important;}</style>',
+                unsafe_allow_html=True)
     pestanas = st.tabs(nombres)
     with pestanas[0]:
         _panel_embarques(datos, es_admin)

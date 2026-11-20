@@ -44,7 +44,7 @@ from logica import (
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN GENERAL
 # ---------------------------------------------------------------------------
-VERSION_APP = "5.19"
+VERSION_APP = "5.20"
 
 
 VISTA_EN_PROCESO_PUERTO = "Puerto/Aeropuerto · Estatus"
@@ -65,6 +65,8 @@ COLOR_ALERTA = "#B45309"
 
 CUSTOM_CSS = """
 <style>
+/* Sin la línea gris que cruza todo el ancho bajo las pestañas (st.tabs); el subrayado de la activa se queda. */
+[data-testid="stTabs"] [role="tablist"]::after { background-color: transparent !important; }
 :root {
     --ant-azul: #0C447C;
     --ant-borde: #E5E7EB;

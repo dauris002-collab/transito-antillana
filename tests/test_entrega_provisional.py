@@ -245,3 +245,12 @@ def test_admin_quita_la_validacion_de_fechas_una_vez_y_el_viewer_no(libros):
     peticiones.clear()
     _ir("2222")
     assert not peticiones, "el viewer nunca escribe"
+
+
+def test_en_pantalla_dice_fecha_de_vencimiento_y_el_sheet_acepta_ese_encabezado(libros):
+    _datos(libros)
+    at = _ir("1111")
+    html = _html(at)
+    assert "Fecha de Vencimiento" in html and "Fecha de vencimiento" in html
+    assert "Fecha de Pago" not in html and "Fecha de pago" not in html
+    assert ep._canonizar_encabezados(["Fecha de Vencimiento"]) == [ep.COL_LIMITE]

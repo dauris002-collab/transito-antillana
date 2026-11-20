@@ -8,7 +8,7 @@ en el Sheet; la app solo los LEE (no hay formulario ni escritura de datos), salv
 creación de la pestaña vacía, la primera vez que un administrador abre esta vista.
 
 Reglas (decididas el 19 nov 2026):
- - `Fecha_Limite_Pago` (en pantalla «Fecha de Pago») es la fecha LÍMITE de pago de lo que
+ - `Fecha_Limite_Pago` (en pantalla «Fecha de Vencimiento») es la fecha LÍMITE de pago de lo que
    se cargue aquí; no viene de Tránsito. Los días de retraso empiezan a contar cuando
    esa fecha vence: hoy - fecha límite (0 el mismo día del vencimiento; antes de vencer
    no hay contador). Se marcan en rojo cuando pasan de DIAS_ROJO_EP (más de 2).
@@ -65,7 +65,7 @@ COLUMNAS_EP = [COL_EMPRESA, COL_DECLARACION, COL_BL, COL_DESC, COL_CANT, COL_LLE
 # Encabezados alternativos aceptados en el Sheet (la app trabaja con los canónicos).
 ALIAS_ENCABEZADOS_EP = {
     COL_DECLARACION: ("Numero de Declaracion", "No. Declaracion", "N Declaracion", "Declaracion"),
-    COL_LIMITE: ("Fecha de Pago", "Fecha Limite", "Fecha Limite de Pago", "Fecha Pago"),
+    COL_LIMITE: ("Fecha de Vencimiento", "Fecha Vencimiento", "Fecha de Pago", "Fecha Limite", "Fecha Limite de Pago", "Fecha Pago"),
     COL_MONTO: ("DOP Pendiente", "Monto RD$", "Monto RD", "Monto DOP", "Pendiente RD$"),
     COL_PAGADO: ("Fecha de Pagado", "Fecha Pagado", "Fecha Pago Realizado", "Pagado el"),
 }
@@ -282,8 +282,8 @@ def enriquecer_ep(df: pd.DataFrame, hoy):
         lim_crudo, pag_crudo = _plano(r.get(COL_LIMITE)), _plano(r.get(COL_PAGADO))
         limite, pago = parsear_fecha(lim_crudo), parsear_fecha(pag_crudo)
         if limite is None:
-            avisos.append(f"Fila {n}: " + (f"fecha de pago '{_texto(lim_crudo)}' no válida; no se cuentan días."
-                                           if _texto(lim_crudo) else "sin fecha de pago (límite); no se cuentan días."))
+            avisos.append(f"Fila {n}: " + (f"fecha de vencimiento '{_texto(lim_crudo)}' no válida; no se cuentan días."
+                                           if _texto(lim_crudo) else "sin fecha de vencimiento; no se cuentan días."))
         if pago is None and _texto(pag_crudo):
             avisos.append(f"Fila {n}: fecha de pago realizado '{_texto(pag_crudo)}' no válida; se toma como pendiente.")
         if dop is None:
@@ -383,7 +383,7 @@ def _rojo(dias) -> bool:
 
 
 def _tabla_pendientes(df: pd.DataFrame) -> str:
-    cab = ["Empresa", "Número de Declaración", "BL", "Descripción", "Fecha de Pago", "Días de retraso",
+    cab = ["Empresa", "Número de Declaración", "BL", "Descripción", "Fecha de Vencimiento", "Días de retraso",
            "DOP Pendiente"]
     filas = []
     for r in df.itertuples():
@@ -410,7 +410,7 @@ def _tarjeta(r) -> str:
     totales = [
         f'<div><span class="ep-etq">{"Monto pagado RD$" if pagado else "Total a pagar RD$"}</span>'
         f'<span class="ep-val">{_dop(r.DOP)}</span></div>',
-        f'<div><span class="ep-etq">Fecha de pago</span><span class="ep-val f">{_fd(r.Limite)}</span></div>',
+        f'<div><span class="ep-etq">Fecha de vencimiento</span><span class="ep-val f">{_fd(r.Limite)}</span></div>',
     ]
     if pagado:
         totales.append(f'<div><span class="ep-etq">Pagado el</span><span class="ep-val f">{_fd(r.Pago)}</span></div>')
@@ -489,7 +489,7 @@ def panel_entrega_provisional(es_admin: bool, token: str = ""):
                 f"{', '.join(COLUMNAS_EP)}.")
         return
 
-    # Pendiente por mes: mes de la fecha de pago (límite) y cuántas entregas PENDIENTES caen en él.
+    # Pendiente por mes: mes de la fecha de vencimiento y cuántas entregas PENDIENTES caen en él.
     # Las etiquetas llevan un conteo que cambia, por eso selectbox_sincronizado (decisión #25).
     claves = sorted({_clave_mes(d) for d in df["Limite"] if _hay(d)})
     conteo = {k: 0 for k in claves}
@@ -511,7 +511,7 @@ def panel_entrega_provisional(es_admin: bool, token: str = ""):
 
     pend, pagados = vista[~vista["Pagado"]], vista[vista["Pagado"]]
     st.markdown(_tarjetas_resumen(pend), unsafe_allow_html=True)
-    st.caption("Días de retraso: desde la fecha de pago (límite) hasta hoy, o hasta el pago realizado. "
+    st.caption("Días de retraso: desde la fecha de vencimiento hasta hoy, o hasta el pago realizado. "
                f"En rojo con más de {DIAS_ROJO_EP}. Pagado = tiene fecha en {COL_PAGADO}.")
 
     if estatus in ("Todos", "Pendiente"):

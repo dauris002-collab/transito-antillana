@@ -257,7 +257,7 @@ def test_en_pantalla_dice_fecha_de_vencimiento_y_el_sheet_acepta_ese_encabezado(
 
 
 def test_vencimiento_en_pantalla_como_numero_y_texto_dia_mes(libros):
-    assert ep._fn(date(2026, 11, 26)) == "26/nov/2026" and ep._fn(None) == "—"
+    assert ep._fn(date(2026, 11, 26)) == "26 Noviembre 2026" and ep._fn(None) == "—"
     filas = [ep.COLUMNAS_EP,
              ["Antillana Comercial", "D-1", "BL-1", "GRÚA", 1, "26/10/2026", "12/02/2026", 3159249.26, ""],
              ["Antillana Comercial", "D-2", "BL-2", "X", 1, "", "01/05/2027", 100, ""],
@@ -266,6 +266,6 @@ def test_vencimiento_en_pantalla_como_numero_y_texto_dia_mes(libros):
     at = _ir("1111")
     sin_errores(at)
     html = _html(at)
-    for esperado in ("12/feb/2026", "01/may/2027", "26/nov/2026"):
+    for esperado in ("12 Febrero 2026", "01 Mayo 2027", "26 Noviembre 2026"):
         assert esperado in html, esperado
-    assert "26/11/2026" not in html and "26 nov 2026" not in html
+    assert "26/11/2026" not in html and "26/nov/2026" not in html and "26 nov 2026" not in html

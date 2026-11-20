@@ -266,6 +266,18 @@ def test_vencimiento_en_pantalla_como_numero_y_texto_dia_mes(libros):
     at = _ir("1111")
     sin_errores(at)
     html = _html(at)
-    for esperado in ("12 Febrero 2026", "01 Mayo 2027", "26 Noviembre 2026"):
+    for esperado in ("02 Diciembre 2026", "05 Enero 2027", "26 Noviembre 2026"):
         assert esperado in html, esperado
     assert "26/11/2026" not in html and "26/nov/2026" not in html and "26 nov 2026" not in html
+
+
+def test_texto_ambiguo_se_lee_mes_dia_y_el_claro_no_cambia():
+    assert ep._fecha_ep("12/02/2026") == date(2026, 12, 2)
+    assert ep._fecha_ep("01/05/2027") == date(2027, 1, 5)
+    assert ep._fecha_ep("01/12/2027") == date(2027, 1, 12)
+    assert ep._fecha_ep("26/11/2026") == date(2026, 11, 26)
+    assert ep._fecha_ep("17/10/2026") == date(2026, 10, 17)
+    assert ep._fecha_ep("12-dic-2026") == date(2026, 12, 12)
+    assert ep._fecha_ep("2026-02-12") == date(2026, 2, 12)
+    assert ep._fecha_ep(serial(date(2026, 12, 2))) == date(2026, 12, 2)
+    assert ep._fecha_ep("") is None and ep._fecha_ep("basura") is None

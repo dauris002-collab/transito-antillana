@@ -61,11 +61,12 @@ def test_enriquecer_clasifica_y_avisa():
     out, avisos = ep.enriquecer_ep(df, h)
     assert len(out) == 3, "la fila en blanco no cuenta"
     assert out.loc[0, "Dias"] == 10 and not out.loc[0, "Pagado"]
-    assert out.loc[1, "Empresa"] == "Antillana Comercial"
-    assert out.loc[2, "Pagado"] and out.loc[2, "Empresa"] == "Sin empresa" and pd.isna(out.loc[2, "Dias"])
+    assert set(out["Empresa"]) == {"Antillana Comercial"}, "la empresa es siempre Antillana; la columna se ignora"
+    assert out.loc[2, "Pagado"] and pd.isna(out.loc[2, "Dias"])
     texto = " | ".join(avisos)
-    for esperado in ("ya está en la fila 2", "sin monto", "'Otra SA' no reconocida", "'no es fecha' no válida"):
+    for esperado in ("ya está en la fila 2", "sin monto", "'no es fecha' no válida"):
         assert esperado in texto, esperado
+    assert "empresa" not in texto.lower()
     assert ep.total_por_pagar(out[~out["Pagado"]]) == 900000
 
 
@@ -126,10 +127,15 @@ def test_vista_con_datos_pendientes_total_y_rojo(libros):
     html = _html(at)
     assert 'Pendientes</div><div class="n">3</div>' in html
     assert "RD$ 1,600,325.60" in html, "total por pagar = suma de los 3 pendientes"
-    assert "Pendientes por antigüedad" in " ".join(m.value for m in at.markdown)
+    assert "Pendientes por antigüedad" not in html and "Desglose por expediente" not in html
+    assert ".ep-tabla th { background:#DBEAFE;" in html, "encabezado de la tabla en azul claro, no negro"
     assert html.count('td class="rojo"') == 1, "solo el de 10 días; el de 2 no es rojo"
     assert "1300850722600962" in html and "Llegada: 31 jul 2026" in html
     assert "GENERADOR 350KW · 2 · Llegada:" in html
+    assert 'class="ep-decl">Declaración D-1' in html, "la declaración va debajo del BL"
+    assert 'Número de declaración</span>' not in html, "ya no está en los totales del desglose"
+    assert html.count('class="ep-emp">Antillana Comercial</span>') == 4, "las 4 entregas salen como Antillana Comercial"
+    assert 'ep-emp">Tecnicaribe' not in html and 'ep-emp">Motor Ibérico' not in html
     assert "D-4" in html, "con Estatus Todos también se ve el pagado"
     cuerpo_tabla = html[html.index("<tbody>"):html.index("</tbody>")]
     assert "D-4" not in cuerpo_tabla, "el pagado no está en Pendientes por antigüedad"
@@ -137,19 +143,34 @@ def test_vista_con_datos_pendientes_total_y_rojo(libros):
     assert {h.title: dict(h.celdas) for h in libros.LIBRO.hojas if h.title != "Log"} == antes, "viewer: cero escrituras"
 
 
-def test_filtro_pagado_y_empresa(libros):
+def test_filtro_pagado_y_pendiente_por_mes(libros):
     _datos(libros)
     at = _ir("1111")
+    assert not [x for x in at.selectbox if x.label == "Empresa"], "Entrega Provisional no tiene filtro Empresa"
+    assert not [x for x in at.selectbox if x.label == "Mes (Llegada)"]
     at.selectbox(key="ep_estatus").set_value("Pagado").run()
     sin_errores(at)
     html = _html(at)
     assert "D-4" in html and "D-1" not in html and "Pagado</span>" in html
-    assert "Pendientes por antigüedad" not in html
+    assert "<tbody>" not in html, "sin pendientes en la selección no hay tabla"
+
+    # Pendiente por mes: mes de la fecha de pago y cantidad de entregas PENDIENTES de ese mes
+    h = HOY()
+    pend = [h - timedelta(days=10), h - timedelta(days=2), h + timedelta(days=5)]
+    clave = lambda d: f"{d.year}-{d.month:02d}"
+    mes_d1 = clave(pend[0])
+    esperados = [d for d in pend if clave(d) == mes_d1]
     at.selectbox(key="ep_estatus").set_value("Pendiente").run()
-    at.selectbox(key="ep_empresa").set_value("Tecnicaribe").run()
+    sel = at.selectbox(key=at.session_state["ep_mes_wk"])
+    assert sel.label == "Pendiente por mes"
+    etiqueta = f"{ep.MESES_ES_CORTO[int(mes_d1[5:])]} {mes_d1[:4]} · {len(esperados)} " \
+               f"{'entrega' if len(esperados) == 1 else 'entregas'}"
+    assert etiqueta in list(sel.options), (etiqueta, list(sel.options))
+    sel.set_value(mes_d1).run()
+    sin_errores(at)
     html = _html(at)
-    assert "D-1" in html and "D-2" not in html and "D-4" not in html
-    assert 'Pendientes</div><div class="n">1</div>' in html
+    assert f'Pendientes</div><div class="n">{len(esperados)}</div>' in html
+    assert "D-1" in html and "D-4" not in html
 
 
 def test_alias_de_columnas_en_el_sheet_se_leen(libros):
@@ -183,3 +204,18 @@ def test_opciones_de_origen_con_entrega_provisional_debajo_de_embarques(libros):
     at = abrir_app("1111")
     ir(at, "Estatus de Pago")
     assert list(at.selectbox(key="pago_origen").options) == ["Embarques", "Entrega Provisional", "Repuesto y Taller"]
+
+
+def test_cambiar_de_origen_no_lee_google_otra_vez(libros):
+    """El cambio entre Embarques, Entrega Provisional y Repuesto y Taller sale de caché: ninguna
+    lectura nueva a Google (antes cada cambio invalidaba la caché y esperaba una lectura)."""
+    _datos(libros)
+    at = abrir_app("1111")
+    ir(at, "Estatus de Pago")                      # Embarques; deja precalentados los otros dos
+    sin_errores(at)
+    lecturas = (libros.LIBRO.lecturas, libros.TALLER.lecturas)
+    for destino in ("Entrega Provisional", "Repuesto y Taller", "Embarques", "Entrega Provisional"):
+        at.selectbox(key="pago_origen").set_value(destino).run()
+        sin_errores(at)
+        assert (libros.LIBRO.lecturas, libros.TALLER.lecturas) == lecturas, destino
+    assert any("Pendiente" in m.value for m in at.markdown)

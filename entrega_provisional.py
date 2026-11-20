@@ -17,6 +17,10 @@ Reglas (decididas el 19 nov 2026):
    consulta con el filtro Estatus. Sus días de retraso quedan fijos: fecha pagada -
    fecha límite, mínimo 0.
  - Solo pesos (`Monto_DOP`). Total por pagar = suma de los pendientes.
+ - La empresa es siempre Antillana Comercial: la columna `Empresa` del Sheet se ignora
+   (mismo criterio que las categorías de empresa fija, decisión #18) y no hay filtro.
+ - «Pendiente por mes» agrupa por el mes de la fecha de pago (límite) y cuenta las entregas
+   PENDIENTES de cada mes.
 
 Capa: como taller.py, importa de sheets_io hacia abajo y NO importa pagos.py. Todas las
 constantes viven AQUÍ y no en sheets_io a propósito: un push que a la vez agregue nombres
@@ -28,7 +32,6 @@ Pagos.
 
 from __future__ import annotations
 
-import unicodedata
 from html import escape as _esc
 from numbers import Real
 
@@ -38,11 +41,11 @@ import streamlit as st
 
 import sheets_io as sio
 from sheets_io import (
-    EMPRESA_ANTILLANA, EMPRESA_MOTOR_IBERICO, EMPRESA_TECNICARIBE, EMPRESAS_PAGO,
-    MESES_ES_CORTO, _codigo_api, _con_reintento, _df_desde_valores, _norm_encabezado,
+    EMPRESA_ANTILLANA, MESES_ES_CORTO, _codigo_api, _con_reintento, _df_desde_valores, _norm_encabezado,
     a_numero, ahora_rd, hoy_rd, parsear_fecha,
 )
-from ui_encabezado import encabezado_html, recordar_filtro, restaurar_filtro
+from ui_encabezado import (encabezado_html, recordar_filtro, restaurar_filtro, selectbox_sincronizado,
+                           valor_previo)
 
 NOMBRE_EP = "Entrega Provisional"          # nombre visible del Origen y de la pestaña
 PESTANA_SIGUIENTE = "Pagos"                # la pestaña nueva se inserta justo antes de esta
@@ -71,11 +74,6 @@ DIAS_ROJO_EP = 2          # más de 2 días de retraso: el contador sale en rojo
 MAX_FILAS_EP = 5000
 TTL_EP = 120              # igual que Taller: toda escritura de la app limpia la caché
 _ESTATUS = ["Todos", "Pendiente", "Pagado"]
-_EMPRESAS = {
-    "antillana": EMPRESA_ANTILLANA, "antillana comercial": EMPRESA_ANTILLANA,
-    "tecnicaribe": EMPRESA_TECNICARIBE, "tecnicaribe dominicana": EMPRESA_TECNICARIBE,
-    "motor iberico": EMPRESA_MOTOR_IBERICO,
-}
 _COLUMNAS = ["Fila", "Empresa", "Declaracion", "BL", "Descripcion", "Cantidad", "Llegada",
              "Limite", "Pago", "Pagado", "Dias", "DOP"]
 
@@ -105,8 +103,10 @@ def _vacio() -> pd.DataFrame:
 
 
 @st.cache_data(ttl=TTL_EP, show_spinner=False)
-def _cargar_ep_remoto() -> dict:
-    """UNA llamada a la API (más abrir el libro). No atrapa errores de lectura:
+def _cargar_ep_remoto(token: str = "") -> dict:
+    """`token` no se usa dentro: solo parte la caché. pagos.py pasa la hora de la última lectura
+    del Sheet principal, así ↻ Actualizar (y cualquier recarga de Tránsito) también recarga esta
+    vista sin tocar sheets_io.invalidar_caches. UNA llamada a la API (más abrir el libro). No atrapa errores de lectura:
     st.cache_data solo guarda retornos exitosos, así que un fallo no queda cacheado.
     Lee valores SIN formato (números y fechas seriales): no depende de la configuración
     regional del Sheet. Si la pestaña no existe, Google contesta 400 y se devuelve
@@ -131,11 +131,11 @@ def _cargar_ep_remoto() -> dict:
     return {"existe": True, "df": df, "hora": ahora_rd()}
 
 
-def cargar_ep() -> dict:
+def cargar_ep(token: str = "") -> dict:
     """Lectura cacheada. El FRACASO nunca sube como excepción: vuelve en 'error' para que
     solo esta vista lo muestre."""
     try:
-        r = _cargar_ep_remoto()
+        r = _cargar_ep_remoto(str(token or ""))
     except Exception as e:  # noqa: BLE001 - la UI muestra el mensaje; nunca un traceback
         return {"existe": True, "df": _vacio(), "hora": ahora_rd(), "aviso": "", "error": str(e)}
     aviso = ""
@@ -184,7 +184,7 @@ def _formato_pestana(ws) -> None:
         peticiones.append({"setDataValidation": {"range": rango(i[col]), "rule": {
             "condition": {"type": "DATE_IS_VALID"}, "showCustomUi": True, "strict": False}}})
     peticiones.append({"setDataValidation": {"range": rango(i[COL_EMPRESA]), "rule": {
-        "condition": {"type": "ONE_OF_LIST", "values": [{"userEnteredValue": e} for e in EMPRESAS_PAGO]},
+        "condition": {"type": "ONE_OF_LIST", "values": [{"userEnteredValue": EMPRESA_ANTILLANA}]},
         "showCustomUi": True, "strict": False}}})
     ws.spreadsheet.batch_update({"requests": peticiones})
 
@@ -237,11 +237,6 @@ def _texto(v) -> str:
     return str(v).strip()
 
 
-def _clave_empresa(texto) -> str:
-    t = unicodedata.normalize("NFKD", str(texto or "")).encode("ascii", "ignore").decode()
-    return " ".join(t.lower().split())
-
-
 def _monto(v):
     v = _plano(v)
     if isinstance(v, Real) and not isinstance(v, bool):
@@ -270,12 +265,6 @@ def enriquecer_ep(df: pd.DataFrame, hoy):
         if not decl and not bl and not desc and dop is None:
             continue  # fila preparada y todavía en blanco
         n = int(r["FilaSheet"])
-        emp_txt = _texto(r.get(COL_EMPRESA))
-        emp = _EMPRESAS.get(_clave_empresa(emp_txt), "")
-        if emp_txt and not emp:
-            avisos.append(f"Fila {n}: empresa '{emp_txt}' no reconocida.")
-        elif not emp_txt:
-            avisos.append(f"Fila {n}: sin empresa.")
         lim_crudo, pag_crudo = _plano(r.get(COL_LIMITE)), _plano(r.get(COL_PAGADO))
         limite, pago = parsear_fecha(lim_crudo), parsear_fecha(pag_crudo)
         if limite is None:
@@ -295,7 +284,7 @@ def enriquecer_ep(df: pd.DataFrame, hoy):
         llegada = parsear_fecha(llegada_crudo)
         if llegada is None and _texto(llegada_crudo):
             avisos.append(f"Fila {n}: llegada '{_texto(llegada_crudo)}' no válida.")
-        filas.append({"Fila": n, "Empresa": emp or "Sin empresa", "Declaracion": decl, "BL": bl,
+        filas.append({"Fila": n, "Empresa": EMPRESA_ANTILLANA, "Declaracion": decl, "BL": bl,
                       "Descripcion": desc, "Cantidad": _texto(r.get(COL_CANT)), "Llegada": llegada,
                       "Limite": limite, "Pago": pago, "Pagado": pago is not None,
                       "Dias": dias_de_retraso(limite, pago, hoy), "DOP": dop})
@@ -323,8 +312,9 @@ _CSS = (
     ".ep-wrap { overflow-x:auto; margin:6px 0 16px; }"
     ".ep-tabla { width:100%; border-collapse:separate; border-spacing:0; background:#fff;"
     " border:1px solid #E5E7EB; border-radius:12px; overflow:hidden; box-shadow:0 1px 4px rgba(17,24,39,0.06); }"
-    ".ep-tabla th { background:#111827; color:#fff; font-size:0.72rem; font-weight:700; text-transform:uppercase;"
-    " letter-spacing:0.05em; padding:11px 14px; text-align:center; white-space:nowrap; }"
+    ".ep-tabla th { background:#DBEAFE; color:#1E3A8A; font-size:0.72rem; font-weight:700; text-transform:uppercase;"
+    " letter-spacing:0.05em; padding:11px 14px; text-align:center; white-space:nowrap;"
+    " border-bottom:1px solid #BFDBFE; }"
     ".ep-tabla td { padding:9px 14px; text-align:center; font-size:0.88rem; color:#111827;"
     " border-top:1px solid #F3F4F6; }"
     ".ep-tabla tbody tr:nth-child(even) { background:#F9FAFB; }"
@@ -339,6 +329,7 @@ _CSS = (
     ".ep-estado { display:inline-block; font-size:0.75rem; font-weight:700; color:#fff; padding:2px 12px;"
     " border-radius:999px; }"
     ".ep-meta { color:#6B7280; font-size:0.85rem; margin-top:2px; }"
+    ".ep-decl { color:#1E3A8A; font-size:0.82rem; font-weight:600; margin-top:2px; }"
     ".ep-totales { display:flex; flex-wrap:wrap; justify-content:center; align-items:baseline; gap:28px;"
     " margin-top:14px; }"
     ".ep-etq { font-size:0.68rem; text-transform:uppercase; letter-spacing:0.04em; color:#6B7280; display:block;"
@@ -405,7 +396,6 @@ def _tarjeta(r) -> str:
     totales = [
         f'<div><span class="ep-etq">{"Monto pagado RD$" if pagado else "Total a pagar RD$"}</span>'
         f'<span class="ep-val">{_dop(r.DOP)}</span></div>',
-        f'<div><span class="ep-etq">Número de declaración</span><span class="ep-val f">{_esc(r.Declaracion) or "—"}</span></div>',
         f'<div><span class="ep-etq">Fecha de pago</span><span class="ep-val f">{_fd(r.Limite)}</span></div>',
     ]
     if pagado:
@@ -416,6 +406,7 @@ def _tarjeta(r) -> str:
     return ('<div class="ep-card">'
             f'<div class="ep-cabeza"><span class="ep-bl">{_esc(r.BL) or "(sin BL)"}'
             f'<span class="ep-emp">{_esc(r.Empresa)}</span></span>{estado}</div>'
+            + (f'<div class="ep-decl">Declaración {_esc(r.Declaracion)}</div>' if r.Declaracion else "")
             + (f'<div class="ep-meta">{meta}</div>' if meta else "")
             + f'<div class="ep-totales">{"".join(totales)}</div></div>')
 
@@ -433,14 +424,25 @@ def _encabezado(hora) -> None:
                 unsafe_allow_html=True)
 
 
-def panel_entrega_provisional(es_admin: bool, selector_origen):
+def _clave_mes(d) -> str:
+    return f"{d.year}-{d.month:02d}"
+
+
+def _etiqueta_mes(clave: str, conteo: dict) -> str:
+    if clave == "Todos":
+        return "Todos"
+    n = conteo.get(clave, 0)
+    return f"{MESES_ES_CORTO[int(clave[5:])]} {clave[:4]} · {n} {'entrega' if n == 1 else 'entregas'}"
+
+
+def panel_entrega_provisional(es_admin: bool, selector_origen, token: str = ""):
     """Vista dentro de Estatus de Pagos. selector_origen() dibuja el filtro 'Origen' (lo
-    provee pagos.py) en la primera columna de la fila de filtros."""
+    provee pagos.py) en la primera columna de la fila de filtros. `token`: hora de la última
+    lectura del Sheet principal (ver _cargar_ep_remoto)."""
     st.markdown(_CSS, unsafe_allow_html=True)
-    with st.spinner(f"Leyendo {NOMBRE_EP}…"):
-        datos = cargar_ep()
+    datos = cargar_ep(token)
     _encabezado(datos["hora"])
-    c0, c1, c2, c3 = st.columns(4)
+    c0, c1, c2, _c3 = st.columns(4)     # 4 columnas como las otras vistas: Origen no cambia de lugar ni de ancho
     with c0:
         selector_origen()
     if datos["error"]:
@@ -470,25 +472,25 @@ def panel_entrega_provisional(es_admin: bool, selector_origen):
                 f"{', '.join(COLUMNAS_EP)}.")
         return
 
-    with c1:
-        restaurar_filtro("ep_empresa", ["Todas"] + EMPRESAS_PAGO, "Todas")
-        empresa = st.selectbox("Empresa", ["Todas"] + EMPRESAS_PAGO, key="ep_empresa")
-        recordar_filtro("ep_empresa")
-    vista = df if empresa == "Todas" else df[df["Empresa"] == empresa]
-    meses = sorted({(d.year, d.month) for d in vista["Llegada"] if d is not None and not pd.isna(d)})
-    opciones_mes = ["Todos"] + [f"{MESES_ES_CORTO[m]} {a}" for a, m in meses]
-    restaurar_filtro("ep_mes", opciones_mes, "Todos")        # antes de crear el widget
+    # Pendiente por mes: mes de la fecha de pago (límite) y cuántas entregas PENDIENTES caen en él.
+    # Las etiquetas llevan un conteo que cambia, por eso selectbox_sincronizado (decisión #25).
+    claves = sorted({_clave_mes(d) for d in df["Limite"] if _hay(d)})
+    conteo = {k: 0 for k in claves}
+    for d in df.loc[~df["Pagado"], "Limite"]:
+        if _hay(d):
+            conteo[_clave_mes(d)] += 1
+    opciones_mes = ["Todos"] + claves
     restaurar_filtro("ep_estatus", list(_ESTATUS), _ESTATUS[0])
-    with c2:
+    with c1:
         estatus = st.selectbox("Estatus", _ESTATUS, key="ep_estatus")
         recordar_filtro("ep_estatus")
-    with c3:
-        mes = st.selectbox("Mes (Llegada)", opciones_mes, key="ep_mes")
-        recordar_filtro("ep_mes")
+    with c2:
+        mes = selectbox_sincronizado("Pendiente por mes", opciones_mes, "ep_mes",
+                                     lambda k: _etiqueta_mes(k, conteo),
+                                     valor_previo("ep_mes", opciones_mes, "Todos"))
+    vista = df
     if mes != "Todos":
-        a_sel, m_sel = next((a, m) for a, m in meses if f"{MESES_ES_CORTO[m]} {a}" == mes)
-        vista = vista[vista["Llegada"].apply(
-            lambda d: d is not None and not pd.isna(d) and d.year == a_sel and d.month == m_sel)]
+        vista = vista[vista["Limite"].apply(lambda d: _hay(d) and _clave_mes(d) == mes)]
 
     pend, pagados = vista[~vista["Pagado"]], vista[vista["Pagado"]]
     st.markdown(_tarjetas_resumen(pend), unsafe_allow_html=True)
@@ -496,11 +498,11 @@ def panel_entrega_provisional(es_admin: bool, selector_origen):
                f"En rojo con más de {DIAS_ROJO_EP}. Pagado = tiene fecha en {COL_PAGADO}.")
 
     if estatus in ("Todos", "Pendiente"):
-        st.markdown("**Pendientes por antigüedad**")
         if pend.empty:
             st.caption("No hay pendientes con esta selección.")
         else:
             st.markdown(_tabla_pendientes(ordenar_pendientes(pend)), unsafe_allow_html=True)
+
     pagados = pagados.sort_values("Pago", ascending=False)
     mostrar = {"Todos": pd.concat([ordenar_pendientes(pend), pagados]),
                "Pendiente": ordenar_pendientes(pend),
@@ -508,7 +510,6 @@ def panel_entrega_provisional(es_admin: bool, selector_origen):
     if estatus == "Pagado" and mostrar.empty:
         st.caption("No hay pagos registrados con esta selección.")
     if not mostrar.empty:
-        st.markdown("**Desglose por expediente**")
         st.markdown("".join(_tarjeta(r) for r in mostrar.itertuples()), unsafe_allow_html=True)
 
     if es_admin and avisos:

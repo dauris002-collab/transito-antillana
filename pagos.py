@@ -718,25 +718,12 @@ def _origen_actual() -> str:
     return st.session_state.get("pago_origen") or st.session_state.get("pago_origen_ult") or "Embarques"
 
 
-def _al_cambiar_origen():
-    """Elegir Repuesto y Taller o Entrega Provisional vuelve a leer su hoja (sin esperar la caché)."""
-    elegido = st.session_state.get("pago_origen")
-    if elegido == NOMBRE_TALLER:
-        invalidar_taller()
-    elif elegido == _NOMBRE_EP:
-        try:
-            from entrega_provisional import invalidar_ep
-            invalidar_ep()
-        except Exception:  # noqa: BLE001 - la vista avisa si no pudo cargarse
-            pass
-
-
 def _selector_origen():
     """Filtro 'Origen' (Embarques / Entrega Provisional / Repuesto y Taller si está configurado)."""
     opciones = _opciones_origen()
     ult = st.session_state.get("pago_origen_ult")
     st.selectbox("Origen", opciones, index=opciones.index(ult) if ult in opciones else 0,
-                 key="pago_origen", on_change=_al_cambiar_origen)
+                 key="pago_origen")
     st.session_state["pago_origen_ult"] = st.session_state["pago_origen"]
 
 
@@ -764,7 +751,13 @@ def _mostrar_taller(escribe: bool) -> bool:
     return True
 
 
-def _mostrar_entrega_provisional(es_admin: bool) -> bool:
+def _token_lectura(datos: dict) -> str:
+    """Hora de la última lectura del Sheet principal: parte la caché de Entrega Provisional, así
+    ↻ Actualizar y cada recarga de Tránsito también la recargan, sin tocar sheets_io."""
+    return str((datos or {}).get("hora") or "")
+
+
+def _mostrar_entrega_provisional(es_admin: bool, datos: dict) -> bool:
     """Dibuja la vista de Entrega Provisional. Devuelve False si no pudo cargarse (se vuelve a
     Embarques): un fallo de esta vista nunca debe tumbar Pagos de embarques."""
     try:
@@ -780,7 +773,7 @@ def _mostrar_entrega_provisional(es_admin: bool) -> bool:
         _selector_origen()
 
     try:
-        panel_entrega_provisional(es_admin, selector)
+        panel_entrega_provisional(es_admin, selector, _token_lectura(datos))
     except Exception as e:  # noqa: BLE001
         if not dibujado:
             _selector_origen()
@@ -1278,12 +1271,11 @@ def _encabezado_pagos(sello_info: dict):
     st.markdown(encabezado_html("Estatus de Pagos", "pagos", anio, sello), unsafe_allow_html=True)
 
 
-@st.fragment
-def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
+def _panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
     """taller_escribe: None = Taller no disponible (el filtro Origen ofrece solo Embarques y
     Entrega Provisional); True/False = disponible, y si el rol puede escribir en él."""
     if _origen_actual() == _NOMBRE_EP:
-        if _mostrar_entrega_provisional(es_admin):
+        if _mostrar_entrega_provisional(es_admin, datos):
             return
     if taller_escribe is not None and _origen_actual() == NOMBRE_TALLER:
         if _mostrar_taller(bool(taller_escribe)):
@@ -1379,3 +1371,30 @@ def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
         if st.button("Mover 'Empresa' antes de BL", key="btn_mover_empresa"):
             ok, mensaje = mover_empresa_primera_columna()
             (st.success if ok else st.error)(mensaje)
+
+
+def _precalentar_origenes(datos: dict, taller_escribe) -> None:
+    """Deja en caché Entrega Provisional y Repuesto y Taller DESPUÉS de dibujar la vista actual,
+    para que cambiar de Origen sea instantáneo en vez de esperar una lectura a Google (antes,
+    elegir Taller o Entrega Provisional invalidaba su caché y cada cambio costaba 1-3 s con la
+    pantalla anterior congelada). Si ya están en caché no cuesta nada; si no, cuesta una lectura
+    por pestaña cada ≤120 s. Nunca lanza: un fallo aquí no debe afectar la vista que ya se dibujó
+    (cada cargar_* devuelve el error como dato)."""
+    try:
+        from entrega_provisional import cargar_ep
+        cargar_ep(_token_lectura(datos))
+    except Exception:  # noqa: BLE001
+        pass
+    if taller_escribe is not None:
+        try:
+            from sheets_io import cargar_taller
+            cargar_taller()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@st.fragment
+def panel_pagos(datos: dict, es_admin: bool, taller_escribe=None):
+    """Estatus de Pagos: la vista del Origen elegido y, después, el precalentado de los otros."""
+    _panel_pagos(datos, es_admin, taller_escribe)
+    _precalentar_origenes(datos, taller_escribe)

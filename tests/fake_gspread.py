@@ -146,6 +146,10 @@ class FakeWorksheet:
     def add_cols(self, n):
         self.col_count += n
 
+    def add_rows(self, n):
+        self.libro._revisar_fallo()
+        self.row_count += n
+
 
 def _mostrar(v):
     if isinstance(v, bool):
@@ -212,7 +216,8 @@ class FakeSpreadsheet:
 
     def values_batch_get(self, rangos, params=None):
         self._lectura()
-        return {"valueRanges": [{"range": r, "values": self._hoja_de_rango(r).matriz()} for r in rangos]}
+        real = (params or {}).get("valueRenderOption") == "UNFORMATTED_VALUE"
+        return {"valueRanges": [{"range": r, "values": self._hoja_de_rango(r).matriz(real=real)} for r in rangos]}
 
     def values_get(self, rango, params=None):
         self._lectura()

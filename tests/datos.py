@@ -136,3 +136,47 @@ def libro_analitica(semilla: int = 7) -> FakeSpreadsheet:
                           rnd.choice(["Marítimo", "Marítimo", "Aéreo"]), "", "2026-11-01 08:00:00", "Dauris"]])
     libro.escrituras = libro.lecturas = 0
     return libro
+
+
+def libro_ordenes() -> FakeSpreadsheet:
+    """Sheet de órdenes de compra: pestañas Órdenes y Desglose con casos sucios a propósito."""
+    e = sio.EPOCH_SHEETS
+    hoy = sio.hoy_rd()
+    s = lambda n: (hoy + timedelta(days=n) - e).days
+    stamp = lambda n: s(n) + 0.5
+    cab_o = ["DOCUMENTO COMPRAS", "PROVEEDOR", "RESPONSABLE", "EMPRESA", "ESTATUS ORDEN", "COMENTARIO PARA TALLER",
+             "FECHA ACTUALIZACIÓN", "ACTUALIZADO POR"]
+    cab_d = ["FECHA DE SOLICITUD", "NO. Solicitud de pedido", "Fecha documento", "Posición", "No. Factura",
+             "Documento compras", "Material", "MAT. ANTIGUO", "Texto breve", "Cantidad de pedido",
+             "Cantidad Despachada", "PENDIENTE / BACKORDER", "Solicitante", "Cliente", "ESTATUS", "TRANSPORTISTA",
+             "FECHA DE EMBARQUE", "FECHA DE LLEGADA - ETA", "PUERTO", "ALMACÉN", "COMENTARIO"]
+    orden = [cab_o,
+             ["4300000448", "Cummins Inc", "David Tejeda", "Antillana Comercial", "ABIERTA", "Llega con la factura",
+              stamp(-2), "David Tejeda"],
+             ["4300000455", "Yale Materials", "David Tejeda", "Tecnicaribe", "ABIERTA", "", stamp(-12), "David Tejeda"],
+             ["4300000457", "Hitachi", "Ana Pérez", "Motor Ibérico", "COMPLETA", "", stamp(-30), "Ana Pérez"],
+             ["4100003641", "", "", "", "ABIERTA", "", "", ""]]
+    D = lambda *a: list(a)
+    desg = [cab_d,
+            D(s(-30), "SP-1", s(-28), 10, "", "4300000448", "MAT-A", "", "Filtro de aceite", 10, 0, "", "Taller",
+              "Cliente 1", "COLOCADA", "", "", "", "", "", ""),
+            D(s(-30), "SP-1", s(-28), 20, "", "4300000448", "MAT-B", "", "Filtro de aire", 4, 4, "", "Taller", "",
+              "DESPACHADO", "DHL", s(-3), s(4), "", "", ""),
+            D(s(-30), "SP-1", s(-28), 30, "", "4300000448", "MAT-C", "", "Empacadura", 6, 0, "", "Taller", "",
+              "COMPLETO", "", "", "", "", "", ""),
+            D(s(-20), "SP-2", s(-18), 10, "", "4300000455", "MAT-D", "", "Bomba", 5, 2, "", "Taller", "",
+              "BACKORDER", "", "", "", "", "", "sin fecha del fabricante"),
+            D(s(-20), "SP-2", s(-18), 20, "", "4300000455", "MAT-E", "", "Sello", 8, 0, "", "Taller", "",
+              "DESPACHADO A INTRANS", "", "", "", "", "", ""),
+            D(s(-50), "SP-3", s(-48), 10, "", "4300000457", "MAT-F", "", "Correa", 3, 0, "", "Taller", "", "COLOCADA",
+              "", "", "", "", "", ""),
+            D("", "", s(-10), 10, "", "4100003641", "MAT-G", "", "Turbo", 1, 0, "", "Taller", "", "", "", "", "", "",
+              "", ""),
+            D("", "", s(-10), 10, "", "9999999999", "MAT-H", "", "Huérfana", 1, 0, "", "Taller", "", "COLOCADA", "",
+              "", "", "", "", "")]
+    libro = FakeSpreadsheet({"Instrucciones": [["Léeme"]], "Órdenes": orden, "Desglose": desg, "Listas": [["X"]]})
+    libro.hoja("Órdenes").row_count = 60
+    libro.hoja("Órdenes").col_count = 10
+    libro.hoja("Desglose").row_count = 60
+    libro.hoja("Desglose").col_count = 25
+    return libro

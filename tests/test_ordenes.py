@@ -91,6 +91,41 @@ def test_celdas_vacias_y_marcadores():
 
 
 # ------------------------------------------------------------ lectura
+def _ficha_html(ses, doc):
+    d = oc.construir(_t(ses), HOY())
+    o = d["ordenes"][d["ordenes"].Doc == doc].iloc[0]
+    return oc._seguimiento_html(o, d["lineas"][d["lineas"].Doc == doc])
+
+
+def test_seguimiento_muestra_etapas_y_donde_esta(ses):
+    h = _ficha_html(ses, "4300000448")   # 1 COLOCADA, 1 DESPACHADO (DHL), 1 COMPLETO cerrada
+    assert h.count('class="oc-st ') == 6
+    # Colocada y Despachada tienen líneas aquí; Confirmada no (una línea aún no llega ahí); En puerto sin líneas
+    assert 'oc-st act"><div class="oc-dot">1</div><div class="oc-sn">Colocada' in h
+    assert 'oc-st pend"><div class="oc-dot"></div><div class="oc-sn">Confirmada' in h
+    assert 'oc-st act"><div class="oc-dot">1</div><div class="oc-sn">Despachada' in h
+    assert 'oc-st pend"><div class="oc-dot"></div><div class="oc-sn">En puerto' in h
+    assert "Recibida" in h and "1 línea(s) cerradas" in h
+    assert "Dónde está ahora" in h and "<b>DHL</b>" in h and "ETA" in h
+    assert "En el proveedor" in h and "10 uds pendientes" in h
+
+
+def test_seguimiento_avisa_lo_que_falta_y_el_backorder(ses):
+    h = _ficha_html(ses, "4300000455")   # BACKORDER + DESPACHADO A INTRANS sin fechas
+    assert "1 en backorder" in h
+    assert 'oc-st ok"><div class="oc-dot">✓</div><div class="oc-sn">Colocada' in h, "todas las líneas ya la pasaron"
+    assert 'oc-st act"><div class="oc-dot">1</div><div class="oc-sn">Confirmada' in h
+    assert "<b>INTRANS</b>" in h and h.count('class="falta">sin fecha') == 2
+    assert "sin fecha de embarque" in h and "sin ETA" in h
+    assert "Falta despachar" in h, "el backorder y lo no despachado se explican"
+
+
+def test_seguimiento_orden_sin_estatus_ni_fechas_no_revienta(ses):
+    h = _ficha_html(ses, "4100003641")   # línea sin estatus
+    assert h.count('class="oc-st ') == 6 and "oc-st act" not in h
+    assert "Dónde está ahora" in h and "En el proveedor" in h
+
+
 def test_lectura_y_derivados(ses):
     t = _t(ses)
     assert t["avisos"] == [] and t["faltan_duro"] == []

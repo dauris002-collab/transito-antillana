@@ -1051,6 +1051,24 @@ _CSS = (
     ".oc-fg .k { font-size:0.68rem; color:#6B7280; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:2px; }"
     ".oc-fg .v { font-weight:700; font-size:0.9rem; word-break:break-word; }"
     ".oc-etapas { display:flex; gap:8px; flex-wrap:wrap; margin:14px 0 6px; align-items:center; }"
+    ".oc-step { display:flex; margin:16px 0 10px; }"
+    ".oc-st { flex:1; min-width:96px; text-align:center; position:relative; padding:0 4px; }"
+    ".oc-st:not(:first-child)::before { content:''; position:absolute; top:13px; left:-50%; width:100%; height:3px;"
+    " background:#E5E7EB; z-index:0; }"
+    ".oc-st.ok::before, .oc-st.act::before { background:#16A34A; }"
+    ".oc-dot { position:relative; z-index:1; width:28px; height:28px; border-radius:50%; margin:0 auto 6px;"
+    " display:flex; align-items:center; justify-content:center; font-weight:800; font-size:0.8rem;"
+    " background:#fff; border:2px solid #D1D5DB; color:#9CA3AF; }"
+    ".oc-st.ok .oc-dot { background:#16A34A; border-color:#16A34A; color:#fff; }"
+    ".oc-st.act .oc-dot { background:#2E86DE; border-color:#2E86DE; color:#fff; }"
+    ".oc-sn { font-size:0.78rem; font-weight:700; color:#374151; } .oc-st.pend .oc-sn { color:#9CA3AF; }"
+    ".oc-ss { font-size:0.7rem; color:#6B7280; line-height:1.3; margin-top:2px; }"
+    ".oc-donde { margin:10px 0 4px; border-top:1px solid #EEF2F6; padding-top:10px; font-size:0.84rem; }"
+    ".oc-donde .t { font-size:0.68rem; color:#6B7280; text-transform:uppercase; letter-spacing:0.05em;"
+    " margin-bottom:6px; }"
+    ".oc-dr { display:flex; flex-wrap:wrap; gap:4px 14px; align-items:center; padding:5px 0;"
+    " border-bottom:1px dashed #EEF2F6; }"
+    ".oc-dr b { color:#0C447C; } .oc-dr .falta { color:#B45309; font-weight:700; }"
     ".oc-barra { height:8px; background:#EEF2F6; border-radius:4px; overflow:hidden; margin:8px 0 2px; }"
     ".oc-barra b { display:block; height:100%; background:#16A34A; }"
     ".oc-nota { background:#FFFBEB; border:1px solid #FDE68A; border-left:4px solid #F0B90B; border-radius:10px;"
@@ -1180,13 +1198,89 @@ def _filtro(etiqueta: str, opciones: list, clave: str, defecto=None):
     return v
 
 
+ETAPAS = [("COLOCADA", "Colocada"), ("CONFIRMADA", "Confirmada"), ("DESPACHADO", "Despachada"),
+          ("EN TRÁNSITO", "En tránsito"), ("EN PUERTO", "En puerto"), ("COMPLETO", "Recibida")]
+
+
+def _rango_etapa(est: str) -> int:
+    """Posición de un estatus de línea en el recorrido. BACKORDER = confirmada pero en espera del proveedor;
+    sin estatus = -1."""
+    if est == "BACKORDER":
+        return 1
+    for i, (k, _) in enumerate(ETAPAS):
+        if k == est:
+            return i
+    return -1
+
+
+def _falta(txt: str) -> str:
+    return f'<span class="falta">{txt}</span>'
+
+
+def _min_fecha(serie):
+    v = [x for x in serie if x is not None and not pd.isna(x)]
+    return min(v) if v else None
+
+
+def _seguimiento_html(o: pd.Series, lineas: pd.DataFrame) -> str:
+    """Recorrido de la orden (dónde está y qué etapas lleva) con lo que el Sheet sabe HOY: el estatus actual de cada
+    línea, transportista, embarque, ETA, puerto y cantidades. El Sheet no guarda cuándo pasó de una etapa a otra."""
+    rangos = [_rango_etapa(e) for e in lineas["Estatus"]] if len(lineas) else []
+    cerradas = max(int(o.Lineas) - int(o.Abiertas), 0)
+    minimo = min(rangos) if rangos else len(ETAPAS) - 1   # sin líneas abiertas: todo lo anterior a «Recibida» pasó
+    n_bo = int((lineas["Estatus"] == "BACKORDER").sum()) if len(lineas) else 0
+    avanzadas = lineas[lineas["Estatus"].isin(AVANZADOS)] if len(lineas) else lineas
+    subs = {
+        "COLOCADA": _fd(o.Colocacion) if o.Colocacion else "sin fecha",
+        "CONFIRMADA": f"{n_bo} en backorder" if n_bo else "",
+        "DESPACHADO": ("embarque " + _fd(_min_fecha(avanzadas["Embarque"]))) if len(avanzadas)
+        and _min_fecha(avanzadas["Embarque"]) else ("sin fecha de embarque" if len(avanzadas) else ""),
+        "EN TRÁNSITO": ("ETA " + _fd(o.ETA)) if o.ETA else ("sin ETA" if len(avanzadas) else ""),
+        "EN PUERTO": ", ".join(sorted({x for x in avanzadas["Puerto"] if x})) if len(avanzadas) else "",
+        "COMPLETO": f"{cerradas} línea(s) cerradas" if cerradas else "",
+    }
+    pasos = []
+    for i, (clave, nombre) in enumerate(ETAPAS):
+        aqui = sum(1 for r in rangos if r == i) if clave != "COMPLETO" else cerradas
+        # act = hay líneas en esta etapa · ok = TODAS las líneas abiertas ya la pasaron · pend = aún no
+        estado = "act" if aqui else ("ok" if minimo > i else "pend")
+        punto = str(aqui) if estado == "act" else ("✓" if estado == "ok" else "")
+        pasos.append(f'<div class="oc-st {estado}"><div class="oc-dot">{punto}</div><div class="oc-sn">{nombre}</div>'
+                     f'<div class="oc-ss">{_esc(subs[clave])}</div></div>')
+    html = '<div class="oc-step">' + "".join(pasos) + "</div>"
+
+    filas = []
+    if len(avanzadas):
+        grupos: dict = {}
+        for ln in avanzadas.itertuples():
+            grupos.setdefault((ln.Estatus, ln.Transp or ""), []).append(ln)
+        for (est, transp), g in grupos.items():
+            emb = _min_fecha([x.Embarque for x in g])
+            eta = _min_fecha([x.ETA for x in g])
+            ptos = sorted({x.Puerto for x in g if x.Puerto})
+            uds = sum((x.Desp or 0) for x in g if x.Desp is not None and not pd.isna(x.Desp))
+            filas.append(
+                f'<div class="oc-dr">{_chip_linea(est)}<span><b>{len(g)}</b> línea(s) · {_cant(uds)} uds</span>'
+                "<span>Transportista: " + (f"<b>{_esc(transp)}</b>" if transp else _falta("sin transportista")) + "</span>"
+                "<span>Embarque: " + (_fd(emb) if emb else _falta("sin fecha")) + "</span>"
+                "<span>ETA: " + (_fd(eta) if eta else _falta("sin fecha")) + "</span>"
+                "<span>Puerto: " + (_esc(", ".join(ptos)) if ptos else "—") + "</span></div>")
+    sin_despachar = lineas[lineas["Estatus"].isin(["COLOCADA", "CONFIRMADA", "BACKORDER", ""])] if len(lineas) else lineas
+    if len(sin_despachar):
+        uds = sin_despachar["Pend"].fillna(0).sum()
+        filas.append(f'<div class="oc-dr"><span class="oc-chip e-col">En el proveedor</span><span><b>{len(sin_despachar)}</b> '
+                     f'línea(s) sin despachar · {_cant(uds)} uds pendientes</span></div>')
+    resto = float(o.PendUnid or 0) - float(sin_despachar["Pend"].fillna(0).sum() if len(sin_despachar) else 0)
+    if resto > 0:
+        filas.append(f'<div class="oc-dr"><span class="oc-chip e-bo">Falta despachar</span><span><b>{_cant(resto)}</b> uds de '
+                     "de líneas ya marcadas como despachadas aún faltan por enviar</span></div>")
+    if filas:
+        html += '<div class="oc-donde"><div class="t">Dónde está ahora</div>' + "".join(filas) + "</div>"
+    return html
+
+
 def _ficha(o: pd.Series, lineas: pd.DataFrame) -> None:
-    """Orden completa: datos, reparto de líneas por estatus, avance y desglose."""
-    cont = lineas["Estatus"].replace("", SIN_ESTATUS).value_counts()
-    etapas = "".join(_chip_linea(e) + f'<span style="font-weight:700;margin-right:10px;">{int(cont.get(e, 0))}</span>'
-                     for e in ESTATUS_LINEA if cont.get(e, 0)) \
-        + (f'<span class="oc-chip e-comp">Sin estatus</span><b style="margin-right:10px;">{int(cont.get(SIN_ESTATUS))}</b>'
-           if cont.get(SIN_ESTATUS, 0) else "")
+    """Orden completa: datos, recorrido por etapas, avance y desglose."""
     ped, desp = lineas["Pedida"].fillna(0).sum(), lineas["Desp"].fillna(0).sum()
     pct = 0 if not ped else min(100, round(100 * desp / ped))
     campos = [("Responsable", o.Responsable), ("Solicitado por", o.Solicitantes or "—"),
@@ -1199,7 +1293,7 @@ def _ficha(o: pd.Series, lineas: pd.DataFrame) -> None:
         f'<div class="oc-ficha"><div class="oc-fh"><div class="oc-ft">Orden {_esc(o.Doc)} '
         f'<span>· {_esc(o.Proveedor or "proveedor sin registrar")}</span></div>'
         f'<div>{_chip_derivado(o.Derivado)} &nbsp;{_chip_emp(o.Empresa)}</div></div>'
-        f'<div class="oc-fg">{grid}</div><div class="oc-etapas">{etapas}</div>'
+        f'<div class="oc-fg">{grid}</div>{_seguimiento_html(o, lineas)}'
         f'<div class="oc-barra"><b style="width:{pct}%"></b></div>'
         f'<div style="font-size:0.74rem;color:#6B7280;">{_cant(desp)} de {_cant(ped)} unidades despachadas ({pct}%) · '
         f'{_cant(o.PendUnid)} pendientes</div>{nota}</div>', unsafe_allow_html=True)

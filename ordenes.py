@@ -62,7 +62,9 @@ from ui_encabezado import avisar_tras_recarga, encabezado_html, recordar_filtro,
 
 NOMBRE_SECCION = "Órdenes de compra"
 PESTANA_ORDENES = "Órdenes"
-PESTANA_DESGLOSE = "Desglose"
+PESTANA_DESGLOSE = "Desglose"   # LEGADO: si existe, se sigue leyendo (sin responsable propio)
+PESTANA_CARGA = "Carga"          # nombre de la hoja de la plantilla de carga masiva
+PESTANA_LISTAS = "Listas"       # su columna RESPONSABLE dice qué pestañas de responsable hay
 ROLES_ESCRITURA = ("admin", "compras")
 CATEGORIA_LOG = "Órdenes de compra"
 
@@ -80,29 +82,36 @@ MAX_FILAS_TABLA = 300            # filas que se dibujan por tabla (la descarga C
 COLUMNAS_D = [
     ("sol", "FECHA DE SOLICITUD", ("Fecha Solicitud", "Fecha de la solicitud")),
     ("nosol", "NO. Solicitud de pedido", ("No Solicitud", "Solicitud de pedido", "Solicitud")),
+    ("solicitante", "Solicitante", ("Solicitado por",)),
+    ("cliente", "Cliente", ()),
     ("fdoc", "Fecha documento", ("Fecha de documento", "Fecha doc", "Fecha doc.")),
     ("pos", "Posición", ("Pos", "Pos.", "Posicion", "Posición de pedido")),
-    ("fact", "No. Factura", ("Factura", "No Factura", "Numero de Factura")),
-    ("doc", "Documento compras", ("Doc. compras", "Doc compras", "Documento de compras", "Pedido",
-                                  "No. Orden", "Orden", "Orden de compra", "Documento")),
-    ("mat", "Material", ("No. Parte", "Numero de Parte", "Parte")),
+    ("doc", "Orden de Compras", ("Documento compras", "Doc. compras", "Doc compras", "Documento de compras", "Pedido",
+                                 "No. Orden", "Orden", "Orden de compra", "Documento")),
+    ("mat", "Material", ("Numero de Material", "No. Material")),
     ("matant", "MAT. ANTIGUO", ("Material antiguo", "Mat Antiguo")),
+    ("nparte", "No. Parte", ("Numero de Parte", "Parte")),
     ("texto", "Texto breve", ("Descripción", "Descripcion", "Texto")),
     ("pedida", "Cantidad de pedido", ("Cantidad pedido", "Cant. pedido", "Cantidad pedida", "Pedida")),
     ("desp", "Cantidad Despachada", ("Despachada", "Cant. despachada", "Cantidad Enviada")),
     ("pend", "PENDIENTE / BACKORDER", ("Pendiente", "Backorder")),
-    ("solicitante", "Solicitante", ("Solicitado por",)),
-    ("cliente", "Cliente", ()),
     ("estatus", "ESTATUS", ("Estatus linea", "Estado")),
-    ("transp", "TRANSPORTISTA", ("Transportista", "Courier", "Via")),
+    ("fact", "No. Factura", ("Factura", "No Factura", "Numero de Factura")),
+    # El 2.º «ESTATUS» de la hoja (DESPACHADO / COMPLETA / PARCIAL): `_mapa_encabezados` da el 1.º a `estatus` y el
+    # 2.º a esta clave porque el primero ya quedó usado.
+    ("estatus2", "ESTATUS", ()),
+    # «ALMACÉN» (1.º) = el courier/consolidador a donde va la mercancía (INTRANS, LOCCITEC…).
+    ("transp", "ALMACÉN", ("TRANSPORTISTA", "Courier", "Via")),
     ("embarque", "FECHA DE EMBARQUE", ("Fecha Embarque",)),
     ("eta", "FECHA DE LLEGADA - ETA", ("ETA", "Fecha de llegada", "Fecha Llegada")),
-    ("puerto", "PUERTO", ()),
-    ("almacen", "ALMACÉN", ("Almacen",)),
-    ("coment", "COMENTARIO", ("Comentarios", "Observaciones")),
+    ("puerto", "PUERTO / Aeropuerto", ("PUERTO", "Aeropuerto")),
+    ("almacen", "ALMACÉN NUESTRO", ("Almacen nuestro", "Almacén", "Almacen")),
+    ("coment", "COMENTARIOS", ("COMENTARIO", "Observaciones")),
 ]
+OPCIONALES_D = {"nparte", "estatus2"}   # si el Sheet no las trae no se avisa (solo falla si se intenta escribirlas)
+ESTATUS_DESPACHO = ["DESPACHADO", "COMPLETA", "PARCIAL"]
 COLUMNAS_O = [
-    ("doc", "DOCUMENTO COMPRAS", ("Documento compras", "No. Orden", "Orden", "Documento")),
+    ("doc", "DOCUMENTO COMPRAS", ("Documento compras", "Orden de Compras", "No. Orden", "Orden", "Documento")),
     ("prov", "PROVEEDOR", ("Suplidor", "Nombre del proveedor")),
     ("resp", "RESPONSABLE", ("Analista", "Analista de compras")),
     ("emp", "EMPRESA", ()),
@@ -258,7 +267,7 @@ def _canonico(clave: str, raw, orden: bool = False):
             return None
     if clave == "estatus" and not orden:
         return normalizar_estatus(raw)[0] or None
-    if clave == "transp" and not orden:
+    if clave in ("transp", "estatus2") and not orden:
         return (_texto(raw).upper() or None)
     if clave == "est" and orden:
         return normalizar_estatus_orden(raw)[0]
@@ -326,18 +335,85 @@ def _mensaje_error(e: Exception) -> str:
     return str(e)
 
 
-def _leer_valores(ss):
-    """(valores Órdenes, valores Desglose, título real Órdenes, título real Desglose); un título es None
-    si la pestaña no existe. Lee SIN formato (números y fechas seriales)."""
+RESERVADAS = {"instrucciones", "ordenes", "listas"}   # pestañas que NO son de responsable (comparadas con _norm)
+
+
+def _nombres_responsables(valores_listas: list) -> list:
+    """Nombres de la columna RESPONSABLE de la pestaña Listas, en orden, sin vacíos ni repetidos."""
+    if not valores_listas or not valores_listas[0]:
+        return []
+    cab = [_norm_encabezado(h) for h in valores_listas[0]]
+    if _norm_encabezado("RESPONSABLE") not in cab:
+        return []
+    c = cab.index(_norm_encabezado("RESPONSABLE"))
+    vistos, nombres = set(), []
+    for f in valores_listas[1:]:
+        n = _texto(f[c]) if c < len(f) else ""
+        if n and _norm(n) not in vistos:
+            vistos.add(_norm(n))
+            nombres.append(n)
+    return nombres
+
+
+def _hoja_de(nombre: str, titulos: list):
+    """Pestaña que corresponde a un responsable: título igual (sin acentos ni mayúsculas) o, si no hay,
+    el único título que empieza igual en uno u otro sentido («Yokairis» ↔ «Yokairis Martes»)."""
+    n = _norm(nombre or "")
+    if not n:
+        return None
+    for t in titulos:
+        if _norm(t) == n:
+            return t
+    cand = [t for t in titulos if _norm(t) and (_norm(t).startswith(n) or n.startswith(_norm(t)))]
+    return cand[0] if len(cand) == 1 else None
+
+
+def _asignar_hojas(titulos: list, nombres: list):
+    """({título de pestaña: nombre del responsable}, [nombres de Listas sin pestaña]). El nombre que manda
+    es el TÍTULO de la pestaña. Las pestañas reservadas y el Desglose heredado no cuentan."""
+    libres = [t for t in titulos if _norm(t) not in RESERVADAS and _norm(t) != _norm(PESTANA_DESGLOSE)]
+    asignadas, sin_hoja = {}, []
+    for n in nombres:
+        h = _hoja_de(n, [t for t in libres if t not in asignadas])
+        if h is None:
+            sin_hoja.append(n)
+        else:
+            asignadas[h] = h
+    return asignadas, sin_hoja
+
+
+def _rango_a1(titulo: str, ultima_col: str, filas: int) -> str:
+    return "'" + titulo.replace("'", "''") + f"'!A1:{ultima_col}{filas}"
+
+
+def _leer_valores(ss) -> dict:
+    """Lee Órdenes, Listas y todas las pestañas candidatas en UNA petición, SIN formato (números y fechas
+    seriales). {'o': matriz Órdenes, 't_o': título o None, 'd': {título: matriz} (pestañas de responsable y,
+    si existe, el Desglose heredado), 'resp': {título: responsable o None}, 'sin_hoja': [nombres de Listas
+    sin pestaña], 'hay_listas': bool}."""
     titulos = {_norm(w.title): w.title for w in _con_reintento(lambda: ss.worksheets())}
-    t_o, t_d = titulos.get(_norm(PESTANA_ORDENES)), titulos.get(_norm(PESTANA_DESGLOSE))
-    if t_o is None or t_d is None:
-        return [], [], t_o, t_d
-    rangos = [f"'{t_o}'!A1:Z{MAX_FILAS}", f"'{t_d}'!A1:Z{MAX_FILAS}"]
+    t_o, t_l = titulos.get(_norm(PESTANA_ORDENES)), titulos.get(_norm(PESTANA_LISTAS))
+    t_leg = titulos.get(_norm(PESTANA_DESGLOSE))
+    candidatas = [t for n, t in titulos.items() if n not in RESERVADAS]
+    if t_o is None:
+        return {"o": [], "t_o": None, "d": {}, "resp": {}, "sin_hoja": [], "hay_listas": t_l is not None}
+    rangos = [_rango_a1(t_o, "Z", MAX_FILAS)] + ([_rango_a1(t_l, "J", 300)] if t_l else []) \
+        + [_rango_a1(t, "Z", MAX_FILAS) for t in candidatas]
     params = {"valueRenderOption": "UNFORMATTED_VALUE", "dateTimeRenderOption": "SERIAL_NUMBER"}
-    resp = _con_reintento(lambda: ss.values_batch_get(rangos, params=params))
-    rv = resp.get("valueRanges", [])
-    return (rv[0].get("values", []) if rv else []), (rv[1].get("values", []) if len(rv) > 1 else []), t_o, t_d
+    rv = _con_reintento(lambda: ss.values_batch_get(rangos, params=params)).get("valueRanges", [])
+    vals = [(r.get("values", []) if r else []) for r in rv] + [[]] * (len(rangos) - len(rv))
+    vo, resto = vals[0], vals[1:]
+    vl = resto.pop(0) if t_l else []
+    por_titulo = dict(zip(candidatas, resto))
+    nombres = _nombres_responsables(vl)
+    asignadas, sin_hoja = _asignar_hojas(candidatas, nombres)
+    d, resp = {}, {}
+    for t in candidatas:
+        if t in asignadas:
+            d[t], resp[t] = por_titulo[t], asignadas[t]
+    if t_leg:
+        d[t_leg], resp[t_leg] = por_titulo.get(t_leg, []), None
+    return {"o": vo, "t_o": t_o, "d": d, "resp": resp, "sin_hoja": sin_hoja, "hay_listas": t_l is not None}
 
 
 @st.cache_data(ttl=TTL, show_spinner=False)
@@ -345,8 +421,7 @@ def _leer_remoto(token: str = "") -> dict:
     """`token` solo parte la caché (la app pasa la hora de la última lectura del Sheet principal, así
     ↻ Actualizar también recarga esta vista). No atrapa errores: un fallo no queda cacheado."""
     ss = get_spreadsheet_ordenes()
-    vo, vd, t_o, t_d = _leer_valores(ss)
-    return {"o": vo, "d": vd, "t_o": t_o, "t_d": t_d, "hora": ahora_rd()}
+    return {**_leer_valores(ss), "hora": ahora_rd()}
 
 
 def cargar(token: str = "") -> dict:
@@ -354,8 +429,13 @@ def cargar(token: str = "") -> dict:
     try:
         r = _leer_remoto(str(token or ""))
     except Exception as e:  # noqa: BLE001 - la UI muestra el mensaje; nunca un traceback
-        return {"error": _mensaje_error(e), "hora": ahora_rd(), "faltan": [], "o": [], "d": []}
-    faltan = [n for n, t in ((PESTANA_ORDENES, r["t_o"]), (PESTANA_DESGLOSE, r["t_d"])) if t is None]
+        return {"error": _mensaje_error(e), "hora": ahora_rd(), "faltan": [], "o": [], "d": {}, "resp": {},
+                "sin_hoja": []}
+    faltan = []
+    if r["t_o"] is None:
+        faltan.append(PESTANA_ORDENES)
+    if not r["d"]:
+        faltan.append("una pestaña por responsable (sus nombres salen de Listas → RESPONSABLE)")
     return {**r, "error": None, "faltan": faltan}
 
 
@@ -397,20 +477,18 @@ def _registros(valores: list, defs: list, datos: list):
     return pos, filas, ultima
 
 
-def tablas(valores_o: list, valores_d: list) -> dict:
+def tablas(valores_o: list, hojas_d, resp_hojas: dict | None = None) -> dict:
     """Todo lo que se sabe del Sheet, sin interpretar: posiciones de columnas, índices por llave y avisos
-    de datos. Lo usan la vista (con datos cacheados) y la escritura (con datos en vivo)."""
+    de datos. Lo usan la vista (con datos cacheados) y la escritura (con datos en vivo).
+    `hojas_d` = {título de pestaña: matriz}; `resp_hojas` = {título: responsable o None}. Una matriz suelta
+    se toma como el Desglose heredado (sin responsable propio)."""
+    if not isinstance(hojas_d, dict):
+        hojas_d = {PESTANA_DESGLOSE: hojas_d}
+    resp_hojas = resp_hojas if resp_hojas is not None else {h: None for h in hojas_d}
     pos_o, regs_o, ult_o = _registros(valores_o, COLUMNAS_O, ["doc", "prov", "resp", "emp", "coment"])
-    pos_d, regs_d, ult_d = _registros(valores_d, COLUMNAS_D,
-                                      [k for k, _, _ in COLUMNAS_D if k != "pend"])
     avisos, faltan_duro = [], []
     if valores_o and "doc" not in pos_o:
         faltan_duro.append(f"{PESTANA_ORDENES}: {NOMBRE_O['doc']}")
-    if valores_d:
-        faltan_duro += [f"{PESTANA_DESGLOSE}: {NOMBRE_D[k]}" for k in ("doc", "pos") if k not in pos_d]
-    for k, n in NOMBRE_D.items():
-        if valores_d and k not in pos_d and k not in ("doc", "pos", "pend"):
-            avisos.append(f"A la pestaña {PESTANA_DESGLOSE} le falta la columna {n}.")
     for k, n in NOMBRE_O.items():
         if valores_o and k not in pos_o and k != "doc":
             avisos.append(f"A la pestaña {PESTANA_ORDENES} le falta la columna {n}.")
@@ -436,36 +514,46 @@ def tablas(valores_o: list, valores_d: list) -> dict:
         idx_o[doc] = reg
         ordenes.append(reg)
 
-    lineas, idx_d = [], {}
-    for r in regs_d:
-        n = r["Fila"]
-        doc, pos = _texto(r.get("doc")), _texto(r.get("pos"))
-        if not doc or not pos:
-            avisos.append(f"{PESTANA_DESGLOSE} fila {n}: falta " + ("Documento compras" if not doc else "Posición")
-                          + "; no se muestra.")
-            continue
-        if (doc, pos) in idx_d:
-            avisos.append(f"{PESTANA_DESGLOSE} fila {n}: la línea {doc}/{pos} ya está en la fila "
-                          f"{idx_d[(doc, pos)]['Fila']}; se usa la primera.")
-            continue
-        reg = {"Fila": n, "doc": doc, "pos": pos}
-        for k in ESCRIBIBLES_D:
-            reg[k] = _canonico(k, r.get(k))
-        est_raw = r.get("estatus")
-        est, transp, ok = normalizar_estatus(est_raw)
-        if not ok:
-            avisos.append(f"{PESTANA_DESGLOSE} fila {n}: estatus '{_texto(est_raw)}' no reconocido.")
-        reg["estatus"] = est or None
-        if not reg.get("transp") and transp:
-            reg["transp"] = transp
-        for k in CLAVES_FECHA | CLAVES_NUM:
-            crudo = _limpio(r.get(k))
-            if crudo is not None and reg[k] is None:
-                avisos.append(f"{PESTANA_DESGLOSE} fila {n}: {NOMBRE_D[k]} '{_texto(crudo)}' no es válido.")
-        idx_d[(doc, pos)] = reg
-        lineas.append(reg)
-    return {"pos_o": pos_o, "pos_d": pos_d, "ordenes": ordenes, "lineas": lineas, "idx_o": idx_o, "idx_d": idx_d,
-            "ultima_o": ult_o, "ultima_d": ult_d, "avisos": avisos, "faltan_duro": faltan_duro}
+    hojas, lineas, idx_d, hoja_de_doc = {}, [], {}, {}
+    for titulo, valores in hojas_d.items():
+        pos_d, regs_d, ult_d = _registros(valores, COLUMNAS_D, [k for k, _, _ in COLUMNAS_D if k != "pend"])
+        hojas[titulo] = {"pos": pos_d, "ultima": ult_d, "resp": resp_hojas.get(titulo)}
+        if valores:
+            faltan_duro += [f"{titulo}: {NOMBRE_D[k]}" for k in ("doc", "pos") if k not in pos_d]
+            for k, n in NOMBRE_D.items():
+                if k not in pos_d and k not in ("doc", "pos", "pend") and k not in OPCIONALES_D:
+                    avisos.append(f"A la pestaña {titulo} le falta la columna {n}.")
+        for r in regs_d:
+            n = r["Fila"]
+            doc, pos = _texto(r.get("doc")), _texto(r.get("pos"))
+            if not doc or not pos:
+                avisos.append(f"{titulo} fila {n}: falta " + ("Orden de Compras" if not doc else "Posición")
+                              + "; no se muestra.")
+                continue
+            if (doc, pos) in idx_d:
+                ya = idx_d[(doc, pos)]
+                donde = f"la fila {ya['Fila']}" + ("" if ya["hoja"] == titulo else f" de {ya['hoja']}")
+                avisos.append(f"{titulo} fila {n}: la línea {doc}/{pos} ya está en {donde}; se usa la primera.")
+                continue
+            reg = {"Fila": n, "doc": doc, "pos": pos, "hoja": titulo, "resp_hoja": resp_hojas.get(titulo)}
+            for k in ESCRIBIBLES_D:
+                reg[k] = _canonico(k, r.get(k))
+            est_raw = r.get("estatus")
+            est, transp, ok = normalizar_estatus(est_raw)
+            if not ok:
+                avisos.append(f"{titulo} fila {n}: estatus '{_texto(est_raw)}' no reconocido.")
+            reg["estatus"] = est or None
+            if not reg.get("transp") and transp:
+                reg["transp"] = transp
+            for k in CLAVES_FECHA | CLAVES_NUM:
+                crudo = _limpio(r.get(k))
+                if crudo is not None and reg[k] is None:
+                    avisos.append(f"{titulo} fila {n}: {NOMBRE_D[k]} '{_texto(crudo)}' no es válido.")
+            idx_d[(doc, pos)] = reg
+            lineas.append(reg)
+            hoja_de_doc.setdefault(doc, titulo)
+    return {"pos_o": pos_o, "hojas": hojas, "ordenes": ordenes, "lineas": lineas, "idx_o": idx_o, "idx_d": idx_d,
+            "ultima_o": ult_o, "hoja_de_doc": hoja_de_doc, "avisos": avisos, "faltan_duro": faltan_duro}
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +596,7 @@ def construir(t: dict, hoy: date) -> dict:
     huerfanas = [d for d in por_doc if d not in t["idx_o"]]
     docs += huerfanas
     if huerfanas:
-        avisos.append("Documentos con líneas en Desglose pero sin fila en Órdenes (salen como "
+        avisos.append("Documentos con líneas pero sin fila en Órdenes (salen como "
                       f"«{SIN_ASIGNAR}»): " + ", ".join(huerfanas[:10]) + ("…" if len(huerfanas) > 10 else ""))
 
     filas_o, filas_l, completas_abiertas = [], [], []
@@ -516,6 +604,14 @@ def construir(t: dict, hoy: date) -> dict:
         o = t["idx_o"].get(doc) or {"Fila": None, "doc": doc, "prov": "", "resp": "", "emp": "", "est": "ABIERTA",
                                     "coment": "", "fecha": None, "por": ""}
         todas = por_doc.get(doc, [])
+        tabs = list(dict.fromkeys(ln["resp_hoja"] for ln in todas if ln.get("resp_hoja")))
+        resp = tabs[0] if tabs else o["resp"]
+        if len(tabs) > 1:
+            avisos.append(f"La orden {doc} tiene líneas en varias pestañas de responsable ({', '.join(tabs)}); "
+                          f"sale con {tabs[0]}. Muévelas a una sola pestaña.")
+        elif tabs and o["resp"] and _hoja_de(o["resp"], tabs) is None:
+            avisos.append(f"La orden {doc}: Órdenes dice responsable «{o['resp']}» pero sus líneas están en la "
+                          f"pestaña {tabs[0]}; se usa {tabs[0]}.")
         abiertas = [ln for ln in todas if (ln.get("estatus") or "") not in CERRADOS_LINEA]
         ests = [ln.get("estatus") or SIN_ESTATUS for ln in abiertas]
         pend_u, parcial, backorder = 0.0, False, False
@@ -530,8 +626,15 @@ def construir(t: dict, hoy: date) -> dict:
             backorder = backorder or est == "BACKORDER" or hay_parcial
             pend_u += pend or 0
             if est in AVANZADOS and not (desp or 0) and ped:
-                avisos.append(f"{PESTANA_DESGLOSE} fila {ln['Fila']}: {doc}/{ln['pos']} dice {est} pero no tiene "
+                avisos.append(f"{ln['hoja']} fila {ln['Fila']}: {doc}/{ln['pos']} dice {est} pero no tiene "
                               "cantidad despachada.")
+            e2 = ln.get("estatus2") or ""
+            if e2 == "COMPLETA" and (pend or 0) > 0:
+                avisos.append(f"{ln['hoja']} fila {ln['Fila']}: {doc}/{ln['pos']} dice COMPLETA en el 2.º ESTATUS "
+                              f"pero faltan {_cant(pend)} por despachar.")
+            elif e2 == "PARCIAL" and ped and not (pend or 0):
+                avisos.append(f"{ln['hoja']} fila {ln['Fila']}: {doc}/{ln['pos']} dice PARCIAL en el 2.º ESTATUS "
+                              "pero ya se despachó todo.")
         if todas and not abiertas and o["est"] not in CERRADOS_ORDEN:
             completas_abiertas.append(doc)
         refs = [ln.get("fdoc") for ln in todas if ln.get("fdoc")] or [ln.get("sol") for ln in todas if ln.get("sol")]
@@ -541,10 +644,10 @@ def construir(t: dict, hoy: date) -> dict:
         solicitantes = sorted({ln["solicitante"] for ln in todas if ln.get("solicitante")})
         clientes = sorted({ln["cliente"] for ln in todas if ln.get("cliente")})
         derivado = estatus_derivado(ests, len(todas), parcial)
-        haystack = _norm(" ".join([doc, o["prov"], o["resp"], *facturas, *solicitantes, *clientes]
+        haystack = _norm(" ".join([doc, o["prov"], resp, *facturas, *solicitantes, *clientes]
                                   + [str(ln.get(k) or "") for ln in todas for k in ("mat", "matant", "texto", "nosol")]))
         filas_o.append({
-            "Doc": doc, "Proveedor": o["prov"], "Responsable": o["resp"] or SIN_ASIGNAR, "Empresa": o["emp"],
+            "Doc": doc, "Proveedor": o["prov"], "Responsable": resp or SIN_ASIGNAR, "Empresa": o["emp"],
             "EstatusOrden": o["est"], "Comentario": o["coment"], "Actualizado": o["fecha"], "Por": o["por"],
             "FilaO": o["Fila"], "Lineas": len(todas), "Abiertas": len(abiertas), "PendUnid": pend_u,
             "Derivado": derivado, "ETA": min(etas) if etas else None, "Facturas": ", ".join(facturas),
@@ -554,6 +657,7 @@ def construir(t: dict, hoy: date) -> dict:
             "SinSello": o["fecha"] is None, "Dias": (hoy - ref).days if ref else None,
             "Backorder": backorder, "Camino": any(e in AVANZADOS for e in ests),
             "SinDespachar": bool(abiertas) and not any(e in AVANZADOS for e in ests), "Haystack": haystack,
+            "PorPestana": bool(tabs),
         })
         for ln in abiertas:
             filas_l.append({
@@ -563,14 +667,15 @@ def construir(t: dict, hoy: date) -> dict:
                 "Cliente": ln.get("cliente") or "", "Estatus": ln.get("estatus") or "", "Transp": ln.get("transp") or "",
                 "Embarque": ln.get("embarque"), "ETA": ln.get("eta"), "Puerto": ln.get("puerto") or "",
                 "Almacen": ln.get("almacen") or "", "Coment": ln.get("coment") or "", "Factura": ln.get("fact") or "",
-                "Fila": ln["Fila"], "Responsable": o["resp"] or SIN_ASIGNAR, "Proveedor": o["prov"],
+                "Fila": ln["Fila"], "Responsable": resp or SIN_ASIGNAR, "Proveedor": o["prov"],
+                "Despacho": ln.get("estatus2") or "", "Hoja": ln["hoja"],
             })
     cols_o = ["Doc", "Proveedor", "Responsable", "Empresa", "EstatusOrden", "Comentario", "Actualizado", "Por", "FilaO",
               "Lineas", "Abiertas", "PendUnid", "Derivado", "ETA", "Facturas", "Solicitantes", "Recepcion",
-              "Colocacion", "SinSello", "Dias", "Backorder", "Camino", "SinDespachar", "Haystack"]
+              "Colocacion", "SinSello", "Dias", "Backorder", "Camino", "SinDespachar", "Haystack", "PorPestana"]
     cols_l = ["Doc", "Pos", "Material", "MatAnt", "Texto", "Pedida", "Desp", "Pend", "Parcial", "Solicitante", "Cliente",
               "Estatus", "Transp", "Embarque", "ETA", "Puerto", "Almacen", "Coment", "Factura", "Fila", "Responsable",
-              "Proveedor"]
+              "Proveedor", "Despacho", "Hoja"]
     df_o = pd.DataFrame(filas_o, columns=cols_o)
     df_l = pd.DataFrame(filas_l, columns=cols_l)
     if len(df_o):
@@ -603,7 +708,8 @@ def _hoja_del_archivo(contenido: bytes, nombre: str) -> pd.DataFrame:
             return pd.read_csv(io.BytesIO(contenido), header=None, dtype=object, sep=None, engine="python",
                                encoding="latin-1", keep_default_na=False)
     libro = pd.ExcelFile(io.BytesIO(contenido))
-    hoja = next((h for h in libro.sheet_names if _norm(h) == _norm(PESTANA_DESGLOSE)), libro.sheet_names[0])
+    hoja = next((h for h in libro.sheet_names if _norm(h) in (_norm(PESTANA_CARGA), _norm(PESTANA_DESGLOSE))),
+                libro.sheet_names[0])
     return libro.parse(hoja, header=None, dtype=object)
 
 
@@ -657,7 +763,7 @@ def leer_archivo(contenido: bytes, nombre: str) -> dict:
                     v = est or None
                     if tr and not _limpio(celdas.get("transp")):
                         reg["transp"] = tr
-                elif k == "transp":
+                elif k in ("transp", "estatus2"):
                     v = _texto(crudo_k).upper() or None
                 elif k == "emp":
                     t = _texto(crudo_k)
@@ -686,21 +792,51 @@ def leer_archivo(contenido: bytes, nombre: str) -> dict:
     return {"lineas": lineas, "rechazos": rechazos, "avisos": avisos}
 
 
+def _destino(ln: dict, t: dict, usuario: str, rol: str, por_doc: dict):
+    """Pestaña donde va una línea NUEVA: 1) donde ya viven otras líneas de esa orden; 2) la pestaña del
+    RESPONSABLE que trae el archivo; 3) la de «RESPONSABLE» en la hoja Órdenes; 4) la del usuario de Compras.
+    Si el Sheet solo tiene el Desglose heredado, va ahí. None = no hay a dónde mandarla."""
+    doc = ln["doc"]
+    if doc in t["hoja_de_doc"]:
+        return t["hoja_de_doc"][doc]
+    if doc in por_doc:
+        return por_doc[doc]
+    con_resp = [h for h, i in t["hojas"].items() if i["resp"]]
+    if not con_resp:
+        return next(iter(t["hojas"]), None)
+    o = t["idx_o"].get(doc)
+    candidatos = [ln.get("resp"), o["resp"] if o else None, usuario if rol == "compras" else None]
+    for c in candidatos:
+        h = _hoja_de(c, con_resp) if c else None
+        if h:
+            return h
+    return None
+
+
 def planificar(lineas: list, t: dict, usuario: str, rol: str) -> dict:
     """Qué haría esta carga contra el estado `t` del Sheet. Pura. Nunca borra: un valor vacío del
-    archivo no vacía el del Sheet, y lo que ya trae `PROTEGIDAS` no se pisa."""
-    nuevas, cambios, sin_cambio = [], [], 0
-    ord_nuevas, ord_completar, tocadas = {}, {}, set()
+    archivo no vacía el del Sheet, y lo que ya trae `PROTEGIDAS` no se pisa. Las líneas nuevas van a la
+    pestaña del responsable (`_destino`); las que no tienen destino se devuelven en `sin_destino`."""
+    nuevas, cambios, sin_cambio, sin_destino = [], [], 0, []
+    ord_nuevas, ord_completar, tocadas, por_doc = {}, {}, set(), {}
     for ln in lineas:
         key = (ln["doc"], ln["pos"])
         doc = ln["doc"]
         actual = t["idx_d"].get(key)
         if actual is None:
+            hoja = _destino(ln, t, usuario, rol, por_doc)
+            if hoja is None:
+                sin_destino.append((ln["fila_excel"], doc, ln["pos"],
+                                    "no se sabe de qué responsable es: pon su nombre en la columna RESPONSABLE "
+                                    "(" + ", ".join(h for h, i in t["hojas"].items() if i["resp"]) + ")"))
+                continue
+            por_doc.setdefault(doc, hoja)
             vals = {k: ln[k] for k in ("doc", "pos", *ESCRIBIBLES_D) if ln.get(k) is not None}
             vals.setdefault("estatus", "COLOCADA")
-            nuevas.append({"key": key, "vals": vals, "fila_excel": ln["fila_excel"]})
+            nuevas.append({"key": key, "vals": vals, "fila_excel": ln["fila_excel"], "hoja": hoja})
             tocadas.add(doc)
         else:
+            hoja = actual["hoja"]
             cam, conservados = {}, []
             for k in ESCRIBIBLES_D:
                 nuevo = ln.get(k)
@@ -715,17 +851,20 @@ def planificar(lineas: list, t: dict, usuario: str, rol: str) -> dict:
                 cam[k] = (antes, nuevo)
             if cam:
                 cambios.append({"key": key, "fila": actual["Fila"], "cambios": cam, "conservados": conservados,
-                                "fila_excel": ln["fila_excel"]})
+                                "fila_excel": ln["fila_excel"], "hoja": hoja})
                 tocadas.add(doc)
             else:
                 sin_cambio += 1
-        # Datos de la ORDEN que trae el archivo
+        # Datos de la ORDEN. Con pestaña de responsable, el responsable ES la pestaña.
         extra = {k: ln[k] for k in ("prov", "resp", "emp") if ln.get(k)}
+        resp_hoja = t["hojas"][hoja]["resp"]
+        if resp_hoja:
+            extra["resp"] = resp_hoja
         if doc not in t["idx_o"]:
             base = ord_nuevas.setdefault(doc, {})
             for k, v in extra.items():
                 base.setdefault(k, v)
-            if rol == "compras" and usuario:
+            if rol == "compras" and usuario and not resp_hoja:
                 base.setdefault("resp", usuario)
         else:
             o = t["idx_o"][doc]
@@ -738,8 +877,8 @@ def planificar(lineas: list, t: dict, usuario: str, rol: str) -> dict:
             del ord_completar[doc]
     tocadas |= set(ord_nuevas) | set(ord_completar)
     n_celdas = sum(len(c["cambios"]) for c in cambios) + sum(len(n["vals"]) for n in nuevas)
-    return {"nuevas": nuevas, "cambios": cambios, "sin_cambio": sin_cambio, "ord_nuevas": ord_nuevas,
-            "ord_completar": ord_completar, "tocadas": sorted(tocadas), "celdas": n_celdas,
+    return {"nuevas": nuevas, "cambios": cambios, "sin_cambio": sin_cambio, "sin_destino": sin_destino,
+            "ord_nuevas": ord_nuevas, "ord_completar": ord_completar, "tocadas": sorted(tocadas), "celdas": n_celdas,
             "hay_cambios": bool(nuevas or cambios or ord_nuevas or ord_completar)}
 
 
@@ -750,16 +889,18 @@ def _cant(x) -> str:
 
 
 def _en_vivo():
-    """Lee el Sheet de órdenes SIN caché. Devuelve (ws_ordenes, ws_desglose, tablas)."""
+    """Lee el Sheet de órdenes SIN caché. Devuelve (spreadsheet, ws_ordenes, tablas)."""
     ss = get_spreadsheet_ordenes()
-    vo, vd, t_o, t_d = _leer_valores(ss)
-    if t_o is None or t_d is None:
-        faltan = [n for n, t in ((PESTANA_ORDENES, t_o), (PESTANA_DESGLOSE, t_d)) if t is None]
-        raise ValueError("Faltan pestañas en el Sheet de órdenes: " + ", ".join(faltan))
-    t = tablas(vo, vd)
+    v = _leer_valores(ss)
+    if v["t_o"] is None:
+        raise ValueError(f"Falta la pestaña {PESTANA_ORDENES} en el Sheet de órdenes.")
+    if not v["d"]:
+        raise ValueError("El Sheet de órdenes no tiene pestañas de responsable (sus nombres salen de "
+                         "Listas → RESPONSABLE).")
+    t = tablas(v["o"], v["d"], v["resp"])
     if t["faltan_duro"]:
         raise ValueError("Faltan columnas en el Sheet de órdenes: " + ", ".join(t["faltan_duro"]))
-    return ss.worksheet(t_o), ss.worksheet(t_d), t
+    return ss, ss.worksheet(v["t_o"]), t
 
 
 def _asegurar_filas(ws, hasta: int):
@@ -793,27 +934,44 @@ def _faltantes(pos: dict, claves, nombres: dict, hoja: str):
         raise ValueError(f"A la pestaña {hoja} le faltan las columnas: " + ", ".join(falta))
 
 
-def _escribir_planes(ws_o, ws_d, t, plan: dict, usuario: str):
-    """Escribe líneas y luego órdenes. Desglose primero: si la segunda escritura falla, repetir la carga
-    completa lo que falte (no duplica). Las columnas de AMBAS pestañas se comprueban antes de escribir."""
+def _escribir_planes(ss, ws_o, t, plan: dict, usuario: str):
+    """Escribe líneas (cada una en SU pestaña) y luego órdenes. Primero las pestañas de líneas: si una
+    escritura posterior falla, repetir la carga completa lo que falte (no duplica). Las columnas de TODAS
+    las pestañas implicadas se comprueban antes de escribir nada."""
     sello = _sello_ahora()
-    claves_d = {k for n in plan["nuevas"] for k in n["vals"]} | {k for c in plan["cambios"] for k in c["cambios"]}
+    por_hoja: dict = {}
+    for c in plan["cambios"]:
+        por_hoja.setdefault(c["hoja"], {"cambios": [], "nuevas": []})["cambios"].append(c)
+    for n in plan["nuevas"]:
+        por_hoja.setdefault(n["hoja"], {"cambios": [], "nuevas": []})["nuevas"].append(n)
     claves_o = {"fecha", "por"} | {k for v in plan["ord_nuevas"].values() for k in v} \
         | {k for v in plan["ord_completar"].values() for k in v}
     if plan["ord_nuevas"]:
         claves_o |= {"doc", "est"}
-    _faltantes(t["pos_d"], claves_d, NOMBRE_D, PESTANA_DESGLOSE)
+    for hoja, g in por_hoja.items():
+        claves = {k for n in g["nuevas"] for k in n["vals"]} | {k for c in g["cambios"] for k in c["cambios"]}
+        _faltantes(t["hojas"][hoja]["pos"], claves, NOMBRE_D, hoja)
     _faltantes(t["pos_o"], claves_o, NOMBRE_O, PESTANA_ORDENES)
 
-    pet_d, ult = [], t["ultima_d"]
-    for c in plan["cambios"]:
-        pet_d += _peticiones_celdas(c["fila"], t["pos_d"], {k: nv for k, (_, nv) in c["cambios"].items()})
-    if plan["nuevas"]:
-        _asegurar_filas(ws_d, ult + len(plan["nuevas"]))
-    for i, n in enumerate(plan["nuevas"], start=1):
-        pet_d += _peticiones_fila_nueva(ult + i, t["pos_d"], n["vals"])
-    if pet_d:
-        _con_reintento(lambda: ws_d.batch_update(pet_d, value_input_option="RAW"))
+    hechas = []
+    for hoja, g in por_hoja.items():
+        info, pet = t["hojas"][hoja], []
+        for c in g["cambios"]:
+            pet += _peticiones_celdas(c["fila"], info["pos"], {k: nv for k, (_, nv) in c["cambios"].items()})
+        ws = ss.worksheet(hoja)
+        if g["nuevas"]:
+            _asegurar_filas(ws, info["ultima"] + len(g["nuevas"]))
+        for i, n in enumerate(g["nuevas"], start=1):
+            pet += _peticiones_fila_nueva(info["ultima"] + i, info["pos"], n["vals"])
+        if pet:
+            try:
+                _con_reintento(lambda: ws.batch_update(pet, value_input_option="RAW"))
+            except Exception as e:  # noqa: BLE001
+                if not hechas:
+                    raise
+                raise RuntimeError(f"Se guardaron las líneas de {', '.join(hechas)} pero falló {hoja} ({e}). "
+                                   "Repite la carga: no duplica nada y completa lo que falta.") from e
+            hechas.append(hoja)
 
     pet_o, ult_o = [], t["ultima_o"]
     nuevas_o = sorted(plan["ord_nuevas"])
@@ -878,14 +1036,17 @@ def aplicar_carga(lineas: list, nombre_archivo: str = ""):
         return False, error
     usuario, rol = sio.usuario_actual(), st.session_state.get("rol")
     with _lock():
-        ws_o, ws_d, t = _en_vivo()
+        ss, ws_o, t = _en_vivo()
         plan = planificar(lineas, t, usuario, rol)
         if not plan["hay_cambios"]:
-            return True, "El archivo no trae nada nuevo: el Sheet ya tiene esos datos."
-        _escribir_planes(ws_o, ws_d, t, plan, usuario)
+            extra = (f" {len(plan['sin_destino'])} línea(s) quedaron sin cargar por no tener responsable."
+                     if plan["sin_destino"] else "")
+            return True, "El archivo no trae nada nuevo: el Sheet ya tiene esos datos." + extra
+        _escribir_planes(ss, ws_o, t, plan, usuario)
     invalidar()
     resumen = (f"{len(plan['nuevas'])} líneas nuevas, {len(plan['cambios'])} actualizadas, "
-               f"{len(plan['ord_nuevas'])} órdenes nuevas")
+               f"{len(plan['ord_nuevas'])} órdenes nuevas"
+               + (f", {len(plan['sin_destino'])} sin cargar (sin responsable)" if plan["sin_destino"] else ""))
     sio.registrar_log("Órdenes: carga masiva", bl=f"{len(plan['tocadas'])} órdenes", categoria=CATEGORIA_LOG,
                       detalle=f"{nombre_archivo}: {resumen}; {plan['celdas']} celdas. Órdenes: "
                               + ", ".join(plan["tocadas"][:12]) + ("…" if len(plan["tocadas"]) > 12 else ""))
@@ -920,10 +1081,13 @@ def guardar_edicion(doc: str, cambios_orden: dict, cambios_lineas: dict):
     if not cambios_orden and not any(cambios_lineas.values()):
         return True, "No hay cambios que guardar."
     with _lock():
-        ws_o, ws_d, t = _en_vivo()
+        ss, ws_o, t = _en_vivo()
         o = t["idx_o"].get(doc)
-        conflictos, pet_d, pet_o = [], [], []
+        conflictos, pet_por_hoja, pet_o, claves_hoja = [], {}, [], {}
         sello = _sello_ahora()
+        if "resp" in cambios_orden and any(ln["doc"] == doc and ln.get("resp_hoja") for ln in t["lineas"]):
+            return False, ("El responsable lo define la pestaña donde están las líneas: para cambiarlo, mueve las "
+                           "filas de la orden a la pestaña de la otra persona en el Sheet.")
         for pos, cam in cambios_lineas.items():
             vivo = t["idx_d"].get((doc, pos))
             if vivo is None:
@@ -932,7 +1096,9 @@ def guardar_edicion(doc: str, cambios_orden: dict, cambios_lineas: dict):
             for k, (antes, nuevo) in cam.items():
                 if _comparable(k, vivo.get(k)) != _comparable(k, antes):
                     conflictos.append(f"{doc}/{pos} · {NOMBRE_D[k]}")
-            pet_d += _peticiones_celdas(vivo["Fila"], t["pos_d"], {k: nv for k, (_, nv) in cam.items()})
+            pet_por_hoja.setdefault(vivo["hoja"], []).extend(
+                _peticiones_celdas(vivo["Fila"], t["hojas"][vivo["hoja"]]["pos"], {k: nv for k, (_, nv) in cam.items()}))
+            claves_hoja.setdefault(vivo["hoja"], set()).update(cam)
         if cambios_orden:
             if o is None:
                 conflictos += [f"la orden {doc} no tiene fila en la pestaña Órdenes"] if any(
@@ -944,10 +1110,12 @@ def guardar_edicion(doc: str, cambios_orden: dict, cambios_lineas: dict):
         if conflictos:
             return False, ("Alguien cambió el Sheet mientras editabas (" + "; ".join(conflictos[:5])
                            + "). No se guardó nada: pulsa ↻ Actualizar y repite.")
-        _faltantes(t["pos_d"], {k for c in cambios_lineas.values() for k in c}, NOMBRE_D, PESTANA_DESGLOSE)
+        for hoja, claves in claves_hoja.items():
+            _faltantes(t["hojas"][hoja]["pos"], claves, NOMBRE_D, hoja)
         _faltantes(t["pos_o"], set(cambios_orden) | {"fecha", "por"}, NOMBRE_O, PESTANA_ORDENES)
-        if pet_d:
-            _con_reintento(lambda: ws_d.batch_update(pet_d, value_input_option="RAW"))
+        for hoja, pet in pet_por_hoja.items():
+            ws = ss.worksheet(hoja)
+            _con_reintento(lambda: ws.batch_update(pet, value_input_option="RAW"))
         if o is None:
             _asegurar_filas(ws_o, t["ultima_o"] + 1)
             vals = {"doc": doc, "est": "ABIERTA", "fecha": sello, "por": usuario,
@@ -973,7 +1141,7 @@ def plantilla_excel() -> bytes:
     from openpyxl.styles import Font, PatternFill
     wb = Workbook()
     ws = wb.active
-    ws.title = PESTANA_DESGLOSE
+    ws.title = PESTANA_CARGA
     cols = [n for k, n, _ in COLUMNAS_D if k != "pend"] + ["PROVEEDOR", "RESPONSABLE", "EMPRESA"]
     for j, n in enumerate(cols, start=1):
         c = ws.cell(1, j, n)
@@ -982,15 +1150,19 @@ def plantilla_excel() -> bytes:
     ws.freeze_panes = "A2"
     ins = wb.create_sheet("Instrucciones")
     for i, t in enumerate([
-        "Una fila por línea de la orden. Obligatorias: Documento compras y Posición (juntas son la llave).",
-        "Del reporte de SAP (ME2N) basta con Documento compras, Posición, Material, Texto breve, Cantidad de pedido, "
+        "Una fila por línea de la orden. Obligatorias: Orden de Compras y Posición (juntas son la llave).",
+        "Del reporte de SAP (ME2N) basta con Orden de Compras, Posición, Material, Texto breve, Cantidad de pedido, "
         "Fecha documento y Solicitante.",
+        "RESPONSABLE (columna del final): la línea nueva se guarda en la pestaña de esa persona. Sin responsable no "
+        "se carga, salvo que la orden ya exista (entonces va a la pestaña donde ya está).",
         "Celda sin dato = vacía. «Lo Llena Repuesto» y «PENDIENTE» se leen como vacío.",
         "ESTATUS: " + ", ".join(ESTATUS_LINEA) + ". «DESPACHADO A INTRANS» se separa en estatus y transportista.",
         "Las líneas nuevas entran como COLOCADA si no traen estatus.",
         "Fechas como fecha de Excel, o con el mes en letras (05-nov-2026). 05/11/2026 como TEXTO se rechaza.",
         "La carga nunca borra: una celda vacía no vacía la del Sheet, y lo que Repuesto ya llenó no se pisa.",
-        "PROVEEDOR, RESPONSABLE y EMPRESA son opcionales y solo se usan para órdenes nuevas o con esos datos vacíos.",
+        "PROVEEDOR y EMPRESA son opcionales y solo se usan para órdenes nuevas o con esos datos vacíos.",
+        "Las dos columnas ESTATUS: la 1.ª es el estatus de la línea; la 2.ª es informativa (DESPACHADO / COMPLETA / "
+        "PARCIAL). ALMACÉN = transportista; ALMACÉN NUESTRO = almacén de Antillana.",
     ], start=1):
         ins.cell(i, 1, t)
     ins.column_dimensions["A"].width = 120
@@ -1524,8 +1696,9 @@ def _vista_desglose(d: dict, usuario: str, rol: str) -> None:
 # ------------------------------- carga y edición ------------------------------
 def _ui_carga_masiva(d: dict, t: dict, usuario: str, rol: str) -> None:
     st.markdown("#### Carga masiva desde Excel o CSV")
-    st.caption("Mismo formato que la pestaña Desglose (sirve el Excel de SAP ME2N). Nunca borra: una celda vacía no vacía "
-               "la del Sheet y lo que Repuesto ya llenó no se pisa. Líneas nuevas entran como COLOCADA si no traen estatus.")
+    st.caption("Mismas columnas que las pestañas de responsable (sirve el Excel de SAP ME2N). Cada línea NUEVA se guarda "
+               "en la pestaña de su RESPONSABLE (o donde ya está su orden). Nunca borra: una celda vacía no vacía la del "
+               "Sheet y lo que Repuesto ya llenó no se pisa. Líneas nuevas entran como COLOCADA si no traen estatus.")
     st.download_button("⬇ Descargar plantilla", plantilla_excel(), "plantilla_ordenes_compra.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="oc_plantilla")
     archivo = st.file_uploader("Archivo", type=["xlsx", "csv"], key="oc_archivo", label_visibility="collapsed")
@@ -1541,12 +1714,18 @@ def _ui_carga_masiva(d: dict, t: dict, usuario: str, rol: str) -> None:
     c1.metric("Líneas nuevas", len(plan["nuevas"]))
     c2.metric("Líneas con cambios", len(plan["cambios"]))
     c3.metric("Sin cambio", plan["sin_cambio"])
-    c4.metric("Rechazadas", len(leido["rechazos"]))
+    rechazos = list(leido["rechazos"]) + list(plan["sin_destino"])
+    c4.metric("Rechazadas", len(rechazos))
     if plan["ord_nuevas"]:
         st.caption("Órdenes nuevas que se crean en la pestaña Órdenes: " + ", ".join(sorted(plan["ord_nuevas"])[:15]))
-    if leido["rechazos"]:
-        with st.expander(f"Líneas rechazadas ({len(leido['rechazos'])}) — no se cargan", expanded=True):
-            st.dataframe(pd.DataFrame(leido["rechazos"], columns=["Fila del archivo", "Documento", "Posición", "Motivo"]),
+    destinos = {}
+    for n in plan["nuevas"]:
+        destinos[n["hoja"]] = destinos.get(n["hoja"], 0) + 1
+    if destinos:
+        st.caption("Líneas nuevas por pestaña: " + " · ".join(f"{h} {c}" for h, c in sorted(destinos.items())))
+    if rechazos:
+        with st.expander(f"Líneas rechazadas ({len(rechazos)}) — no se cargan", expanded=True):
+            st.dataframe(pd.DataFrame(rechazos, columns=["Fila del archivo", "Documento", "Posición", "Motivo"]),
                          hide_index=True, width="stretch")
     if leido["avisos"]:
         with st.expander(f"Avisos ({len(leido['avisos'])})"):
@@ -1554,7 +1733,7 @@ def _ui_carga_masiva(d: dict, t: dict, usuario: str, rol: str) -> None:
                 st.write(a)
     if plan["cambios"]:
         with st.expander(f"Cambios en líneas existentes ({len(plan['cambios'])})"):
-            filas = [{"Línea": f"{c['key'][0]}/{c['key'][1]}", "Campo": NOMBRE_D[k], "Antes": _texto(a), "Ahora": _texto(n),
+            filas = [{"Pestaña": c["hoja"], "Línea": f"{c['key'][0]}/{c['key'][1]}", "Campo": NOMBRE_D[k], "Antes": _texto(a), "Ahora": _texto(n),
                       "Conservado": ""} for c in plan["cambios"] for k, (a, n) in c["cambios"].items()][:300]
             st.dataframe(pd.DataFrame(filas), hide_index=True, width="stretch")
     if not plan["hay_cambios"]:
@@ -1583,13 +1762,16 @@ def _ui_editar(d: dict, usuario: str) -> None:
     ord_ = o[o["Doc"] == doc].iloc[0]
     lin = l[l["Doc"] == doc].reset_index(drop=True)
     firma = hashlib.md5(repr((ord_.Proveedor, ord_.Responsable, ord_.Empresa, ord_.EstatusOrden, ord_.Comentario,
-                              lin[["Pos", "Desp", "Estatus", "Transp", "Embarque", "ETA", "Puerto", "Almacen",
+                              lin[["Pos", "Desp", "Estatus", "Despacho", "Transp", "Embarque", "ETA", "Puerto", "Almacen",
                                    "Coment"]].astype(str).values.tolist())).encode()).hexdigest()[:8]
     resp_actual = "" if ord_.Responsable == SIN_ASIGNAR else ord_.Responsable
     with st.form(f"oc_form_{_slug(doc)}_{firma}"):
         c1, c2, c3, c4 = st.columns(4)
         prov = c1.text_input("Proveedor", ord_.Proveedor)
-        resp = c2.text_input("Responsable", resp_actual)
+        con_pestana = bool(ord_.PorPestana)
+        resp = c2.text_input("Responsable", resp_actual, disabled=con_pestana,
+                             help="Lo define la pestaña donde están las líneas. Para cambiarlo, mueve las filas de la "
+                                  "orden a la pestaña de la otra persona en el Sheet." if con_pestana else None)
         emp = c3.selectbox("Empresa", [""] + EMPRESAS, index=([""] + EMPRESAS).index(ord_.Empresa)
                            if ord_.Empresa in EMPRESAS else 0)
         est = c4.selectbox("Estatus de la orden", ESTATUS_ORDEN, index=ESTATUS_ORDEN.index(ord_.EstatusOrden)
@@ -1599,7 +1781,8 @@ def _ui_editar(d: dict, usuario: str) -> None:
         st.caption("Líneas (la cantidad pedida no se edita aquí). Un estatus COMPLETO o CANCELADO oculta esa línea.")
         base = pd.DataFrame({
             "Pos": lin["Pos"], "Descripción": lin["Texto"], "Pedida": lin["Pedida"], "Despachada": lin["Desp"],
-            "Estatus": lin["Estatus"].replace("", None), "Transportista": lin["Transp"].replace("", None),
+            "Estatus": lin["Estatus"].replace("", None), "Despacho": lin["Despacho"].replace("", None),
+            "Transportista": lin["Transp"].replace("", None),
             "Embarque": lin["Embarque"], "ETA": lin["ETA"], "Puerto": lin["Puerto"].replace("", None),
             "Almacén": lin["Almacen"].replace("", None), "Comentario": lin["Coment"].replace("", None)})
         editado = st.data_editor(
@@ -1608,6 +1791,8 @@ def _ui_editar(d: dict, usuario: str) -> None:
             column_config={
                 "Despachada": st.column_config.NumberColumn(min_value=0, format="%g"),
                 "Estatus": st.column_config.SelectboxColumn(options=ESTATUS_LINEA),
+                "Despacho": st.column_config.SelectboxColumn(options=ESTATUS_DESPACHO,
+                                                             help="2.º ESTATUS del Sheet: informativo."),
                 "Embarque": st.column_config.DateColumn(format="DD/MM/YYYY"),
                 "ETA": st.column_config.DateColumn(format="DD/MM/YYYY")})
         guardar = st.form_submit_button("Guardar cambios", type="primary")
@@ -1618,7 +1803,7 @@ def _ui_editar(d: dict, usuario: str) -> None:
     antes_o = {"prov": ord_.Proveedor or None, "resp": resp_actual or None, "emp": ord_.Empresa or None,
                "est": ord_.EstatusOrden, "coment": ord_.Comentario or None}
     cam_o = {k: (antes_o[k], nuevos_o[k]) for k in nuevos_o if _comparable(k, nuevos_o[k], True) != _comparable(k, antes_o[k], True)}
-    mapa = {"Despachada": "desp", "Estatus": "estatus", "Transportista": "transp", "Embarque": "embarque", "ETA": "eta",
+    mapa = {"Despachada": "desp", "Estatus": "estatus", "Despacho": "estatus2", "Transportista": "transp", "Embarque": "embarque", "ETA": "eta",
             "Puerto": "puerto", "Almacén": "almacen", "Comentario": "coment"}
     cam_l = {}
     for i in range(len(base)):
@@ -1665,10 +1850,11 @@ def panel_ordenes(rol: str, token: str = "") -> None:
         st.error(datos["error"])
         return
     if datos["faltan"]:
-        st.warning("Al Sheet de órdenes le faltan estas pestañas: " + ", ".join(datos["faltan"])
-                   + f". Deben llamarse «{PESTANA_ORDENES}» y «{PESTANA_DESGLOSE}».")
+        st.warning("Al Sheet de órdenes le falta: " + ", ".join(datos["faltan"])
+                   + f". La pestaña de órdenes debe llamarse «{PESTANA_ORDENES}»; cada responsable de la columna "
+                     f"RESPONSABLE de «{PESTANA_LISTAS}» debe tener una pestaña con su nombre.")
         return
-    t = tablas(datos["o"], datos["d"])
+    t = tablas(datos["o"], datos["d"], datos["resp"])
     if t["faltan_duro"]:
         st.error("Faltan columnas en el Sheet de órdenes: " + ", ".join(t["faltan_duro"]))
         return
@@ -1688,6 +1874,9 @@ def panel_ordenes(rol: str, token: str = "") -> None:
             _aislar(_vista_cargar, d, t, usuario, rol)
     if rol == "admin":
         avisos = list(d["avisos"])
+        if datos.get("sin_hoja"):
+            avisos.append("Responsables de Listas que no tienen pestaña (créala con su nombre): "
+                          + ", ".join(datos["sin_hoja"]))
         if d["completas_abiertas"]:
             avisos.append("Órdenes con TODAS sus líneas completas que siguen ABIERTA (ciérralas con COMPLETA): "
                           + ", ".join(d["completas_abiertas"][:15]))

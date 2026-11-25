@@ -31,8 +31,8 @@ def ses(libros, monkeypatch):
 
 
 def _t(libros):
-    vo, vd, _, _ = oc._leer_valores(libros.ORDENES)
-    return oc.tablas(vo, vd)
+    v = oc._leer_valores(libros.ORDENES)
+    return oc.tablas(v["o"], v["d"], v["resp"])
 
 
 def _xlsx(filas, cab=None):
@@ -172,9 +172,9 @@ def test_pestana_o_columna_faltante(ses):
     ses.ORDENES.hojas.remove(ses.ORDENES.hoja("Desglose"))
     oc._leer_remoto.clear()
     r = oc.cargar("x")
-    assert r["faltan"] == ["Desglose"] and r["error"] is None
+    assert len(r["faltan"]) == 1 and "pestaña por responsable" in r["faltan"][0] and r["error"] is None
     ses.ORDENES.agregar("Desglose", [["Algo", "Otro"]])
-    t = oc.tablas(*oc._leer_valores(ses.ORDENES)[:2])
+    t = _t(ses)
     assert t["faltan_duro"], "sin Documento compras / Posición no se puede trabajar"
 
 
@@ -392,6 +392,130 @@ def test_falla_del_sheet_de_ordenes_no_tumba_la_app(libros):
     at = abrir_app("1111", ordenes=True)
     ir(at, "Órdenes de compra")
     sin_errores(at)
-    assert any("faltan estas pestañas" in w.value for w in at.warning)
+    assert any("le falta" in w.value for w in at.warning)
     ir(at, "Dashboard")
     sin_errores(at)
+
+
+# ------------------------------------------------------------ una pestaña por responsable
+@pytest.fixture
+def ses2(ses):
+    import datos
+    ses.ORDENES = datos.libro_ordenes_resp()
+    oc._leer_remoto.clear()
+    return ses
+
+
+def test_hoja_de_y_asignacion_de_pestanas():
+    tit = ["Instrucciones", "Órdenes", "Daniel Mojica", "Yokairis Martes", "Listas", "Desglose", "Notas"]
+    assert oc._hoja_de("Yokairis", ["Daniel Mojica", "Yokairis Martes"]) == "Yokairis Martes"
+    assert oc._hoja_de("yokairis martes", ["Yokairis Martes"]) == "Yokairis Martes"
+    assert oc._hoja_de("Dan", ["Daniel Mojica", "Daniela Peña"]) is None, "ambiguo: no adivina"
+    asign, sin = oc._asignar_hojas(tit, ["Daniel Mojica", "Yokairis", "Juan de Dios"])
+    assert asign == {"Daniel Mojica": "Daniel Mojica", "Yokairis Martes": "Yokairis Martes"}
+    assert sin == ["Juan de Dios"]
+
+
+def test_lee_las_cuatro_pestanas_y_el_orden_de_columnas(ses2):
+    t = _t(ses2)
+    assert set(t["hojas"]) == {"Daniel Mojica", "Juan de Dios", "Yokairis Martes", "David Tejeda"}
+    assert not t["faltan_duro"]
+    ln = t["idx_d"][("4100003641", "10")]
+    assert ln["hoja"] == "Daniel Mojica" and ln["resp_hoja"] == "Daniel Mojica"
+    assert ln["estatus"] == "DESPACHADO" and ln["estatus2"] == "PARCIAL"        # 1.º y 2.º ESTATUS
+    assert ln["transp"] == "LOCCITEC" and ln["almacen"] is None                  # ALMACÉN ≠ ALMACÉN NUESTRO
+    assert ln["mat"] == "141132" and ln["nparte"] == "P-141132"                  # Material ≠ No. Parte
+    assert ln["pedida"] == 500 and ln["desp"] == 260 and ln["puerto"] == "SI"
+    assert t["idx_d"][("4300000448", "30")]["hoja"] == "Juan de Dios"
+    assert not any("Notas" in a for a in t["avisos"]), "una pestaña ajena no se lee ni se critica"
+
+
+def test_el_responsable_es_la_pestana_y_avisa_si_ordenes_dice_otra_cosa(ses2):
+    d = oc.construir(_t(ses2), HOY())
+    o = d["ordenes"].set_index("Doc")
+    assert o.loc["4300000448", "Responsable"] == "Juan de Dios", "Órdenes lo trae vacío: manda la pestaña"
+    assert o.loc["4300000455", "Responsable"] == "Yokairis Martes"
+    assert o.loc["4300000457", "Responsable"] == "David Tejeda"
+    assert bool(o.loc["4300000457", "PorPestana"])
+    assert any("4300000457" in a and "Ana Pérez" in a for a in d["avisos"])
+    assert not any("4300000455" in a and "Órdenes dice" in a for a in d["avisos"]), "«Yokairis» ya equivale a su pestaña"
+    assert set(d["lineas"]["Hoja"]) == {"Daniel Mojica", "Juan de Dios", "Yokairis Martes", "David Tejeda"}
+
+
+def test_segundo_estatus_incoherente_se_avisa(ses2):
+    d = oc.construir(_t(ses2), HOY())
+    assert any("4300000457/70" in a and "COMPLETA" in a for a in d["avisos"])
+    assert not any("4300000455" in a and "2.º ESTATUS" in a for a in d["avisos"])
+
+
+def test_carga_manda_cada_linea_nueva_a_la_pestana_de_su_responsable(ses2):
+    f = _xlsx([["4500001", 10, "M1", "Pieza", 10, 0, date(2026, 11, 10), "", "", "", "Prov A", "Juan de Dios",
+                "Tecnicaribe", "Taller"],
+               ["4500002", 10, "M2", "Otra", 3, 0, date(2026, 11, 10), "", "", "", "", "yokairis", "", "Taller"],
+               ["4300000457", 80, "M3", "Orden vieja", 2, 0, date(2026, 11, 10), "", "", "", "", "", "", "Taller"],
+               ["4500003", 10, "M4", "Sin dueño", 1, 0, "", "", "", "", "", "", "", ""]])
+    lineas = oc.leer_archivo(f, "x.xlsx")["lineas"]
+    p = oc.planificar(lineas, _t(ses2), "Admin", "admin")
+    assert {n["key"]: n["hoja"] for n in p["nuevas"]} == {("4500001", "10"): "Juan de Dios",
+                                                          ("4500002", "10"): "Yokairis Martes",
+                                                          ("4300000457", "80"): "David Tejeda"}
+    assert [x[1] for x in p["sin_destino"]] == ["4500003"] and "RESPONSABLE" in p["sin_destino"][0][3]
+    ok, msg = oc.aplicar_carga(lineas, "x.xlsx")
+    assert ok and "sin cargar" in msg, msg
+    jd, yk, dt = (ses2.ORDENES.hoja(n) for n in ("Juan de Dios", "Yokairis Martes", "David Tejeda"))
+    assert jd.valor(3, "Orden de Compras") == "4500001" and jd.valor(3, "Posición") == "10"
+    assert jd.valor(3, "PENDIENTE / BACKORDER") == "" and jd.celdas[(3, 15)] == "COLOCADA"
+    assert yk.valor(4, "Orden de Compras") == "4500002"
+    assert dt.valor(4, "Orden de Compras") == "4300000457" and dt.valor(4, "Posición") == "80"
+    assert len(ses2.ORDENES.hoja("Daniel Mojica").matriz()) == 3, "Daniel no recibió nada"
+    wo = ses2.ORDENES.hoja("Órdenes")
+    assert wo.valor(6, "DOCUMENTO COMPRAS") == "4500001" and wo.valor(6, "RESPONSABLE") == "Juan de Dios"
+    assert wo.valor(7, "DOCUMENTO COMPRAS") == "4500002" and wo.valor(7, "RESPONSABLE") == "Yokairis Martes"
+    assert all(wo.valor(i, "DOCUMENTO COMPRAS") != "4500003" for i in range(2, 9))
+    # idempotente
+    esc = ses2.ORDENES.escrituras
+    ok, msg = oc.aplicar_carga(lineas, "x.xlsx")
+    assert ok and ses2.ORDENES.escrituras == esc
+
+
+def test_carga_actualiza_la_linea_en_su_pestana_sin_importar_el_responsable_del_archivo(ses2):
+    f = _xlsx([["4300000448", 30, "", "", "", 1, "", "COMPLETO", "", "", "", "Daniel Mojica", "", ""]])
+    ok, msg = oc.aplicar_carga(oc.leer_archivo(f, "x.xlsx")["lineas"], "x.xlsx")
+    assert ok, msg
+    assert ses2.ORDENES.hoja("Juan de Dios").celdas[(2, 15)] == "COMPLETO"
+    assert ses2.ORDENES.hoja("Daniel Mojica").matriz()[-1][6] != "4300000448"
+
+
+def test_compras_sin_responsable_en_el_archivo_cae_en_su_pestana(ses2):
+    import streamlit as st
+    st.session_state["rol"], st.session_state["usuario"] = "compras", "David Tejeda"
+    lineas = oc.leer_archivo(_xlsx([["4500777", 10, "M", "P", 1, "", "", "", "", "", "", "", "", ""]]), "x.xlsx")["lineas"]
+    assert oc.aplicar_carga(lineas, "x.xlsx")[0]
+    assert ses2.ORDENES.hoja("David Tejeda").valor(4, "Orden de Compras") == "4500777"
+    assert ses2.ORDENES.hoja("Órdenes").valor(6, "RESPONSABLE") == "David Tejeda"
+
+
+def test_editar_escribe_en_la_pestana_de_la_linea_y_no_deja_cambiar_responsable(ses2):
+    cam = {"10": {"desp": (260, 300), "estatus2": ("PARCIAL", "COMPLETA"), "coment": (None, "llegó")}}
+    ok, msg = oc.guardar_edicion("4100003641", {"coment": (None, "hola taller")}, cam)
+    assert ok, msg
+    w = ses2.ORDENES.hoja("Daniel Mojica")
+    assert w.celdas[(2, 13)] == 300 and w.celdas[(2, 17)] == "COMPLETA" and w.celdas[(2, 23)] == "llegó"
+    assert w.celdas[(2, 15)] == "DESPACHADO", "el 1.º ESTATUS no se toca al editar el 2.º"
+    assert ses2.ORDENES.hoja("Órdenes").valor(2, "COMENTARIO PARA TALLER") == "hola taller"
+    ok, msg = oc.guardar_edicion("4300000448", {"resp": (None, "Daniel Mojica")}, {})
+    assert not ok and "pestaña" in msg
+
+
+def test_editar_detecta_cambio_ajeno_en_la_pestana(ses2):
+    ses2.ORDENES.hoja("Yokairis Martes").celdas[(2, 13)] = 1
+    ok, msg = oc.guardar_edicion("4300000455", {}, {"10": {"desp": (2, 2 + 1)}})
+    assert not ok and "Alguien cambió" in msg
+
+
+def test_sin_pestana_de_responsable_ni_desglose_no_es_excepcion(ses2):
+    for n in ("Daniel Mojica", "Juan de Dios", "Yokairis Martes", "David Tejeda"):
+        ses2.ORDENES.hojas.remove(ses2.ORDENES.hoja(n))
+    oc._leer_remoto.clear()
+    r = oc.cargar("q")
+    assert r["error"] is None and r["faltan"] and "Juan de Dios" in r["sin_hoja"]

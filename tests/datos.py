@@ -180,3 +180,54 @@ def libro_ordenes() -> FakeSpreadsheet:
     libro.hoja("Desglose").row_count = 60
     libro.hoja("Desglose").col_count = 25
     return libro
+
+
+CAB_RESP = ["FECHA DE SOLICITUD", "NO. Solicitud de pedido", "Solicitante", "Cliente", "Fecha documento", "Posición",
+            "Orden de Compras", "Material", "MAT. ANTIGUO", "No. Parte", "Texto breve", "Cantidad de pedido",
+            "Cantidad Despachada", "PENDIENTE / BACKORDER", "ESTATUS", "No. Factura", "ESTATUS", "ALMACÉN",
+            "FECHA DE EMBARQUE", "FECHA DE LLEGADA - ETA", "PUERTO / Aeropuerto", "ALMACÉN NUESTRO", "COMENTARIOS"]
+
+
+def libro_ordenes_resp() -> FakeSpreadsheet:
+    """Sheet de órdenes con UNA PESTAÑA POR RESPONSABLE (columnas en el orden del Sheet real)."""
+    e = sio.EPOCH_SHEETS
+    hoy = sio.hoy_rd()
+    s = lambda n: (hoy + timedelta(days=n) - e).days
+
+    def L(doc, pos, mat, texto, ped, desp, est, est2="", alm="", sol="Yokaira Martes", cli="Cliente 1", nparte="",
+          emb="", eta="", puerto="", coment=""):
+        return [s(-30), "SP-1", sol, cli, s(-28), pos, doc, mat, "", nparte, texto, ped, desp, "", est, "", est2, alm,
+                emb, eta, puerto, "", coment]
+
+    daniel = [CAB_RESP,
+              L("4100003641", 10, "141132", "Disco", 500, 260, "DESPACHADO", "PARCIAL", "LOCCITEC", emb=s(-5), eta=s(2),
+                puerto="SI", nparte="P-141132"),
+              L("4100003641", 20, "198092", "Eje", 49, 45, "DESPACHADO", "PARCIAL", "INTRANS")]
+    juan = [CAB_RESP, L("4300000448", 30, "708406", "Kit engranaje", 1, 1, "CONFIRMADA")]
+    yok = [CAB_RESP,
+           L("4300000455", 10, "157317", "Llave", 2, 2, "DESPACHADO", "DESPACHADO", "DHL"),
+           L("4300000455", 20, "155482", "Interruptor", 2, 2, "DESPACHADO", "DESPACHADO", "DHL")]
+    david = [CAB_RESP,
+             L("4300000457", 10, "708998", "Eje cardan", 1, 1, "DESPACHADO", "COMPLETA", "DHL"),
+             L("4300000457", 70, "708999", "Cubobuje", 1, 0, "DESPACHADO", "COMPLETA", "AEROPAQ")]
+    cab_o = ["DOCUMENTO COMPRAS", "PROVEEDOR", "RESPONSABLE", "EMPRESA", "ESTATUS ORDEN", "COMENTARIO PARA TALLER",
+             "FECHA ACTUALIZACIÓN", "ACTUALIZADO POR"]
+    orden = [cab_o,
+             ["4100003641", "", "Daniel Mojica", "", "ABIERTA", "", "", ""],
+             ["4300000448", "", "", "", "ABIERTA", "", "", ""],
+             ["4300000455", "", "Yokairis", "", "ABIERTA", "", "", ""],
+             ["4300000457", "", "Ana Pérez", "", "ABIERTA", "", "", ""]]
+    listas = [["ESTATUS LÍNEA", "ESTATUS ORDEN", "TRANSPORTISTA", "RESPONSABLE", "EMPRESA"],
+              ["COLOCADA", "ABIERTA", "INTRANS", "Daniel Mojica", "Antillana Comercial"],
+              ["CONFIRMADA", "COMPLETA", "DHL", "Juan de Dios", ""],
+              ["", "", "", "Yokairis", ""],
+              ["", "", "", "David Tejeda", ""]]
+    libro = FakeSpreadsheet({"Instrucciones": [["Léeme"]], "Órdenes": orden, "Daniel Mojica": daniel,
+                             "Juan de Dios": juan, "Yokairis Martes": yok, "David Tejeda": david,
+                             "Notas": [["x", "y"], ["no", "es de responsable"]], "Listas": listas})
+    for h in ("Daniel Mojica", "Juan de Dios", "Yokairis Martes", "David Tejeda"):
+        libro.hoja(h).row_count = 60
+        libro.hoja(h).col_count = 23
+    libro.hoja("Órdenes").row_count = 60
+    libro.hoja("Órdenes").col_count = 10
+    return libro

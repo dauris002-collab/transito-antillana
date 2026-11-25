@@ -48,10 +48,10 @@ Columnas: la fuente de verdad son las constantes de `sheets_io.py` (`REQUIRED_CO
 
 ## Sheet de órdenes de compra (decisión #37)
 
-- Sheet aparte, la cuenta de servicio como EDITOR. Pestañas `Órdenes` (llave: Documento compras) y `Desglose` (llave: Documento compras + Posición); `Instrucciones` y `Listas` no se leen. Columnas y alias en `ordenes.COLUMNAS_O` / `COLUMNAS_D`.
+- Sheet aparte, la cuenta de servicio como EDITOR. Pestañas: `Órdenes` (llave: Orden de Compras), una pestaña POR RESPONSABLE (llave: Orden de Compras + Posición; sus nombres salen de `Listas → RESPONSABLE`) y, si existe, el `Desglose` heredado; `Instrucciones` y `Listas` no se leen como líneas. Columnas y alias en `ordenes.COLUMNAS_O` / `COLUMNAS_D` (23 columnas, dos «ESTATUS»: la 2.ª es `estatus2`).
 - Módulo `ordenes.py` (lectura con caché 120 s y `token` = hora de la lectura principal; fallos aislados). Escritura con candado, relectura en vivo, RAW por posición de encabezado, bitácora en el `Log` principal. Nunca borra celdas.
-- Apps Script `apps_script/ordenes_onedit.gs` (activador instalable «Al editar»): sella FECHA ACTUALIZACIÓN y ACTUALIZADO POR de lo editado a mano. La zona horaria del Sheet debe ser Santo Domingo.
-- Alta: crear el Sheet desde `Seguimiento_Ordenes_Compra_v2.xlsx` (Archivo → Importar), compartirlo con la cuenta de servicio como Editor, agregar el secret `ORDENES_SHEET_ID`, agregar PINs con `rol = "compras"` y reiniciar la app.
+- Apps Script `apps_script/ordenes_onedit.gs` (activador instalable «Al editar»): sella FECHA ACTUALIZACIÓN y ACTUALIZADO POR de lo editado a mano en cualquier pestaña de responsable o en Órdenes. La zona horaria del Sheet debe ser Santo Domingo.
+- Alta: crear el Sheet desde `Seguimiento_Ordenes_Compra_v3.xlsx` (Archivo → Importar; el v2 con `Desglose` sigue leyéndose), compartirlo con la cuenta de servicio como Editor, agregar el secret `ORDENES_SHEET_ID`, agregar PINs con `rol = "compras"` y reiniciar la app.
 
 ## Lectura y escritura [L]
 

@@ -1,8 +1,9 @@
 /**
  * Sheet «Seguimiento de Órdenes de Compra» — sello automático de actualización.
  *
- * Qué hace: cuando alguien EDITA A MANO el Sheet (no la app), pone FECHA ACTUALIZACIÓN y ACTUALIZADO POR
- * en la fila de esa orden en la pestaña «Órdenes». Con ese sello la plataforma cuenta los «días sin
+ * Qué hace: cuando alguien EDITA A MANO el Sheet (no la app), en CUALQUIER pestaña de responsable (Daniel
+ * Mojica, Juan de Dios, Yokairis Martes, David Tejeda… o el «Desglose» heredado) o en «Órdenes», pone FECHA
+ * ACTUALIZACIÓN y ACTUALIZADO POR en la fila de esa orden en la pestaña «Órdenes». Con ese sello la plataforma cuenta los «días sin
  * actualizar». La app, cuando escribe ella misma, sella por su cuenta (una escritura por API no dispara
  * onEdit).
  *
@@ -16,11 +17,13 @@
  *
  * Límites (a propósito): solo reacciona a ediciones de UNA celda (o un pegado pequeño); si se pega o se
  * borra un bloque grande no sella (los pegados masivos se hacen con la carga masiva de la app, que sí
- * sella). No hace nada en las columnas de sello ni en las pestañas Instrucciones y Listas.
+ * sella). No hace nada en las columnas de sello ni en las pestañas Instrucciones y Listas. Una pestaña sin
+ * columna «Orden de Compras» (o «Documento compras») no se toma como de responsable y se ignora.
  */
 
 var PEST_ORDENES = 'Órdenes';
-var PEST_DESGLOSE = 'Desglose';
+var PEST_IGNORAR = ['Instrucciones', 'Listas'];   // pestañas que nunca sellan
+var COLS_DOC_LINEAS = ['Orden de Compras', 'Documento compras', 'Doc. compras', 'No. Orden'];
 var MAX_CELDAS_SELLADAS = 60;     // un pegado de más celdas no se sella fila por fila
 
 function norm_(t) {
@@ -52,7 +55,7 @@ function alEditar(e) {
   if (!e || !e.range) return;
   var hoja = e.range.getSheet();
   var nombre = hoja.getName();
-  if (nombre !== PEST_ORDENES && nombre !== PEST_DESGLOSE) return;
+  if (PEST_IGNORAR.indexOf(nombre) >= 0) return;
   var r0 = e.range.getRow();
   var nFilas = e.range.getNumRows();
   if (r0 < 2 || nFilas * e.range.getNumColumns() > MAX_CELDAS_SELLADAS) return;
@@ -79,7 +82,7 @@ function alEditar(e) {
     for (var i = 0; i < nFilas; i++) docs.push({ fila: r0 + i });
   } else {
     var md = mapa_(hoja);
-    var cDocD = col_(md, ['Documento compras', 'Doc. compras', 'No. Orden']);
+    var cDocD = col_(md, COLS_DOC_LINEAS);
     if (!cDocD) return;
     var valores = hoja.getRange(r0, cDocD, nFilas, 1).getValues();
     var vistos = {};
@@ -103,7 +106,7 @@ function alEditar(e) {
         if (String(colDocs[k][0]).trim() === x.doc) { fila = k + 2; break; }
       }
     }
-    // Una orden con líneas en Desglose pero sin fila en «Órdenes» no se crea aquí: la plataforma
+    // Una orden con líneas en una pestaña de responsable pero sin fila en «Órdenes» no se crea aquí: la plataforma
     // la muestra como «Sin asignar» y la lista entre los datos por revisar del admin.
     if (!fila) return;
     if (String(ordenes.getRange(fila, cDocO).getValue()).trim() === '') return;

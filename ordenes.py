@@ -1012,7 +1012,7 @@ _CSS = (
     ".oc-k .n { font-size:1.9rem; font-weight:800; line-height:1.1; margin-top:6px; }"
     ".oc-k .s { font-size:0.7rem; opacity:0.9; margin-top:4px; }"
     ".oc-res { background:#F8FAFC; border:1px solid #E5E7EB; border-left:4px solid #0C447C; border-radius:10px;"
-    " padding:10px 14px; font-size:0.9rem; color:#1F2937; margin:8px 0 12px; }"
+    " padding:10px 14px; font-size:0.9rem; color:#1F2937; margin:8px 0 12px; text-align:center; }"
     ".oc-res b { color:#0C447C; } .oc-res .r { color:#B91C1C; font-weight:700; }"
     ".oc-wrap { overflow-x:auto; margin:6px 0 10px; }"
     ".oc-t { width:100%; border-collapse:separate; border-spacing:0; background:#fff; border:1px solid #E5E7EB;"

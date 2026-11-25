@@ -108,6 +108,12 @@ def test_seguimiento_muestra_etapas_y_donde_esta(ses):
     assert "Recibida" in h and "1 línea(s) cerradas" in h
     assert "Dónde está ahora" in h and "<b>DHL</b>" in h and "ETA" in h
     assert "En el proveedor" in h and "10 uds pendientes" in h
+    # tarjetas: solicitada, colocada, despachado (4 de 14), pendiente, en tránsito (DHL), ETA, puerto, almacén
+    for k in ("Solicitada", "Colocada", "Despachado", "Pendiente / backorder", "En tránsito", "ETA", "Puerto", "Almacén"):
+        assert f'<div class="k">{k}</div>' in h
+    assert '<div class="b">4 uds</div><div class="u">de 14 pedidas · 29%</div>' in h
+    assert '<div class="b">10 uds</div><div class="u">por despachar</div>' in h
+    assert '<div class="b">4 uds</div><div class="u">DHL</div>' in h
 
 
 def test_seguimiento_avisa_lo_que_falta_y_el_backorder(ses):
@@ -115,8 +121,9 @@ def test_seguimiento_avisa_lo_que_falta_y_el_backorder(ses):
     assert "1 en backorder" in h
     assert 'oc-st ok"><div class="oc-dot">✓</div><div class="oc-sn">Colocada' in h, "todas las líneas ya la pasaron"
     assert 'oc-st act"><div class="oc-dot">1</div><div class="oc-sn">Confirmada' in h
-    assert "<b>INTRANS</b>" in h and h.count('class="falta">sin fecha') == 2
-    assert "sin fecha de embarque" in h and "sin ETA" in h
+    assert "<b>INTRANS</b>" in h and h.count('class="falta">sin fecha') == 3, "embarque y ETA del grupo + ETA de la tarjeta"
+    assert 'class="falta">sin dato' in h, "puerto y almacén sin reportar salen en ámbar"
+    assert '<div class="u">1 línea(s) en backorder</div>' in h
     assert "Falta despachar" in h, "el backorder y lo no despachado se explican"
 
 

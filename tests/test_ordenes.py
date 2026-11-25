@@ -97,17 +97,18 @@ def _ficha_html(ses, doc):
     return oc._seguimiento_html(o, d["lineas"][d["lineas"].Doc == doc])
 
 
-def test_seguimiento_muestra_etapas_y_donde_esta(ses):
+def test_seguimiento_etapas_tarjetas_y_sin_bloque_donde_esta(ses):
     h = _ficha_html(ses, "4300000448")   # 1 COLOCADA, 1 DESPACHADO (DHL), 1 COMPLETO cerrada
-    assert h.count('class="oc-st ') == 6
-    # Colocada y Despachada tienen líneas aquí; Confirmada no (una línea aún no llega ahí); En puerto sin líneas
-    assert 'oc-st act"><div class="oc-dot">1</div><div class="oc-sn">Colocada' in h
-    assert 'oc-st pend"><div class="oc-dot"></div><div class="oc-sn">Confirmada' in h
-    assert 'oc-st act"><div class="oc-dot">1</div><div class="oc-sn">Despachada' in h
-    assert 'oc-st pend"><div class="oc-dot"></div><div class="oc-sn">En puerto' in h
-    assert "Recibida" in h and "1 línea(s) cerradas" in h
-    assert "Dónde está ahora" in h and "<b>DHL</b>" in h and "ETA" in h
-    assert "En el proveedor" in h and "10 uds pendientes" in h
+    assert h.count('class="oc-fs ') == 6
+    # nombre de la etapa ARRIBA del punto (nm antes de nd) y el chip de quién, vacío si no se sabe
+    assert '<div class="who"></div><div class="nm">Colocada</div><div class="nd">' in h
+    assert 'oc-fs act"><div class="who"></div><div class="nm">Colocada' in h
+    assert 'oc-fs pend"><div class="who"></div><div class="nm">Confirmada' in h
+    assert 'oc-fs act"><div class="who"></div><div class="nm">Despachada' in h
+    assert 'oc-fs pend"><div class="who"></div><div class="nm">En puerto' in h
+    assert 'oc-fs act"><div class="who"></div><div class="nm">Recibida' in h
+    assert "1 línea(s)<small>10 uds</small>" in h and "1 línea(s)<small>4 uds</small>" in h
+    assert "Dónde está ahora" not in h and "Falta despachar" not in h, "bloque retirado a pedido"
     # tarjetas: solicitada, colocada, despachado (4 de 14), pendiente, en tránsito (DHL), ETA, puerto, almacén
     for k in ("Solicitada", "Colocada", "Despachado", "Pendiente / backorder", "En tránsito", "ETA", "Puerto", "Almacén"):
         assert f'<div class="k">{k}</div>' in h
@@ -116,21 +117,27 @@ def test_seguimiento_muestra_etapas_y_donde_esta(ses):
     assert '<div class="b">4 uds</div><div class="u">DHL</div>' in h
 
 
+def test_seguimiento_chip_de_quien_hizo_la_etapa(ses):
+    d = oc.construir(_t(ses), HOY())
+    o = d["ordenes"][d["ordenes"].Doc == "4300000448"].iloc[0]
+    h = oc._seguimiento_html(o, d["lineas"][d["lineas"].Doc == "4300000448"], {"COLOCADA": "Arelys Pérez"})
+    assert '<div class="who"><span class="oc-who"><i>AP</i>Arelys Pérez</span></div><div class="nm">Colocada' in h
+    assert oc._quien("") == ""
+
+
 def test_seguimiento_avisa_lo_que_falta_y_el_backorder(ses):
     h = _ficha_html(ses, "4300000455")   # BACKORDER + DESPACHADO A INTRANS sin fechas
-    assert "1 en backorder" in h
-    assert 'oc-st ok"><div class="oc-dot">✓</div><div class="oc-sn">Colocada' in h, "todas las líneas ya la pasaron"
-    assert 'oc-st act"><div class="oc-dot">1</div><div class="oc-sn">Confirmada' in h
-    assert "<b>INTRANS</b>" in h and h.count('class="falta">sin fecha') == 3, "embarque y ETA del grupo + ETA de la tarjeta"
-    assert 'class="falta">sin dato' in h, "puerto y almacén sin reportar salen en ámbar"
     assert '<div class="u">1 línea(s) en backorder</div>' in h
-    assert "Falta despachar" in h, "el backorder y lo no despachado se explican"
+    assert 'oc-fs ok"><div class="who"></div><div class="nm">Colocada' in h, "todas las líneas ya la pasaron"
+    assert 'oc-fs act"><div class="who"></div><div class="nm">Confirmada' in h
+    assert h.count('class="falta">sin fecha') == 1 and h.count('class="falta">sin dato') == 2, \
+        "ETA, puerto y almacén sin reportar salen en ámbar"
 
 
 def test_seguimiento_orden_sin_estatus_ni_fechas_no_revienta(ses):
     h = _ficha_html(ses, "4100003641")   # línea sin estatus
-    assert h.count('class="oc-st ') == 6 and "oc-st act" not in h
-    assert "Dónde está ahora" in h and "En el proveedor" in h
+    assert h.count('class="oc-fs ') == 6 and "oc-fs act" not in h
+    assert 'class="oc-tile t-eta"' in h
 
 
 def test_lectura_y_derivados(ses):

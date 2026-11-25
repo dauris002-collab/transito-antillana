@@ -1051,11 +1051,23 @@ _CSS = (
     ".oc-fg .k { font-size:0.68rem; color:#6B7280; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:2px; }"
     ".oc-fg .v { font-weight:700; font-size:0.9rem; word-break:break-word; }"
     ".oc-etapas { display:flex; gap:8px; flex-wrap:wrap; margin:14px 0 6px; align-items:center; }"
+    ".oc-tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin:16px 0 6px; }"
+    ".oc-tile { background:#F8FAFC; border:1px solid #E5E7EB; border-top:3px solid #94A3B8; border-radius:10px;"
+    " padding:9px 12px 10px; min-width:0; }"
+    ".oc-tile .k { font-size:0.66rem; color:#6B7280; text-transform:uppercase; letter-spacing:0.05em; }"
+    ".oc-tile .b { font-size:1.25rem; font-weight:800; color:#111827; line-height:1.25; margin-top:2px;"
+    " word-break:break-word; }"
+    ".oc-tile .u { font-size:0.74rem; color:#6B7280; margin-top:1px; word-break:break-word; }"
+    ".oc-tile .falta { font-size:0.95rem; color:#B45309; font-weight:800; }"
+    ".oc-tile.t-fecha { border-top-color:#64748B; } .oc-tile.t-des { border-top-color:#16A34A; }"
+    ".oc-tile.t-bo { border-top-color:#F59E0B; } .oc-tile.t-tra { border-top-color:#2E86DE; }"
+    ".oc-tile.t-eta { border-top-color:#0EA5E9; } .oc-tile.t-pto { border-top-color:#9333EA; }"
+    ".oc-tile.t-alm { border-top-color:#0F766E; }"
     ".oc-step { display:flex; margin:16px 0 10px; }"
     ".oc-st { flex:1; min-width:96px; text-align:center; position:relative; padding:0 4px; }"
     ".oc-st:not(:first-child)::before { content:''; position:absolute; top:13px; left:-50%; width:100%; height:3px;"
     " background:#E5E7EB; z-index:0; }"
-    ".oc-st.ok::before, .oc-st.act::before { background:#16A34A; }"
+    ".oc-st.ok::before, .oc-st.ok + .oc-st.act::before, .oc-st.act + .oc-st.act::before { background:#16A34A; }"
     ".oc-dot { position:relative; z-index:1; width:28px; height:28px; border-radius:50%; margin:0 auto 6px;"
     " display:flex; align-items:center; justify-content:center; font-weight:800; font-size:0.8rem;"
     " background:#fff; border:2px solid #D1D5DB; color:#9CA3AF; }"
@@ -1085,7 +1097,7 @@ _CSS = (
     "div[class*='st-key-oc_old_'] button { border-color:#FCA5A5 !important; background:#FEF2F2 !important;"
     " color:#991B1B !important; }"
     "div[class*='st-key-oc_old_'] button p { color:#991B1B !important; font-weight:700; }"
-    "@media (max-width:900px) { .oc-k { grid-template-columns:repeat(2,1fr); } }"
+    "@media (max-width:900px) { .oc-k, .oc-tiles { grid-template-columns:repeat(2,1fr); } }"
     "</style>"
 )
 _CLASE_EST = {"COLOCADA": "e-col", "CONFIRMADA": "e-conf", "BACKORDER": "e-bo", "DESPACHADO": "e-des",
@@ -1222,6 +1234,50 @@ def _min_fecha(serie):
     return min(v) if v else None
 
 
+def _lista(serie) -> list:
+    return sorted({str(x) for x in serie if x is not None and str(x).strip() and not pd.isna(x)})
+
+
+def _tarjetas_seguimiento(o: pd.Series, lineas: pd.DataFrame) -> str:
+    """Lo que Taller pregunta: cuándo se pidió y se colocó, cuánto salió, cuánto falta, qué va en tránsito, ETA,
+    puerto y almacén. Se calcula sobre las líneas ABIERTAS (las completas o canceladas no se muestran)."""
+    ped = float(lineas["Pedida"].fillna(0).sum()) if len(lineas) else 0.0
+    desp = float(lineas["Desp"].fillna(0).sum()) if len(lineas) else 0.0
+    pct = 0 if not ped else min(100, round(100 * desp / ped))
+    en_bo = int((lineas["Estatus"] == "BACKORDER").sum()) if len(lineas) else 0
+    transito = lineas[lineas["Estatus"].isin(["DESPACHADO", "EN TRÁNSITO"])] if len(lineas) else lineas
+    puerto_l = lineas[lineas["Estatus"] == "EN PUERTO"] if len(lineas) else lineas
+    uds_transito = float(transito["Desp"].fillna(0).sum()) if len(transito) else 0.0
+    uds_puerto = float(puerto_l["Desp"].fillna(0).sum()) if len(puerto_l) else 0.0
+    transp = _lista(transito["Transp"]) if len(transito) else []
+    etas = [x for x in lineas["ETA"] if x is not None and not pd.isna(x)] if len(lineas) else []
+    puertos = _lista(lineas["Puerto"]) if len(lineas) else []
+    almacenes = _lista(lineas["Almacen"]) if len(lineas) else []
+    hay_camino = bool(len(transito) or len(puerto_l))
+
+    def t(clase, k, grande, sub="", ambar=False):
+        g = _falta(grande) if ambar else _esc(grande)
+        return (f'<div class="oc-tile {clase}"><div class="k">{k}</div><div class="b">{g}</div>'
+                f'<div class="u">{_esc(sub) if sub else "&nbsp;"}</div></div>')
+
+    eta_txt = _fd(min(etas)) if etas else ""
+    eta_sub = ("hasta " + _fd(max(etas))) if etas and max(etas) != min(etas) else ""
+    return ('<div class="oc-tiles">'
+            + t("t-fecha", "Solicitada", _fd(o.Recepcion), "fecha de la solicitud")
+            + t("t-fecha", "Colocada", _fd(o.Colocacion), "fecha del documento de compra")
+            + t("t-des", "Despachado", f"{_cant(desp)} uds", f"de {_cant(ped)} pedidas · {pct}%")
+            + t("t-bo", "Pendiente / backorder", f"{_cant(o.PendUnid)} uds",
+                f"{en_bo} línea(s) en backorder" if en_bo else "por despachar")
+            + t("t-tra", "En tránsito", f"{_cant(uds_transito)} uds",
+                (", ".join(transp) if transp else ("sin transportista" if len(transito) else "nada en camino")))
+            + t("t-eta", "ETA", eta_txt or ("sin fecha" if hay_camino else "—"), eta_sub, ambar=not eta_txt and hay_camino)
+            + t("t-pto", "Puerto", ", ".join(puertos) if puertos else ("sin dato" if hay_camino else "—"),
+                f"{_cant(uds_puerto)} uds en puerto" if uds_puerto else "", ambar=not puertos and hay_camino)
+            + t("t-alm", "Almacén", ", ".join(almacenes) if almacenes else ("sin dato" if hay_camino else "—"), "",
+                ambar=not almacenes and hay_camino)
+            + "</div>")
+
+
 def _seguimiento_html(o: pd.Series, lineas: pd.DataFrame) -> str:
     """Recorrido de la orden (dónde está y qué etapas lleva) con lo que el Sheet sabe HOY: el estatus actual de cada
     línea, transportista, embarque, ETA, puerto y cantidades. El Sheet no guarda cuándo pasó de una etapa a otra."""
@@ -1230,15 +1286,9 @@ def _seguimiento_html(o: pd.Series, lineas: pd.DataFrame) -> str:
     minimo = min(rangos) if rangos else len(ETAPAS) - 1   # sin líneas abiertas: todo lo anterior a «Recibida» pasó
     n_bo = int((lineas["Estatus"] == "BACKORDER").sum()) if len(lineas) else 0
     avanzadas = lineas[lineas["Estatus"].isin(AVANZADOS)] if len(lineas) else lineas
-    subs = {
-        "COLOCADA": _fd(o.Colocacion) if o.Colocacion else "sin fecha",
-        "CONFIRMADA": f"{n_bo} en backorder" if n_bo else "",
-        "DESPACHADO": ("embarque " + _fd(_min_fecha(avanzadas["Embarque"]))) if len(avanzadas)
-        and _min_fecha(avanzadas["Embarque"]) else ("sin fecha de embarque" if len(avanzadas) else ""),
-        "EN TRÁNSITO": ("ETA " + _fd(o.ETA)) if o.ETA else ("sin ETA" if len(avanzadas) else ""),
-        "EN PUERTO": ", ".join(sorted({x for x in avanzadas["Puerto"] if x})) if len(avanzadas) else "",
-        "COMPLETO": f"{cerradas} línea(s) cerradas" if cerradas else "",
-    }
+    subs = {k: "" for k, _ in ETAPAS}
+    subs["CONFIRMADA"] = f"{n_bo} en backorder" if n_bo else ""
+    subs["COMPLETO"] = f"{cerradas} línea(s) cerradas" if cerradas else ""
     pasos = []
     for i, (clave, nombre) in enumerate(ETAPAS):
         aqui = sum(1 for r in rangos if r == i) if clave != "COMPLETO" else cerradas
@@ -1247,7 +1297,7 @@ def _seguimiento_html(o: pd.Series, lineas: pd.DataFrame) -> str:
         punto = str(aqui) if estado == "act" else ("✓" if estado == "ok" else "")
         pasos.append(f'<div class="oc-st {estado}"><div class="oc-dot">{punto}</div><div class="oc-sn">{nombre}</div>'
                      f'<div class="oc-ss">{_esc(subs[clave])}</div></div>')
-    html = '<div class="oc-step">' + "".join(pasos) + "</div>"
+    html = _tarjetas_seguimiento(o, lineas) + '<div class="oc-step">' + "".join(pasos) + "</div>"
 
     filas = []
     if len(avanzadas):
@@ -1258,13 +1308,15 @@ def _seguimiento_html(o: pd.Series, lineas: pd.DataFrame) -> str:
             emb = _min_fecha([x.Embarque for x in g])
             eta = _min_fecha([x.ETA for x in g])
             ptos = sorted({x.Puerto for x in g if x.Puerto})
+            alms = sorted({x.Almacen for x in g if x.Almacen})
             uds = sum((x.Desp or 0) for x in g if x.Desp is not None and not pd.isna(x.Desp))
             filas.append(
                 f'<div class="oc-dr">{_chip_linea(est)}<span><b>{len(g)}</b> línea(s) · {_cant(uds)} uds</span>'
                 "<span>Transportista: " + (f"<b>{_esc(transp)}</b>" if transp else _falta("sin transportista")) + "</span>"
                 "<span>Embarque: " + (_fd(emb) if emb else _falta("sin fecha")) + "</span>"
                 "<span>ETA: " + (_fd(eta) if eta else _falta("sin fecha")) + "</span>"
-                "<span>Puerto: " + (_esc(", ".join(ptos)) if ptos else "—") + "</span></div>")
+                "<span>Puerto: " + (_esc(", ".join(ptos)) if ptos else "—") + "</span>"
+                "<span>Almacén: " + (_esc(", ".join(alms)) if alms else "—") + "</span></div>")
     sin_despachar = lineas[lineas["Estatus"].isin(["COLOCADA", "CONFIRMADA", "BACKORDER", ""])] if len(lineas) else lineas
     if len(sin_despachar):
         uds = sin_despachar["Pend"].fillna(0).sum()
@@ -1273,7 +1325,7 @@ def _seguimiento_html(o: pd.Series, lineas: pd.DataFrame) -> str:
     resto = float(o.PendUnid or 0) - float(sin_despachar["Pend"].fillna(0).sum() if len(sin_despachar) else 0)
     if resto > 0:
         filas.append(f'<div class="oc-dr"><span class="oc-chip e-bo">Falta despachar</span><span><b>{_cant(resto)}</b> uds de '
-                     "de líneas ya marcadas como despachadas aún faltan por enviar</span></div>")
+                     "líneas ya marcadas como despachadas aún faltan por enviar</span></div>")
     if filas:
         html += '<div class="oc-donde"><div class="t">Dónde está ahora</div>' + "".join(filas) + "</div>"
     return html
@@ -1284,9 +1336,8 @@ def _ficha(o: pd.Series, lineas: pd.DataFrame) -> None:
     ped, desp = lineas["Pedida"].fillna(0).sum(), lineas["Desp"].fillna(0).sum()
     pct = 0 if not ped else min(100, round(100 * desp / ped))
     campos = [("Responsable", o.Responsable), ("Solicitado por", o.Solicitantes or "—"),
-              ("No. Factura", o.Facturas or "—"), ("Recepción", _fd(o.Recepcion)), ("Colocación", _fd(o.Colocacion)),
-              ("ETA próxima", _fd(o.ETA)), ("Actualizado", ("sin sello" if o.SinSello else _fd(o.Actualizado))
-                                            + (f" · {o.Por}" if o.Por else ""))]
+              ("No. Factura", o.Facturas or "—"), ("Actualizado", ("sin sello" if o.SinSello else _fd(o.Actualizado))
+                                                   + (f" · {o.Por}" if o.Por else ""))]
     grid = "".join(f'<div><div class="k">{k}</div><div class="v">{_esc(str(v))}</div></div>' for k, v in campos)
     nota = (f'<div class="oc-nota"><b>Comentario para Taller:</b> {_esc(o.Comentario)}</div>' if o.Comentario else "")
     st.markdown(

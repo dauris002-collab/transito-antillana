@@ -395,3 +395,46 @@ def test_falla_del_sheet_de_ordenes_no_tumba_la_app(libros):
     assert any("faltan estas pestañas" in w.value for w in at.warning)
     ir(at, "Dashboard")
     sin_errores(at)
+
+
+# ------------------------------------------------------------ camino por puntos en las tablas de líneas
+def _puntos(h):
+    """Estados de los 6 puntos de UNA celda de ruta, en orden."""
+    import re
+    return re.findall(r'class="rp (\w+)"', h)
+
+
+def test_ruta_linea_estados_y_etiqueta():
+    assert _puntos(oc._ruta_linea("DESPACHADO")) == ["ok", "ok", "act", "pend", "pend", "pend"]
+    h = oc._ruta_linea("DESPACHADO")
+    assert '<div class="oc-rl">Despachada</div>' in h
+    assert h.count('class="rc ok"') == 2 and h.count('class="rc"') == 3, "el hilo verde llega hasta el punto actual"
+    assert _puntos(oc._ruta_linea("COLOCADA")) == ["act", "pend", "pend", "pend", "pend", "pend"]
+    assert _puntos(oc._ruta_linea("EN PUERTO")) == ["ok", "ok", "ok", "ok", "act", "pend"]
+    assert _puntos(oc._ruta_linea("COMPLETO")) == ["ok", "ok", "ok", "ok", "ok", "act"]
+
+
+def test_ruta_linea_backorder_en_ambar_y_sin_estatus_en_gris():
+    h = oc._ruta_linea("BACKORDER")
+    assert _puntos(h) == ["ok", "bo", "pend", "pend", "pend", "pend"]
+    assert '<div class="oc-rl bo">Backorder</div>' in h
+    h = oc._ruta_linea("")
+    assert _puntos(h) == ["pend"] * 6 and '<div class="oc-rl sin">Sin estatus</div>' in h and "rc ok" not in h
+
+
+def test_tabla_de_lineas_trae_el_camino_la_leyenda_y_todo_centrado(ses):
+    d = oc.construir(_t(ses), HOY())
+    l = d["lineas"]
+    h = oc._tabla_lineas(l)
+    assert h.count('<td class="ruta">') == len(l), "una ruta por línea, en lugar de la etiqueta de estatus"
+    assert "oc-chip" not in h
+    assert h.startswith('<div class="oc-ley">') and "Camino de la mercancía" in h
+    for _, nombre in oc.ETAPAS:
+        assert nombre in h.split("<table")[0], "la leyenda nombra las 6 etapas"
+    # en la ficha la leyenda sobra (ya está el recorrido grande), pero cada línea conserva su ruta
+    hf = oc._tabla_lineas(l[l.Doc == "4300000448"], con_orden=False)
+    assert "oc-ley" not in hf and hf.count('<td class="ruta">') == 2
+    css = oc._CSS
+    assert ".oc-t th { color:#fff;" in css and "text-align:center; vertical-align:middle" in css
+    assert ".oc-t td.n { font-variant-numeric:tabular-nums; }" in css and "text-align:right" not in css
+    assert "linear-gradient(90deg,#2E86DE,#17A2B8)" in css

@@ -104,13 +104,39 @@ st.set_page_config(
 )
 
 
+SECCION_ORDENES = "Órdenes de compra"
+
+
+def _ordenes_configurado() -> bool:
+    """True si existe el secret ORDENES_SHEET_ID. Se lee aquí (sin importar ordenes.py) para que un
+    fallo de ese módulo nunca impida arrancar la app."""
+    try:
+        return bool(str(st.secrets.get("ORDENES_SHEET_ID", "") or "").strip())
+    except Exception:
+        return False
+
+
+def _vista_ordenes(rol: str, token: str) -> None:
+    """Órdenes de compra con el mismo aislamiento de fallos que Repuesto y Taller: el módulo se importa
+    al usarse y un error se muestra dentro de la sección, sin tumbar el resto."""
+    try:
+        from ordenes import panel_ordenes
+    except Exception as e:  # noqa: BLE001
+        st.error(f"La sección de Órdenes de compra no pudo cargarse: {e}")
+        return
+    try:
+        panel_ordenes(rol, token)
+    except Exception as e:  # noqa: BLE001
+        st.error(f"Error en la sección de Órdenes de compra: {e}")
+
+
 LARGO_PIN = 6               # máximo de dígitos del PIN (los PIN de 4 dígitos ya existentes siguen valiendo)
 
 
 # Vida de sesión por rol. El admin trabaja sentado en la app; el viewer (el
 # presidente, gerentes) abre el link desde el celular una vez al día y volver a
 # pedirle el PIN cada rato es la forma más rápida de que deje de usarla.
-VIDA_SESION_MIN = {"admin": 120, "viewer": 720, "taller": 480}
+VIDA_SESION_MIN = {"admin": 120, "viewer": 720, "taller": 480, "compras": 480}
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +244,7 @@ def _resolver_pin(pin: str):
         for clave, datos in tabla.items():
             if str(pin) == str(clave):
                 rol = str(datos.get("rol", "viewer")).lower()
-                return (rol if rol in ("admin", "taller") else "viewer"), str(datos.get("nombre", "usuario"))
+                return (rol if rol in ("admin", "taller", "compras") else "viewer"), str(datos.get("nombre", "usuario"))
     if pin and pin == st.secrets.get("ADMIN_PIN", None):
         return "admin", "Administrador"
     if pin and pin == st.secrets.get("VIEWER_PIN", None):
@@ -284,6 +310,15 @@ def main():
     secciones = (["Dashboard", "Analítica", "Agregar", "Editar", "Carga masiva", "Histórico",
                   "Estatus de Pago", "Herramientas"]
                  if es_admin else ["Dashboard", "Analítica", "Histórico", "Estatus de Pago"])
+    # Órdenes de compra (Sheet aparte, secret ORDENES_SHEET_ID): sin el secret la sección no aparece.
+    # El rol "compras" (analistas de compras internacionales) solo ve Dashboard y esta sección.
+    if _ordenes_configurado():
+        if st.session_state.rol == "compras":
+            secciones = ["Dashboard", SECCION_ORDENES]
+        else:
+            antes = "Herramientas" if es_admin else None
+            secciones = (secciones[:secciones.index(antes)] + [SECCION_ORDENES, antes]
+                         + secciones[secciones.index(antes) + 1:]) if antes else secciones + [SECCION_ORDENES]
     # Taller (Sheet aparte) vive dentro de Estatus de Pago, como opción del filtro
     # "Origen", y solo si existe el secret TALLER_SHEET_ID. El rol "taller" ve el resto
     # como viewer (es_admin False) y solo escribe en Taller; el admin también.
@@ -302,6 +337,7 @@ def main():
         st.markdown(f"**{st.session_state.get('usuario', 'Usuario')}**")
         st.caption("Administrador" if es_admin else
                    "Repuesto y Taller · edita solo esa sección" if st.session_state.rol == "taller"
+                   else "Compras · edita solo Órdenes de compra" if st.session_state.rol == "compras"
                    else "Solo visualización")
         st.write("")
         if st.button("Actualizar datos", width="stretch"):
@@ -355,6 +391,8 @@ def main():
         mostrar_historico(datos, "admin" if es_admin else "viewer")
     elif seccion == "Estatus de Pago":
         panel_pagos(datos, es_admin, taller_escribe)
+    elif seccion == SECCION_ORDENES:
+        _vista_ordenes(st.session_state.rol, str(datos.get("hora") or ""))
     elif seccion == "Herramientas":
         herramientas(datos)
 

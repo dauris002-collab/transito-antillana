@@ -20,9 +20,12 @@ if estado_prueba.LIBRO is None:
     estado_prueba.LIBRO = (datos.libro_analitica() if os.environ.get("TRANSITO_DATOS") == "analitica"
                            else datos.libro_principal())
     estado_prueba.TALLER = datos.libro_taller()
+    estado_prueba.ORDENES = datos.libro_ordenes()
 
 sheets_io.get_spreadsheet = lambda: estado_prueba.LIBRO
 sheets_io.get_spreadsheet_taller = lambda: estado_prueba.TALLER
+import ordenes  # noqa: E402
+ordenes.get_spreadsheet_ordenes = lambda: estado_prueba.ORDENES
 # Sin esperas reales (reintentos, freno del PIN). OJO: se sustituye el nombre `time` de
 # cada módulo, NO time.sleep global: AppTest lo usa para sondear y quedaría en bucle.
 _sin_espera = types.SimpleNamespace(sleep=lambda *_: None, time=time.time)

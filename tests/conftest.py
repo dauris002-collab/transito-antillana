@@ -27,16 +27,22 @@ def libros():
     st.cache_resource.clear()
     estado_prueba.LIBRO = datos.libro_principal()
     estado_prueba.TALLER = datos.libro_taller()
+    estado_prueba.ORDENES = datos.libro_ordenes()
     yield estado_prueba
     st.cache_data.clear()
     st.cache_resource.clear()
 
 
-def abrir_app(pin="1111", seccion=None, timeout=120):
-    """Levanta la app completa, entra con el PIN y (opcional) cambia de sección."""
+SECRETS_ORDENES = {"ORDENES_SHEET_ID": "falso-ordenes",
+                   "pins": {**SECRETS["pins"], "444444": {"nombre": "David Tejeda", "rol": "compras"}}}
+
+
+def abrir_app(pin="1111", seccion=None, timeout=120, ordenes=False):
+    """Levanta la app completa, entra con el PIN y (opcional) cambia de sección.
+    `ordenes=True` agrega el secret ORDENES_SHEET_ID y el PIN 444444 (rol compras)."""
     from streamlit.testing.v1 import AppTest
     at = AppTest.from_file(str(RAIZ / "tests" / "harness_app.py"), default_timeout=timeout)
-    for k, v in SECRETS.items():
+    for k, v in {**SECRETS, **(SECRETS_ORDENES if ordenes else {})}.items():
         at.secrets[k] = v
     at.run()
     at.text_input[0].set_value(pin)

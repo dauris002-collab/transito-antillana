@@ -46,6 +46,13 @@ Columnas: la fuente de verdad son las constantes de `sheets_io.py` (`REQUIRED_CO
 - Una sola llamada `values_batch_get` (4 pestañas, ~990.000 celdas) con caché de 24 h.
 - Interfaz (v5.16): 4 páginas con filtros globales en `declaraciones.py` (`_filtros`, `_filtrar`, `PAGINAS`). Botones de copiar con `st.iframe` (`_panel_copia`). Las pruebas del tablero de 6 vistas de v5.15 ya no aplican: `tests/verificar.sh` paso 5 las reporta como fallo esperado contra `origin/main` hasta que este cambio entre.
 
+## Sheet de órdenes de compra (decisión #37)
+
+- Sheet aparte, la cuenta de servicio como EDITOR. Pestañas `Órdenes` (llave: Documento compras) y `Desglose` (llave: Documento compras + Posición); `Instrucciones` y `Listas` no se leen. Columnas y alias en `ordenes.COLUMNAS_O` / `COLUMNAS_D`.
+- Módulo `ordenes.py` (lectura con caché 120 s y `token` = hora de la lectura principal; fallos aislados). Escritura con candado, relectura en vivo, RAW por posición de encabezado, bitácora en el `Log` principal. Nunca borra celdas.
+- Apps Script `apps_script/ordenes_onedit.gs` (activador instalable «Al editar»): sella FECHA ACTUALIZACIÓN y ACTUALIZADO POR de lo editado a mano. La zona horaria del Sheet debe ser Santo Domingo.
+- Alta: crear el Sheet desde `Seguimiento_Ordenes_Compra_v2.xlsx` (Archivo → Importar), compartirlo con la cuenta de servicio como Editor, agregar el secret `ORDENES_SHEET_ID`, agregar PINs con `rol = "compras"` y reiniciar la app.
+
 ## Lectura y escritura [L]
 
 - Lectura: UNA llamada `values_batch_get` trae todas las pestañas (`A1:AZ20000`), con caché de 45 s (`CACHE_TTL`). Un error de lectura no se cachea. Tope de 20.000 filas por pestaña, con aviso.
@@ -56,9 +63,9 @@ Columnas: la fuente de verdad son las constantes de `sheets_io.py` (`REQUIRED_CO
 
 ## Acceso [L]
 
-- Login por PIN de 4 dígitos. Roles `admin` (8 secciones) y `viewer` (Dashboard, Analítica, Histórico, Estatus de Pago).
-- Secrets esperados (solo nombres): `gcp_service_account`, `SHEET_ID`, `TALLER_SHEET_ID` (opcional), `HISTORICO_SHEET_ID` (opcional, decisión #36), tabla `pins` (por PIN: nombre y rol; respaldo: `ADMIN_PIN` / `VIEWER_PIN`), `sla` (opcional: `llegada_a_puerto`, `recepcion_y_declaracion`, `retraso`).
-- Sesión: token en la URL cuyo contenido vive en el servidor, atado a una huella del navegador. Vida 120 min (admin) / 720 min (viewer), con ventana deslizante.
+- Login por PIN de 4 dígitos. Roles `admin` (8 secciones + Órdenes de compra) y `viewer` (Dashboard, Analítica, Histórico, Estatus de Pago, Órdenes de compra solo lectura); `taller` (edita Repuesto y Taller); `compras` (Dashboard y Órdenes de compra, edita solo esa sección).
+- Secrets esperados (solo nombres): `gcp_service_account`, `SHEET_ID`, `TALLER_SHEET_ID` (opcional), `HISTORICO_SHEET_ID` (opcional, decisión #36; se retira para quitar las declaraciones), `ORDENES_SHEET_ID` (opcional, decisión #37), tabla `pins` (por PIN: nombre y rol; respaldo: `ADMIN_PIN` / `VIEWER_PIN`), `sla` (opcional: `llegada_a_puerto`, `recepcion_y_declaracion`, `retraso`).
+- Sesión: token en la URL cuyo contenido vive en el servidor, atado a una huella del navegador. Vida 120 min (admin) / 720 min (viewer) / 480 min (taller y compras), con ventana deslizante.
 - Sin bloqueo por intentos fallidos, solo 1 s de espera por intento (ver DECISIONS.md).
 
 ## Reglas de negocio que más se tocan [L]

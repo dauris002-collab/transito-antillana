@@ -128,7 +128,9 @@ def test_vista_con_datos_pendientes_total_y_rojo(libros):
     assert 'Pendientes</div><div class="n">3</div>' in html
     assert "RD$ 1,600,325.60" in html, "total por pagar = suma de los 3 pendientes"
     assert "Pendientes por antigüedad" not in html and "Desglose por expediente" not in html
-    assert ".ep-tabla th { background:#DBEAFE;" in html, "encabezado de la tabla en azul claro, no negro"
+    # 25 nov 2026 (pedido de Dauris): el encabezado pasa del azul claro al degradado azul→turquesa de Órdenes de compra
+    assert ".ep-tabla thead tr { background:linear-gradient(90deg,#2E86DE,#17A2B8); }" in html, "encabezado en degradado"
+    assert "background:#DBEAFE" not in html.split(".ep-tabla th")[1].split("}")[0], "ya no es azul claro ni negro"
     assert html.count('td class="rojo"') == 1, "solo el de 10 días; el de 2 no es rojo"
     assert "1300850722600962" in html and "Llegada: 31 jul 2026" in html
     assert "GENERADOR 350KW · 2 · Llegada:" in html

@@ -1012,19 +1012,41 @@ _CSS = (
     ".oc-k .n { font-size:1.9rem; font-weight:800; line-height:1.1; margin-top:6px; }"
     ".oc-k .s { font-size:0.7rem; opacity:0.9; margin-top:4px; }"
     ".oc-res { background:#F8FAFC; border:1px solid #E5E7EB; border-left:4px solid #0C447C; border-radius:10px;"
-    " padding:10px 14px; font-size:0.9rem; color:#1F2937; margin:8px 0 12px; }"
+    " padding:10px 14px; font-size:0.9rem; color:#1F2937; margin:8px 0 12px; text-align:center; }"
     ".oc-res b { color:#0C447C; } .oc-res .r { color:#B91C1C; font-weight:700; }"
     ".oc-wrap { overflow-x:auto; margin:6px 0 10px; }"
     ".oc-t { width:100%; border-collapse:separate; border-spacing:0; background:#fff; border:1px solid #E5E7EB;"
-    " border-radius:12px; overflow:hidden; font-size:0.84rem; }"
+    " border-radius:12px; overflow:hidden; font-size:0.84rem; box-shadow:0 1px 4px rgba(17,24,39,0.06); }"
     ".oc-t thead tr { background:linear-gradient(90deg,#2E86DE,#17A2B8); }"
-    ".oc-t th { color:#fff; font-size:0.66rem; text-transform:uppercase; letter-spacing:0.05em; padding:11px 10px;"
-    " text-align:left; font-weight:700; white-space:nowrap; }"
-    ".oc-t td { padding:10px; border-top:1px solid #EEF2F6; vertical-align:top; color:#111827; }"
+    ".oc-t th { color:#fff; font-size:0.68rem; text-transform:uppercase; letter-spacing:0.05em; padding:13px 12px;"
+    " text-align:center; vertical-align:middle; font-weight:700; white-space:nowrap; }"
+    ".oc-t td { padding:11px 12px; border-top:1px solid #EEF2F6; text-align:center; vertical-align:middle;"
+    " color:#111827; line-height:1.35; }"
     ".oc-t tbody tr:nth-child(even) { background:#FBFCFE; }"
+    ".oc-t tbody tr:hover { background:#EFF6FF; }"
     ".oc-t td.oc { font-weight:800; color:#0C447C; white-space:nowrap; }"
-    ".oc-t td.n { text-align:right; font-variant-numeric:tabular-nums; }"
+    ".oc-t td.n { font-variant-numeric:tabular-nums; }"
     ".oc-t td.c { text-align:center; } .oc-t td.s { color:#6B7280; max-width:320px; }"
+    ".oc-t td.ruta { padding:9px 14px; min-width:190px; }"
+    ".oc-rw { display:flex; flex-direction:column; align-items:center; gap:6px; }"
+    ".oc-ruta { display:inline-flex; align-items:center; }"
+    ".oc-ruta .rp { flex:none; width:15px; height:15px; box-sizing:border-box; border-radius:50%; background:#fff;"
+    " border:2px solid #CBD5E1; }"
+    ".oc-ruta .rc { flex:none; width:13px; height:3px; background:#E2E8F0; }"
+    ".oc-ruta .rc.ok { background:#16A34A; }"
+    ".oc-ruta .rp.ok { background:#16A34A; border-color:#16A34A; }"
+    ".oc-ruta .rp.act { background:#2563EB; border-color:#2563EB; box-shadow:0 0 0 4px rgba(37,99,235,0.22); }"
+    ".oc-ruta .rp.bo { background:#F59E0B; border-color:#F59E0B; box-shadow:0 0 0 4px rgba(245,158,11,0.25); }"
+    ".oc-rl { font-size:0.74rem; font-weight:800; color:#1D4ED8; white-space:nowrap; }"
+    ".oc-rl.bo { color:#B45309; } .oc-rl.sin { color:#9CA3AF; font-weight:600; }"
+    ".oc-ley { display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:6px 8px; margin:8px 0 2px;"
+    " font-size:0.78rem; color:#374151; }"
+    ".oc-ley .s { background:#F1F5F9; border:1px solid #E2E8F0; border-radius:999px; padding:3px 11px; font-weight:700; }"
+    ".oc-ley i { font-style:normal; color:#9CA3AF; }"
+    ".oc-ley .k { display:inline-flex; align-items:center; gap:5px; margin-left:10px; color:#6B7280; }"
+    ".oc-ley .k u { display:inline-block; width:11px; height:11px; border-radius:50%; text-decoration:none; }"
+    ".oc-ley .k .g { background:#16A34A; } .oc-ley .k .a { background:#2563EB; } .oc-ley .k .m { background:#F59E0B; }"
+    ".oc-ley .k .p { background:#fff; border:2px solid #CBD5E1; box-sizing:border-box; }"
     ".oc-t .rojo { color:#B91C1C; font-weight:700; } .oc-t .ambar { color:#B45309; font-weight:700; }"
     ".oc-t .v { color:#9CA3AF; }"
     ".oc-chip { display:inline-block; padding:3px 9px; border-radius:999px; font-size:0.72rem; font-weight:700;"
@@ -1188,10 +1210,12 @@ def _tabla_lineas(df: pd.DataFrame, con_orden: bool = True) -> str:
             + _celda(r.Material) + _celda(r.MatAnt) + _celda(r.Texto)
             + f'<td class="n">{_cant(r.Pedida)}</td><td class="n">{_cant(r.Desp)}</td>'
             + f'<td class="n {"rojo" if rojo else ""}">{_cant(r.Pend)}</td>'
-            + f"<td>{_chip_linea(r.Estatus)}</td>" + _celda(r.Transp) + _celda(_fd(r.Embarque) if r.Embarque else "")
+            + f'<td class="ruta">{_ruta_linea(r.Estatus)}</td>' + _celda(r.Transp) + _celda(_fd(r.Embarque) if r.Embarque else "")
             + _celda(_fd(r.ETA) if r.ETA else "") + _celda(r.Puerto) + _celda(r.Solicitante) + _celda(r.Cliente)
             + _celda(r.Coment, "s") + "</tr>")
-    return ('<div class="oc-wrap"><table class="oc-t"><thead><tr>' + "".join(f"<th>{c}</th>" for c in cab)
+    # La leyenda solo va en las listas de varias órdenes: la ficha ya trae el recorrido grande arriba.
+    return ((_leyenda_ruta() if con_orden else "")
+            + '<div class="oc-wrap"><table class="oc-t"><thead><tr>' + "".join(f"<th>{c}</th>" for c in cab)
             + "</tr></thead><tbody>" + "".join(filas) + "</tbody></table></div>")
 
 
@@ -1236,6 +1260,36 @@ def _rango_etapa(est: str) -> int:
         if k == est:
             return i
     return -1
+
+
+def _ruta_linea(est: str) -> str:
+    """Camino por puntos de UNA línea (mismas etapas y colores que el recorrido de la ficha): verde = ya pasó,
+    azul = está aquí, gris = falta. BACKORDER = punto ámbar en «Confirmada» (espera al proveedor).
+    Sin estatus: todo en gris."""
+    rango = _rango_etapa(est)
+    bo = est == "BACKORDER"
+    piezas = []
+    for i, (_, nombre) in enumerate(ETAPAS):
+        if i:
+            piezas.append(f'<span class="rc{" ok" if i <= rango else ""}"></span>')
+        estado = "pend" if rango < 0 or i > rango else ("ok" if i < rango else ("bo" if bo else "act"))
+        piezas.append(f'<span class="rp {estado}" title="{nombre}"></span>')
+    if bo:
+        etiqueta, clase = "Backorder", " bo"
+    elif rango >= 0:
+        etiqueta, clase = ETAPAS[rango][1], ""
+    else:
+        etiqueta, clase = _etq(est), " sin"
+    return (f'<div class="oc-rw"><div class="oc-ruta">{"".join(piezas)}</div>'
+            f'<div class="oc-rl{clase}">{_esc(etiqueta)}</div></div>')
+
+
+def _leyenda_ruta() -> str:
+    """Cómo leer el camino por puntos: etapas en orden y qué significa cada color."""
+    pasos = '<i>›</i>'.join(f'<span class="s">{_ICONO_ETAPA[k]} {n}</span>' for k, n in ETAPAS)
+    return ('<div class="oc-ley"><b>Camino de la mercancía:</b> ' + pasos
+            + '<span class="k"><u class="g"></u>ya pasó</span><span class="k"><u class="a"></u>está aquí</span>'
+            + '<span class="k"><u class="m"></u>backorder</span><span class="k"><u class="p"></u>falta</span></div>')
 
 
 def _falta(txt: str) -> str:

@@ -422,7 +422,7 @@ def _leer_remoto(token: str = "") -> dict:
     """`token` solo parte la caché (la app pasa la hora de la última lectura del Sheet principal, así
     ↻ Actualizar también recarga esta vista). No atrapa errores: un fallo no queda cacheado."""
     ss = get_spreadsheet_ordenes()
-    return {**_leer_valores(ss), "hora": ahora_rd()}
+    return {**_leer_valores(ss), "hora": ahora_rd(), "libro": str(getattr(ss, "title", "") or "")}
 
 
 def cargar(token: str = "") -> dict:
@@ -1403,8 +1403,11 @@ def _tarjetas_kpi(k: dict) -> str:
             + "</div>")
 
 
-def _encabezado(hora) -> None:
-    sello = f"Sheet de órdenes leído a las {hora.strftime('%I:%M %p').lstrip('0').lower()} (hora RD)"
+def _encabezado(hora, libro: str = "") -> None:
+    """`libro` = nombre del Sheet que la app está leyendo: si lo que se escribe en el Sheet no aparece, lo primero es
+    comprobar que este nombre es el del Sheet en el que se trabaja (el secret ORDENES_SHEET_ID decide cuál)."""
+    sello = f"Sheet de órdenes «{libro}» leído a las " if libro else "Sheet de órdenes leído a las "
+    sello += f"{hora.strftime('%I:%M %p').lstrip('0').lower()} (hora RD)"
     st.markdown(encabezado_html(NOMBRE_SECCION, "taller", hoy_rd().year, sello, " · Compras internacionales"),
                 unsafe_allow_html=True)
 
@@ -1917,7 +1920,7 @@ def panel_ordenes(rol: str, token: str = "") -> None:
     """Contenido de la sección «Órdenes de compra». `token` = hora de la última lectura del Sheet principal."""
     st.markdown(_CSS, unsafe_allow_html=True)
     datos = cargar(token)
-    _encabezado(datos["hora"])
+    _encabezado(datos["hora"], datos.get("libro", ""))
     if datos["error"]:
         st.error(datos["error"])
         return

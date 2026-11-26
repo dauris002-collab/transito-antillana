@@ -510,3 +510,8 @@ def test_tarjeta_por_responsable_dice_lo_mismo_que_la_tarjeta_del_total_y_sin_ma
     assert ".oc-cf .k { font-size:0.8rem; font-weight:700; }" in css
     assert "text-transform:uppercase" not in css.split(".oc-mini span")[1].split("}")[0]
     assert "text-transform:uppercase" not in css.split(".oc-cf .k")[1].split("}")[0]
+
+
+def test_orden_de_compra_no_deja_mayusculas_sueltas_en_su_css():
+    """Etiquetas, tarjetas y encabezados de tabla van en minúscula normal; antes solo algunas iban en MAYÚSCULAS."""
+    assert "text-transform:uppercase" not in oc._CSS

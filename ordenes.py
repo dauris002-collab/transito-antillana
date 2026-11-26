@@ -186,6 +186,20 @@ def _limpio(v):
     return v
 
 
+def _comentario(v) -> str:
+    """Texto de un COMENTARIO. Como `_texto`, pero «Pendiente» es un comentario válido: en las columnas de datos
+    esa palabra es un marcador de «sin llenar» (`_VACIOS`), en un comentario es lo que el responsable escribió."""
+    v = _plano(v)
+    if isinstance(v, str) and _norm(v.replace("\xa0", " ").strip()) == "pendiente":
+        return v.replace("\xa0", " ").strip()
+    return _texto(v)
+
+
+def _resumen_comentarios(coms: list, maximo: int = 3) -> str:
+    """Los comentarios distintos de las líneas de una orden, en una sola línea (los primeros `maximo` y cuántos más hay)."""
+    return " · ".join(coms[:maximo]) + (f" · (+{len(coms) - maximo} más)" if len(coms) > maximo else "")
+
+
 def _texto(v) -> str:
     v = _limpio(v)
     if v is None:
@@ -274,7 +288,7 @@ def _canonico(clave: str, raw, orden: bool = False):
         return normalizar_estatus_orden(raw)[0]
     if clave == "fecha" and orden:
         return parsear_fecha(_limpio(raw)) if _limpio(raw) is not None else None
-    t = _texto(raw)
+    t = _comentario(raw) if clave == "coment" else _texto(raw)
     return t or None
 
 
@@ -510,7 +524,7 @@ def tablas(valores_o: list, hojas_d, resp_hojas: dict | None = None) -> dict:
                           "reconocido; se toma como ABIERTA.")
             est = "ABIERTA"
         reg = {"Fila": r["Fila"], "doc": doc, "prov": _texto(r.get("prov")), "resp": _texto(r.get("resp")),
-               "emp": _texto(r.get("emp")), "est": est, "coment": _texto(r.get("coment")),
+               "emp": _texto(r.get("emp")), "est": est, "coment": _comentario(r.get("coment")),
                "fecha": _canonico("fecha", r.get("fecha"), True), "por": _texto(r.get("por"))}
         idx_o[doc] = reg
         ordenes.append(reg)
@@ -644,12 +658,15 @@ def construir(t: dict, hoy: date) -> dict:
         facturas = sorted({ln["fact"] for ln in todas if ln.get("fact")})
         solicitantes = sorted({ln["solicitante"] for ln in todas if ln.get("solicitante")})
         clientes = sorted({ln["cliente"] for ln in todas if ln.get("cliente")})
+        # Comentarios de las líneas abiertas (los mismos que ve el Desglose); la Vista general los junta aquí.
+        coms = list(dict.fromkeys(ln["coment"] for ln in abiertas if ln.get("coment")))
+        coms_txt = _resumen_comentarios(coms)
         derivado = estatus_derivado(ests, len(todas), parcial)
         haystack = _norm(" ".join([doc, o["prov"], resp, *facturas, *solicitantes, *clientes]
                                   + [str(ln.get(k) or "") for ln in todas for k in ("mat", "matant", "nparte", "texto", "nosol")]))
         filas_o.append({
             "Doc": doc, "Proveedor": o["prov"], "Responsable": resp or SIN_ASIGNAR, "Empresa": o["emp"],
-            "EstatusOrden": o["est"], "Comentario": o["coment"], "Actualizado": o["fecha"], "Por": o["por"],
+            "EstatusOrden": o["est"], "Comentario": o["coment"], "ComentLineas": coms_txt, "Actualizado": o["fecha"], "Por": o["por"],
             "FilaO": o["Fila"], "Lineas": len(todas), "Abiertas": len(abiertas), "PendUnid": pend_u,
             "Derivado": derivado, "ETA": min(etas) if etas else None, "Facturas": ", ".join(facturas),
             "Solicitantes": ", ".join(solicitantes), "Recepcion": min([ln["sol"] for ln in todas if ln.get("sol")],
@@ -672,7 +689,7 @@ def construir(t: dict, hoy: date) -> dict:
                 "Fila": ln["Fila"], "Responsable": resp or SIN_ASIGNAR, "Proveedor": o["prov"],
                 "Despacho": ln.get("estatus2") or "", "Hoja": ln["hoja"],
             })
-    cols_o = ["Doc", "Proveedor", "Responsable", "Empresa", "EstatusOrden", "Comentario", "Actualizado", "Por", "FilaO",
+    cols_o = ["Doc", "Proveedor", "Responsable", "Empresa", "EstatusOrden", "Comentario", "ComentLineas", "Actualizado", "Por", "FilaO",
               "Lineas", "Abiertas", "PendUnid", "Derivado", "ETA", "Facturas", "Solicitantes", "Recepcion",
               "Colocacion", "SinSello", "Dias", "Backorder", "Camino", "SinDespachar", "Haystack", "PorPestana"]
     cols_l = ["Doc", "Pos", "Material", "MatAnt", "NParte", "Texto", "Pedida", "Desp", "Pend", "Parcial", "Solicitante", "Cliente",
@@ -1365,7 +1382,8 @@ def _tabla_ordenes(df: pd.DataFrame) -> str:
             + f"<td>{_chip_derivado(r.Derivado)}</td>" + _celda(r.Responsable)
             + f"<td>{_chip_emp(r.Empresa)}</td>" + _celda(_fd(r.ETA) if r.ETA else "")
             + f"<td>{_dias_html(r.Dias, r.SinSello)}</td>"
-            + f'<td class="c">{r.Abiertas}/{r.Lineas}</td>' + _celda(r.Comentario, "s") + "</tr>")
+            + f'<td class="c">{r.Abiertas}/{r.Lineas}</td>'
+            + _celda(" · ".join(x for x in (r.Comentario, r.ComentLineas) if x), "s") + "</tr>")
     return ('<div class="oc-wrap"><table class="oc-t"><thead><tr>' + "".join(f"<th>{c}</th>" for c in cab)
             + "</tr></thead><tbody>" + "".join(filas) + "</tbody></table></div>")
 

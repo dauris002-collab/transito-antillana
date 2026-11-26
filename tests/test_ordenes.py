@@ -667,3 +667,49 @@ def test_el_encabezado_dice_que_sheet_esta_leyendo():
         st.markdown = orig
     assert "Sheet de órdenes «Seguimiento_Ordenes_Compra_v3» leído a las 9:40 pm (hora RD)" in out[0]
     assert "Sheet de órdenes leído a las 9:40 pm (hora RD)" in out[1]
+
+
+def _poner_coment(ses2, hoja, fila, texto):
+    h = ses2.ORDENES.hoja(hoja)
+    col = next(c for (f, c), v in h.celdas.items() if f == 1 and v == "COMENTARIOS")
+    h.celdas[(fila, col)] = texto
+
+
+def test_pendiente_escrito_como_comentario_no_se_borra(ses2):
+    """«Pendiente» es marcador de «sin llenar» en las columnas de datos, pero en COMENTARIOS es texto del responsable."""
+    _poner_coment(ses2, "Daniel Mojica", 2, "Pendiente")
+    _poner_coment(ses2, "Daniel Mojica", 3, "Viene de camino")
+    d = oc.construir(_t(ses2), HOY())
+    l = d["lineas"][d["lineas"].Doc == "4100003641"].set_index("Pos")
+    assert l.loc["10", "Coment"] == "Pendiente" and l.loc["20", "Coment"] == "Viene de camino"
+    assert oc._comentario("  Pendiente ") == "Pendiente" and oc._comentario("N/A") == "" and oc._comentario(None) == ""
+    assert oc._texto("Pendiente") == "", "en las demás columnas «Pendiente» sigue siendo un marcador de vacío"
+
+
+def test_vista_general_muestra_los_comentarios_de_las_lineas(ses2):
+    """La Vista general solo leía el comentario de la orden (pestaña Órdenes) y dejaba en «—» lo que el Desglose sí mostraba."""
+    _poner_coment(ses2, "Daniel Mojica", 2, "Pendiente")
+    _poner_coment(ses2, "Daniel Mojica", 3, "Viene de camino")
+    _poner_coment(ses2, "Daniel Mojica", 4, "Viene de camino")   # repetido: sale una vez
+    d = oc.construir(_t(ses2), HOY())
+    o = d["ordenes"].set_index("Doc")
+    assert o.loc["4100003641", "ComentLineas"] == "Pendiente · Viene de camino"
+    h = oc._tabla_ordenes(d["ordenes"][d["ordenes"].Doc == "4100003641"])
+    assert "Pendiente · Viene de camino</td>" in h
+    sin = oc._tabla_ordenes(d["ordenes"][d["ordenes"].Doc == "4300000457"])
+    assert sin.rstrip().endswith('<td class="v c">—</td></tr></tbody></table></div>')
+
+
+def test_vista_general_junta_comentario_de_la_orden_con_el_de_las_lineas(ses2):
+    _poner_coment(ses2, "Daniel Mojica", 2, "Pendiente")
+    ses2.ORDENES.hoja("Órdenes").celdas[(2, 6)] = "Urgente para Taller"
+    d = oc.construir(_t(ses2), HOY())
+    h = oc._tabla_ordenes(d["ordenes"][d["ordenes"].Doc == "4100003641"])
+    assert "Urgente para Taller · Pendiente</td>" in h
+
+
+def test_resumen_de_comentarios_corta_en_tres_y_dice_cuantos_mas():
+    assert oc._resumen_comentarios([]) == ""
+    assert oc._resumen_comentarios(["a", "b"]) == "a · b"
+    assert oc._resumen_comentarios(["a", "b", "c"]) == "a · b · c"
+    assert oc._resumen_comentarios(list("abcde")) == "a · b · c · (+2 más)"

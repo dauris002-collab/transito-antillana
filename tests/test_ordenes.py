@@ -495,3 +495,18 @@ def test_ficha_completa_arma_cabecera_camino_chips_y_tabla_con_almacen(ses, monk
     assert "oc-eta" in ficha.split("oc-fh")[1].split("oc-j")[0], "el ETA va en la cabecera, junto al estado"
     assert "oc-barra" not in ficha and "oc-tiles" not in ficha and "unidades despachadas (" not in ficha
     assert "<th>Almacén</th>" in tabla and "<th>Puerto</th>" in tabla and "<th>Transportista</th>" in tabla
+
+
+def test_tarjeta_por_responsable_dice_lo_mismo_que_la_tarjeta_del_total_y_sin_mayusculas_sueltas(libros):
+    """«Backorder / parcial» cuenta también las órdenes despachadas en parte (decisión #37): la tarjeta de cada
+    responsable decía solo «Backorder» y no cuadraba con la ficha («Despachado parcial», 0 líneas en backorder).
+    Además las etiquetas de las cifras de la ficha y de la tarjeta van en minúscula normal, como el resto del texto."""
+    at = abrir_app("1111", ordenes=True)
+    ir(at, "Órdenes de compra")
+    md = " ".join(m.value for m in at.markdown)
+    assert md.count("<span>Backorder / parcial</span>") >= 1 and "<span>Backorder</span>" not in md
+    assert "Backorder / parcial" in md
+    css = oc._CSS
+    assert ".oc-cf .k { font-size:0.8rem; font-weight:700; }" in css
+    assert "text-transform:uppercase" not in css.split(".oc-mini span")[1].split("}")[0]
+    assert "text-transform:uppercase" not in css.split(".oc-cf .k")[1].split("}")[0]

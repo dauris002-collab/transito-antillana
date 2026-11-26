@@ -1079,7 +1079,7 @@ _CSS = (
     ".oc-gauge { flex:none; width:250px; height:auto; }"
     ".oc-cifras { flex:none; display:grid; grid-template-columns:repeat(2,minmax(128px,1fr)); gap:10px; }"
     ".oc-cf { border-radius:12px; padding:9px 16px; }"
-    ".oc-cf .k { font-size:0.64rem; text-transform:uppercase; letter-spacing:0.06em; font-weight:800; }"
+    ".oc-cf .k { font-size:0.8rem; font-weight:700; }"
     ".oc-cf .b { font-size:1.7rem; font-weight:800; line-height:1.15; }"
     ".oc-cf .u { font-size:0.7rem; font-weight:600; opacity:0.85; }"
     ".oc-cf.c-ped { background:#EFF6FF; color:#1E40AF; } .oc-cf.c-des { background:#ECFDF5; color:#15803D; }"
@@ -1126,8 +1126,7 @@ _CSS = (
     ".oc-nom { font-weight:800; font-size:1.02rem; } .oc-rol { font-size:0.76rem; color:#6B7280; }"
     ".oc-mini { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:10px; }"
     ".oc-mini div { background:#F8FAFC; border:1px solid #EEF2F6; border-radius:10px; padding:6px; text-align:center; }"
-    ".oc-mini b { display:block; font-size:1.25rem; } .oc-mini span { font-size:0.62rem; color:#6B7280;"
-    " text-transform:uppercase; letter-spacing:0.04em; }"
+    ".oc-mini b { display:block; font-size:1.25rem; } .oc-mini span { font-size:0.74rem; color:#6B7280; }"
     ".oc-mini .a { color:#B45309; } .oc-mini .r { color:#B91C1C; }"
     "div[class*='st-key-oc_old_'] button { border-color:#FCA5A5 !important; background:#FEF2F2 !important;"
     " color:#991B1B !important; }"
@@ -1515,7 +1514,7 @@ def _vista_responsable(d: dict, usuario: str, rol: str) -> None:
                         f'<div class="oc-ch"><div class="oc-av">{_esc(ini)}</div><div><div class="oc-nom">{_esc(nombre)}'
                         f'</div><div class="oc-rol">Compras internacionales</div></div></div>'
                         f'<div class="oc-mini"><div><b>{k["abiertas"]}</b><span>Abiertas</span></div>'
-                        f'<div><b class="a">{k["backorder"]}</b><span>Backorder</span></div>'
+                        f'<div><b class="a">{k["backorder"]}</b><span>Backorder / parcial</span></div>'
                         f'<div><b class="r">{k["viejas"]}</b><span>+{DIAS_SIN_ACTUALIZAR} d sin actualizar</span></div>'
                         "</div>", unsafe_allow_html=True)
                     docs = list(sub["Doc"])

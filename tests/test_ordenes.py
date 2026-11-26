@@ -650,3 +650,20 @@ def test_no_parte_se_ve_en_la_tabla_de_lineas_y_se_puede_buscar(ses2):
     assert h.index("<th>Material</th>") < h.index("<th>Mat. antiguo</th>") < h.index("<th>No. Parte</th>") < h.index("<th>Descripción</th>")
     o = d["ordenes"].set_index("Doc")
     assert oc._norm("P-141132") in o.loc["4100003641", "Haystack"], "la búsqueda de la Vista general encuentra el No. Parte"
+
+
+def test_el_encabezado_dice_que_sheet_esta_leyendo():
+    import datetime as _dt
+    h = _dt.datetime(2026, 11, 25, 21, 40)
+    antes = oc._encabezado.__code__
+    out = []
+    import streamlit as st
+    orig = st.markdown
+    try:
+        st.markdown = lambda t, **k: out.append(t)
+        oc._encabezado(h, "Seguimiento_Ordenes_Compra_v3")
+        oc._encabezado(h)
+    finally:
+        st.markdown = orig
+    assert "Sheet de órdenes «Seguimiento_Ordenes_Compra_v3» leído a las 9:40 pm (hora RD)" in out[0]
+    assert "Sheet de órdenes leído a las 9:40 pm (hora RD)" in out[1]

@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
 import re
 import threading
 from datetime import date, datetime
@@ -1066,58 +1067,57 @@ _CSS = (
     ".oc-ficha { border:1px solid #E5E7EB; border-left:5px solid #2E86DE; border-radius:12px; padding:16px 20px;"
     " margin:10px 0 14px; background:#fff; }"
     ".oc-fh { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;"
-    " margin-bottom:12px; }"
+    " margin-bottom:6px; }"
     ".oc-ft { font-size:1.3rem; font-weight:800; color:#0C447C; } .oc-ft span { font-weight:600; color:#374151;"
     " font-size:1rem; }"
-    ".oc-fg { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px 18px; }"
-    ".oc-fg .k { font-size:0.68rem; color:#6B7280; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:2px; }"
-    ".oc-fg .v { font-weight:700; font-size:0.9rem; word-break:break-word; }"
     ".oc-etapas { display:flex; gap:8px; flex-wrap:wrap; margin:14px 0 6px; align-items:center; }"
-    ".oc-tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; margin:16px 0 8px; }"
-    ".oc-tile { display:flex; gap:12px; align-items:center; background:linear-gradient(135deg,#FFFFFF,#F1F5F9);"
-    " border:1px solid #E5E7EB; border-radius:14px; padding:12px 14px; min-width:0;"
-    " box-shadow:0 1px 2px rgba(15,23,42,0.04); }"
-    ".oc-tile .ic { flex:none; width:42px; height:42px; border-radius:12px; display:flex; align-items:center;"
-    " justify-content:center; font-size:1.25rem; background:var(--tc,#E2E8F0); }"
-    ".oc-tile .tx { min-width:0; }"
-    ".oc-tile .k { font-size:0.64rem; color:#6B7280; text-transform:uppercase; letter-spacing:0.06em; font-weight:700; }"
-    ".oc-tile .b { font-size:1.2rem; font-weight:800; color:#0F172A; line-height:1.2; word-break:break-word; }"
-    ".oc-tile .u { font-size:0.73rem; color:#6B7280; margin-top:1px; word-break:break-word; }"
-    ".oc-tile .falta, .oc-who .falta { color:#B45309; font-weight:800; font-size:0.95rem; }"
-    ".oc-tile.t-fecha { --tc:#E2E8F0; } .oc-tile.t-des { --tc:#DCFCE7; } .oc-tile.t-bo { --tc:#FEF3C7; }"
-    ".oc-tile.t-tra { --tc:#DBEAFE; } .oc-tile.t-eta { --tc:#E0F2FE; } .oc-tile.t-pto { --tc:#F3E8FF; }"
-    ".oc-tile.t-alm { --tc:#CCFBF1; }"
-    ".oc-flow { display:flex; margin:22px 0 14px; padding:16px 6px 14px; border-radius:16px;"
-    " background:linear-gradient(180deg,#F8FAFC,#FFFFFF); border:1px solid #EEF2F6; }"
-    ".oc-fs { flex:1; min-width:104px; text-align:center; padding:0 4px; }"
+    ".oc-fr { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }"
+    ".oc-eta { display:inline-block; padding:4px 12px; border-radius:999px; font-size:0.8rem; font-weight:700;"
+    " background:#E0F2FE; color:#075985; border:1px solid #BAE6FD; white-space:nowrap; }"
+    ".oc-eta.sin { background:#FEF3C7; color:#92400E; border-color:#FDE68A; }"
+    ".oc-j { display:flex; flex-wrap:wrap; align-items:center; gap:14px 26px; margin:6px 0 4px; }"
+    ".oc-gauge { flex:none; width:250px; height:auto; }"
+    ".oc-cifras { flex:none; display:grid; grid-template-columns:repeat(2,minmax(128px,1fr)); gap:10px; }"
+    ".oc-cf { border-radius:12px; padding:9px 16px; }"
+    ".oc-cf .k { font-size:0.64rem; text-transform:uppercase; letter-spacing:0.06em; font-weight:800; }"
+    ".oc-cf .b { font-size:1.7rem; font-weight:800; line-height:1.15; }"
+    ".oc-cf .u { font-size:0.7rem; font-weight:600; opacity:0.85; }"
+    ".oc-cf.c-ped { background:#EFF6FF; color:#1E40AF; } .oc-cf.c-des { background:#ECFDF5; color:#15803D; }"
+    ".oc-cf.c-pen { background:#FFFBEB; color:#B45309; } .oc-cf.c-lin { background:#F5F3FF; color:#5B21B6; }"
+    ".oc-chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; padding-top:12px;"
+    " border-top:1px solid #EEF2F6; }"
+    ".oc-chp { background:#EEF4FB; border:1px solid #D6E4F5; border-radius:999px; padding:5px 13px;"
+    " font-size:0.84rem; font-weight:600; color:#1F2937; white-space:nowrap; }"
+    ".oc-chp b { font-weight:800; }"
+    ".oc-flow { display:flex; flex:1 1 540px; min-width:0; margin:0; padding:0; }"
+    ".oc-fs { flex:1; min-width:84px; text-align:center; padding:0 4px; }"
     ".oc-fs .who { min-height:34px; display:flex; align-items:flex-end; justify-content:center; margin-bottom:6px; }"
     ".oc-flow.sq .who { min-height:0; margin:0; }"
     ".oc-who { display:inline-flex; align-items:center; gap:6px; background:#0C447C; color:#fff; border-radius:999px;"
     " padding:3px 11px 3px 4px; font-size:0.74rem; font-weight:700; }"
     ".oc-who i { font-style:normal; width:22px; height:22px; border-radius:50%; background:#fff; color:#0C447C;"
     " display:flex; align-items:center; justify-content:center; font-size:0.68rem; font-weight:800; }"
-    ".oc-fs .nm { font-size:0.86rem; font-weight:800; color:#0F172A; letter-spacing:0.01em; }"
+    ".oc-fs .nm { font-size:0.82rem; font-weight:800; color:#0F172A; letter-spacing:0.01em; }"
     ".oc-fs.pend .nm { color:#9CA3AF; }"
-    ".oc-fs .nd { position:relative; height:54px; margin-top:8px; }"
-    ".oc-fs:not(:first-child) .nd::before { content:''; position:absolute; top:calc(50% - 3px); left:-50%; width:100%;"
-    " height:6px; border-radius:3px; background:#E5E7EB; }"
+    ".oc-fs .nd { position:relative; height:34px; margin-top:6px; }"
+    ".oc-fs:not(:first-child) .nd::before { content:''; position:absolute; top:calc(50% - 2px); left:-50%; width:100%;"
+    " height:4px; border-radius:2px; background:#E5E7EB; }"
     ".oc-fs.ok .nd::before, .oc-fs.ok + .oc-fs.act .nd::before, .oc-fs.act + .oc-fs.act .nd::before"
     " { background:linear-gradient(90deg,#22C55E,#16A34A); }"
-    ".oc-dot { position:absolute; z-index:1; left:50%; top:50%; transform:translate(-50%,-50%); width:46px; height:46px;"
-    " border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:1.3rem; background:#fff;"
-    " border:3px dashed #D1D5DB; color:#9CA3AF; }"
+    ".oc-dot { position:absolute; z-index:1; left:50%; top:50%; transform:translate(-50%,-50%); width:30px; height:30px;"
+    " border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:0.95rem; background:#fff;"
+    " border:2px dashed #D1D5DB; color:#9CA3AF; }"
     ".oc-fs.pend .oc-dot { opacity:0.55; filter:grayscale(1); }"
-    ".oc-fs.ok .oc-dot { background:linear-gradient(135deg,#4ADE80,#16A34A); border:3px solid #fff; color:#fff;"
+    ".oc-fs.ok .oc-dot { background:linear-gradient(135deg,#4ADE80,#16A34A); border:2px solid #fff; color:#fff;"
     " font-weight:800; box-shadow:0 2px 8px rgba(22,163,74,0.35); }"
-    ".oc-fs.act .oc-dot { background:linear-gradient(135deg,#60A5FA,#2563EB); border:3px solid #fff;"
+    ".oc-fs.act .oc-dot { background:linear-gradient(135deg,#60A5FA,#2563EB); border:2px solid #fff;"
     " box-shadow:0 0 0 0 rgba(37,99,235,0.5); animation:oc-pulso 2s infinite; }"
     "@keyframes oc-pulso { 0% { box-shadow:0 0 0 0 rgba(37,99,235,0.45); } 70% { box-shadow:0 0 0 14px rgba(37,99,235,0); }"
     " 100% { box-shadow:0 0 0 0 rgba(37,99,235,0); } }"
-    ".oc-fs .ct { margin-top:8px; font-size:0.8rem; font-weight:700; color:#1D4ED8; }"
-    ".oc-fs .ct small { display:block; font-weight:600; color:#6B7280; font-size:0.72rem; }"
+    ".oc-fs .ct { margin-top:4px; white-space:nowrap; font-size:0.76rem; font-weight:700; color:#1D4ED8; }"
+    ".oc-fs .ct small { display:inline; font-weight:600; color:#1D4ED8; font-size:0.76rem; }"
+    ".oc-fs .ct small::before { content:\" · \"; }"
     ".oc-fs.ok .ct { color:#15803D; } .oc-fs.pend .ct { color:#C4C9D1; font-weight:600; }"
-    ".oc-barra { height:8px; background:#EEF2F6; border-radius:4px; overflow:hidden; margin:8px 0 2px; }"
-    ".oc-barra b { display:block; height:100%; background:#16A34A; }"
     ".oc-nota { background:#FFFBEB; border:1px solid #FDE68A; border-left:4px solid #F0B90B; border-radius:10px;"
     " padding:9px 14px; font-size:0.88rem; margin-top:10px; }"
     ".oc-av { width:42px; height:42px; border-radius:50%; background:#0C447C; color:#fff; font-weight:800;"
@@ -1132,7 +1132,7 @@ _CSS = (
     "div[class*='st-key-oc_old_'] button { border-color:#FCA5A5 !important; background:#FEF2F2 !important;"
     " color:#991B1B !important; }"
     "div[class*='st-key-oc_old_'] button p { color:#991B1B !important; font-weight:700; }"
-    "@media (max-width:900px) { .oc-k, .oc-tiles { grid-template-columns:repeat(2,1fr); } }"
+    "@media (max-width:900px) { .oc-k { grid-template-columns:repeat(2,1fr); } }"
     "</style>"
 )
 _CLASE_EST = {"COLOCADA": "e-col", "CONFIRMADA": "e-conf", "BACKORDER": "e-bo", "DESPACHADO": "e-des",
@@ -1201,7 +1201,7 @@ def _tabla_ordenes(df: pd.DataFrame) -> str:
 def _tabla_lineas(df: pd.DataFrame, con_orden: bool = True) -> str:
     cab = (["No. Orden"] if con_orden else []) + ["Pos.", "Material", "Mat. antiguo", "Descripción", "Pedida",
                                                  "Despachada", "Pendiente", "Estatus", "Transportista", "Embarque",
-                                                 "ETA", "Puerto", "Solicitante", "Cliente", "Comentario"]
+                                                 "ETA", "Puerto", "Almacén", "Solicitante", "Cliente", "Comentario"]
     filas = []
     for r in df.head(MAX_FILAS_TABLA).itertuples():
         rojo = r.Pend is not None and not pd.isna(r.Pend) and r.Pend > 0 and (r.Estatus in AVANZADOS or r.Estatus == "BACKORDER")
@@ -1211,7 +1211,8 @@ def _tabla_lineas(df: pd.DataFrame, con_orden: bool = True) -> str:
             + f'<td class="n">{_cant(r.Pedida)}</td><td class="n">{_cant(r.Desp)}</td>'
             + f'<td class="n {"rojo" if rojo else ""}">{_cant(r.Pend)}</td>'
             + f'<td class="ruta">{_ruta_linea(r.Estatus)}</td>' + _celda(r.Transp) + _celda(_fd(r.Embarque) if r.Embarque else "")
-            + _celda(_fd(r.ETA) if r.ETA else "") + _celda(r.Puerto) + _celda(r.Solicitante) + _celda(r.Cliente)
+            + _celda(_fd(r.ETA) if r.ETA else "") + _celda(r.Puerto) + _celda(r.Almacen) + _celda(r.Solicitante)
+            + _celda(r.Cliente)
             + _celda(r.Coment, "s") + "</tr>")
     # La leyenda solo va en las listas de varias órdenes: la ficha ya trae el recorrido grande arriba.
     return ((_leyenda_ruta() if con_orden else "")
@@ -1300,45 +1301,70 @@ def _lista(serie) -> list:
     return sorted({str(x) for x in serie if x is not None and str(x).strip() and not pd.isna(x)})
 
 
+def _medidor(pct: int) -> str:
+    """Medidor semicircular con el % de unidades despachadas sobre las pedidas (líneas abiertas)."""
+    largo = math.pi * 110
+    return ('<svg class="oc-gauge" viewBox="0 0 260 150" role="img" aria-label="' + f"{pct}% despachado" + '">'
+            '<defs><linearGradient id="ocg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2E86DE"/>'
+            '<stop offset="1" stop-color="#17A2B8"/></linearGradient></defs>'
+            '<path d="M20 130 A110 110 0 0 1 240 130" fill="none" stroke="#EEF2F6" stroke-width="20" '
+            'stroke-linecap="round"/>'
+            f'<path d="M20 130 A110 110 0 0 1 240 130" fill="none" stroke="url(#ocg)" stroke-width="20" '
+            f'stroke-linecap="round" stroke-dasharray="{largo * pct / 100:.1f} {largo:.1f}"/>'
+            f'<text x="130" y="104" text-anchor="middle" font-size="54" font-weight="800" fill="#0C447C">{pct}%</text>'
+            '<text x="130" y="130" text-anchor="middle" font-size="15" font-weight="700" fill="#6B7280">'
+            'despachado</text></svg>')
+
+
 def _tarjetas_seguimiento(o: pd.Series, lineas: pd.DataFrame) -> str:
-    """Lo que Taller pregunta: cuándo se pidió y se colocó, cuánto salió, cuánto falta, qué va en tránsito, ETA,
-    puerto y almacén. Se calcula sobre las líneas ABIERTAS (las completas o canceladas no se muestran)."""
+    """Medidor del % despachado y cuatro cifras (pedidas, despachadas, pendientes, líneas). Se calcula sobre las
+    líneas ABIERTAS (las completas o canceladas no se muestran). Fechas, personas y ETA van en `_chips_ficha`
+    y `_chip_eta`; puerto, almacén y transportista están en la tabla de líneas."""
     ped = float(lineas["Pedida"].fillna(0).sum()) if len(lineas) else 0.0
     desp = float(lineas["Desp"].fillna(0).sum()) if len(lineas) else 0.0
     pct = 0 if not ped else min(100, round(100 * desp / ped))
     en_bo = int((lineas["Estatus"] == "BACKORDER").sum()) if len(lineas) else 0
-    transito = lineas[lineas["Estatus"].isin(["DESPACHADO", "EN TRÁNSITO"])] if len(lineas) else lineas
-    puerto_l = lineas[lineas["Estatus"] == "EN PUERTO"] if len(lineas) else lineas
-    uds_transito = float(transito["Desp"].fillna(0).sum()) if len(transito) else 0.0
-    uds_puerto = float(puerto_l["Desp"].fillna(0).sum()) if len(puerto_l) else 0.0
-    transp = _lista(transito["Transp"]) if len(transito) else []
-    etas = [x for x in lineas["ETA"] if x is not None and not pd.isna(x)] if len(lineas) else []
-    puertos = _lista(lineas["Puerto"]) if len(lineas) else []
-    almacenes = _lista(lineas["Almacen"]) if len(lineas) else []
-    hay_camino = bool(len(transito) or len(puerto_l))
+    cerradas = max(int(o.Lineas) - int(o.Abiertas), 0)
 
-    def t(clase, icono, k, grande, sub="", ambar=False):
-        g = _falta(grande) if ambar else _esc(grande)
-        return (f'<div class="oc-tile {clase}"><div class="ic">{icono}</div><div class="tx"><div class="k">{k}</div>'
-                f'<div class="b">{g}</div><div class="u">{_esc(sub) if sub else "&nbsp;"}</div></div></div>')
+    def t(clase, icono, k, valor, sub=""):
+        u = f'<div class="u">{_esc(sub)}</div>' if sub else ""
+        return f'<div class="oc-cf {clase}"><div class="k">{icono} {k}</div><div class="b">{valor}</div>{u}</div>'
 
-    eta_txt = _fd(min(etas)) if etas else ""
-    eta_sub = ("hasta " + _fd(max(etas))) if etas and max(etas) != min(etas) else ""
-    return ('<div class="oc-tiles">'
-            + t("t-fecha", "🗓️", "Solicitada", _fd(o.Recepcion), "fecha de la solicitud")
-            + t("t-fecha", "📝", "Colocada", _fd(o.Colocacion), "fecha del documento de compra")
-            + t("t-des", "📦", "Despachado", f"{_cant(desp)} uds", f"de {_cant(ped)} pedidas · {pct}%")
-            + t("t-bo", "⏳", "Pendiente / backorder", f"{_cant(o.PendUnid)} uds",
-                f"{en_bo} línea(s) en backorder" if en_bo else "por despachar")
-            + t("t-tra", "🚚", "En tránsito", f"{_cant(uds_transito)} uds",
-                (", ".join(transp) if transp else ("sin transportista" if len(transito) else "nada en camino")))
-            + t("t-eta", "🛬", "ETA", eta_txt or ("sin fecha" if hay_camino else "—"), eta_sub,
-                ambar=not eta_txt and hay_camino)
-            + t("t-pto", "⚓", "Puerto", ", ".join(puertos) if puertos else ("sin dato" if hay_camino else "—"),
-                f"{_cant(uds_puerto)} uds en puerto" if uds_puerto else "", ambar=not puertos and hay_camino)
-            + t("t-alm", "🏭", "Almacén", ", ".join(almacenes) if almacenes else ("sin dato" if hay_camino else "—"), "",
-                ambar=not almacenes and hay_camino)
+    return (_medidor(pct) + '<div class="oc-cifras">'
+            + t("c-ped", "📦", "Pedidas", _cant(ped))
+            + t("c-pen", "⏳", "Pendientes", _cant(o.PendUnid), f"{en_bo} línea(s) en backorder" if en_bo else "")
+            + t("c-des", "🚚", "Despachadas", _cant(desp))
+            + t("c-lin", "🧾", "Líneas", _cant(len(lineas)), f"{cerradas} cerrada(s) no se muestran" if cerradas else "")
             + "</div>")
+
+
+def _chip_eta(lineas: pd.DataFrame) -> str:
+    """ETA de la orden para la cabecera. Una orden trae varias líneas con fechas distintas (o ninguna): un solo
+    «ETA» sin más parecería valer para toda la orden, así que se dice la primera, el rango y cuántas líneas tienen
+    fecha. Sin ETA y con algo ya en camino: aviso ámbar. Sin nada en camino no hay nada que avisar."""
+    n = len(lineas)
+    etas = [x for x in lineas["ETA"] if x is not None and not pd.isna(x)] if n else []
+    if not etas:
+        en_camino = n and lineas["Estatus"].isin(["DESPACHADO", "EN TRÁNSITO", "EN PUERTO"]).any()
+        return '<span class="oc-eta sin">🛬 ETA sin fecha</span>' if en_camino else ""
+    menor, mayor = min(etas), max(etas)
+    todas = len(etas) == n
+    if mayor != menor:
+        txt = f"ETA {_fd(menor)} → {_fd(mayor)}"
+    else:
+        txt = f"{'ETA' if todas else 'Próx. ETA'} {_fd(menor)}"
+    if not todas:
+        txt += f" · {len(etas)} de {n} líneas"
+    return f'<span class="oc-eta">🛬 {_esc(txt)}</span>'
+
+
+def _chips_ficha(o: pd.Series) -> str:
+    """Quién y cuándo, como etiquetas con icono. Lo que no tiene dato no se dibuja."""
+    c = [("👤", "Resp.", o.Responsable), ("🙋", "Solicita", o.Solicitantes),
+         ("🗓️", "Solicitada", _fd(o.Recepcion) if o.Recepcion else ""),
+         ("📝", "Colocada", _fd(o.Colocacion) if o.Colocacion else "")]
+    return ('<div class="oc-chips">' + "".join(f'<span class="oc-chp">{i} {k} <b>{_esc(str(v))}</b></span>'
+                                               for i, k, v in c if v) + "</div>")
 
 
 _ICONO_ETAPA = {"COLOCADA": "📝", "CONFIRMADA": "🤝", "DESPACHADO": "📦", "EN TRÁNSITO": "🚚", "EN PUERTO": "⚓",
@@ -1378,26 +1404,18 @@ def _seguimiento_html(o: pd.Series, lineas: pd.DataFrame, quien: dict | None = N
         pasos.append(f'<div class="oc-fs {estado}"><div class="who">{_quien(quien.get(clave, ""))}</div>'
                      f'<div class="nm">{nombre}</div><div class="nd"><div class="oc-dot">{punto}</div></div>'
                      f'<div class="ct">{cuenta}</div></div>')
-    return (_tarjetas_seguimiento(o, lineas) + f'<div class="oc-flow{"" if any(quien.values()) else " sq"}">'
-            + "".join(pasos) + "</div>")
+    return ('<div class="oc-j">' + _tarjetas_seguimiento(o, lineas)
+            + f'<div class="oc-flow{"" if any(quien.values()) else " sq"}">' + "".join(pasos) + "</div></div>")
 
 
 def _ficha(o: pd.Series, lineas: pd.DataFrame) -> None:
-    """Orden completa: datos, recorrido por etapas, avance y desglose."""
-    ped, desp = lineas["Pedida"].fillna(0).sum(), lineas["Desp"].fillna(0).sum()
-    pct = 0 if not ped else min(100, round(100 * desp / ped))
-    campos = [("Responsable", o.Responsable), ("Solicitado por", o.Solicitantes or "—"),
-              ("Actualizado", ("sin sello" if o.SinSello else _fd(o.Actualizado)) + (f" · {o.Por}" if o.Por else ""))]
-    grid = "".join(f'<div><div class="k">{k}</div><div class="v">{_esc(str(v))}</div></div>' for k, v in campos)
+    """Orden completa: % despachado, cifras, camino por etapas, ETA y chips con quién y cuándo."""
     nota = (f'<div class="oc-nota"><b>Comentario para Taller:</b> {_esc(o.Comentario)}</div>' if o.Comentario else "")
     st.markdown(
         f'<div class="oc-ficha"><div class="oc-fh"><div class="oc-ft">Orden {_esc(o.Doc)} '
         f'<span>· {_esc(o.Proveedor or "proveedor sin registrar")}</span></div>'
-        f'<div>{_chip_derivado(o.Derivado)} &nbsp;{_chip_emp(o.Empresa)}</div></div>'
-        f'<div class="oc-fg">{grid}</div>{_seguimiento_html(o, lineas)}'
-        f'<div class="oc-barra"><b style="width:{pct}%"></b></div>'
-        f'<div style="font-size:0.74rem;color:#6B7280;">{_cant(desp)} de {_cant(ped)} unidades despachadas ({pct}%) · '
-        f'{_cant(o.PendUnid)} pendientes</div>{nota}</div>', unsafe_allow_html=True)
+        f'<div class="oc-fr">{_chip_eta(lineas)}{_chip_derivado(o.Derivado)}{_chip_emp(o.Empresa)}</div></div>'
+        f'{_seguimiento_html(o, lineas)}{_chips_ficha(o)}{nota}</div>', unsafe_allow_html=True)
     st.markdown(_tabla_lineas(lineas, con_orden=False), unsafe_allow_html=True)
     if len(lineas) > MAX_FILAS_TABLA:
         st.caption(f"Se muestran {MAX_FILAS_TABLA} de {len(lineas)} líneas.")

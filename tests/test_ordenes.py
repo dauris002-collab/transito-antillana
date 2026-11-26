@@ -2,6 +2,7 @@
 import io
 from datetime import date, timedelta
 
+import pandas as pd
 import pytest
 from openpyxl import Workbook
 
@@ -109,12 +110,15 @@ def test_seguimiento_etapas_tarjetas_y_sin_bloque_donde_esta(ses):
     assert 'oc-fs act"><div class="who"></div><div class="nm">Recibida' in h
     assert "1 línea(s)<small>10 uds</small>" in h and "1 línea(s)<small>4 uds</small>" in h
     assert "Dónde está ahora" not in h and "Falta despachar" not in h, "bloque retirado a pedido"
-    # tarjetas: solicitada, colocada, despachado (4 de 14), pendiente, en tránsito (DHL), ETA, puerto, almacén
-    for k in ("Solicitada", "Colocada", "Despachado", "Pendiente / backorder", "En tránsito", "ETA", "Puerto", "Almacén"):
-        assert f'<div class="k">{k}</div>' in h
-    assert '<div class="b">4 uds</div><div class="u">de 14 pedidas · 29%</div>' in h
-    assert '<div class="b">10 uds</div><div class="u">por despachar</div>' in h
-    assert '<div class="b">4 uds</div><div class="u">DHL</div>' in h
+    # ficha v5.29 (opción J): medidor + 4 cifras; ya no hay las 8 tarjetas (fechas y personas van en chips,
+    # puerto/almacén/transportista en la tabla de líneas)
+    assert 'aria-label="29% despachado"' in h and ">29%</text>" in h
+    for k, v in (("Pedidas", "14"), ("Pendientes", "10"), ("Despachadas", "4"), ("Líneas", "2")):
+        assert f'{k}</div><div class="b">{v}</div>' in h, k
+    assert '<div class="u">1 cerrada(s) no se muestran</div>' in h
+    assert "oc-tile" not in h and "oc-chp" not in h
+    for k in ("Puerto", "Almacén", "Transportista", "En tránsito"):
+        assert k not in h.replace("En tránsito</div>", ""), f"{k} ya no va arriba"
 
 
 def test_seguimiento_chip_de_quien_hizo_la_etapa(ses):
@@ -130,14 +134,17 @@ def test_seguimiento_avisa_lo_que_falta_y_el_backorder(ses):
     assert '<div class="u">1 línea(s) en backorder</div>' in h
     assert 'oc-fs ok"><div class="who"></div><div class="nm">Colocada' in h, "todas las líneas ya la pasaron"
     assert 'oc-fs act"><div class="who"></div><div class="nm">Confirmada' in h
-    assert h.count('class="falta">sin fecha') == 1 and h.count('class="falta">sin dato') == 2, \
-        "ETA, puerto y almacén sin reportar salen en ámbar"
+    d = oc.construir(_t(ses), HOY())
+    assert oc._chip_eta(d["lineas"][d["lineas"].Doc == "4300000455"]) == '<span class="oc-eta sin">🛬 ETA sin fecha</span>', \
+        "algo ya despachado y sin ETA sale en ámbar"
 
 
 def test_seguimiento_orden_sin_estatus_ni_fechas_no_revienta(ses):
     h = _ficha_html(ses, "4100003641")   # línea sin estatus
     assert h.count('class="oc-fs ') == 6 and "oc-fs act" not in h
-    assert 'class="oc-tile t-eta"' in h
+    assert 'class="oc-cf c-ped"' in h and "oc-gauge" in h
+    d = oc.construir(_t(ses), HOY())
+    assert oc._chip_eta(d["lineas"][d["lineas"].Doc == "4100003641"]) == "", "sin nada en camino no hay ETA que avisar"
 
 
 def test_lectura_y_derivados(ses):
@@ -438,3 +445,53 @@ def test_tabla_de_lineas_trae_el_camino_la_leyenda_y_todo_centrado(ses):
     assert ".oc-t th { color:#fff;" in css and "text-align:center; vertical-align:middle" in css
     assert ".oc-t td.n { font-variant-numeric:tabular-nums; }" in css and "text-align:right" not in css
     assert "linear-gradient(90deg,#2E86DE,#17A2B8)" in css
+
+
+def _lin(estatus, eta):
+    return pd.DataFrame({"Estatus": estatus, "ETA": eta})
+
+
+def test_chip_eta_dice_cuantas_lineas_tienen_fecha_y_el_rango():
+    f = date
+    # una sola fecha en 1 de 7 líneas (el caso real de la 4100003641): no puede parecer que vale para toda la orden
+    h = oc._chip_eta(_lin(["DESPACHADO"] * 7, [f(2026, 11, 27)] + [None] * 6))
+    assert h == '<span class="oc-eta">🛬 Próx. ETA 27/11/2026 · 1 de 7 líneas</span>'
+    # todas las líneas con la misma fecha: sin sufijo
+    assert oc._chip_eta(_lin(["DESPACHADO"] * 2, [f(2026, 11, 27)] * 2)) == '<span class="oc-eta">🛬 ETA 27/11/2026</span>'
+    # fechas distintas: primera → última (la última es cuándo termina de llegar todo) y cobertura
+    h = oc._chip_eta(_lin(["DESPACHADO"] * 3, [f(2026, 11, 27), f(2027, 1, 15), None]))
+    assert h == '<span class="oc-eta">🛬 ETA 27/11/2026 → 15/01/2027 · 2 de 3 líneas</span>'
+    # sin fechas: ámbar solo si hay algo en camino; con líneas aún sin despachar no se dibuja nada
+    assert "oc-eta sin" in oc._chip_eta(_lin(["EN PUERTO", "COLOCADA"], [None, None]))
+    assert oc._chip_eta(_lin(["COLOCADA", "BACKORDER"], [None, None])) == ""
+    assert oc._chip_eta(_lin([], [])) == ""
+
+
+def test_chips_de_la_ficha_solo_dibujan_lo_que_tiene_dato():
+    o = pd.Series({"Responsable": "Daniel Mojica", "Solicitantes": "Yokaira Martes",
+                   "Recepcion": date(2026, 7, 20), "Colocacion": date(2026, 7, 21)})
+    h = oc._chips_ficha(o)
+    for txt in ("👤 Resp. <b>Daniel Mojica</b>", "🙋 Solicita <b>Yokaira Martes</b>", "🗓️ Solicitada <b>20/07/2026</b>",
+                "📝 Colocada <b>21/07/2026</b>"):
+        assert txt in h
+    assert not any(k in h for k in ("Puerto", "Almacén", "Transporte", "Actualizado", "sin dato", "sin sello"))
+    o2 = pd.Series({"Responsable": "Ana", "Solicitantes": "", "Recepcion": None, "Colocacion": None})
+    assert oc._chips_ficha(o2).count("oc-chp") == 1
+
+
+def test_medidor_dibuja_el_porcentaje_y_no_se_pasa_de_100():
+    assert ">53%</text>" in oc._medidor(53) and "despachado</text>" in oc._medidor(53)
+    arco = lambda p: float(oc._medidor(p).split('stroke-dasharray="')[1].split()[0])
+    assert arco(0) == 0 and arco(100) > arco(53) > arco(10)
+
+
+def test_ficha_completa_arma_cabecera_camino_chips_y_tabla_con_almacen(ses, monkeypatch):
+    d = oc.construir(_t(ses), HOY())
+    salida = []
+    monkeypatch.setattr(oc.st, "markdown", lambda h, **k: salida.append(h))
+    oc._ficha(d["ordenes"][d["ordenes"].Doc == "4300000448"].iloc[0], d["lineas"][d["lineas"].Doc == "4300000448"])
+    ficha, tabla = salida
+    assert ficha.index("oc-fh") < ficha.index("oc-gauge") < ficha.index("oc-flow") < ficha.index("oc-chips")
+    assert "oc-eta" in ficha.split("oc-fh")[1].split("oc-j")[0], "el ETA va en la cabecera, junto al estado"
+    assert "oc-barra" not in ficha and "oc-tiles" not in ficha and "unidades despachadas (" not in ficha
+    assert "<th>Almacén</th>" in tabla and "<th>Puerto</th>" in tabla and "<th>Transportista</th>" in tabla
